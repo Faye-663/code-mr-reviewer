@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from mr_reviewer.config import Config
-from mr_reviewer.git import GitClient
+from mr_reviewer.git import GitCheckout, GitClient
 from mr_reviewer.gitlab import GitLabMrUrl, choose_diff_refs, parse_gitlab_mr_url
 from mr_reviewer.im import ImMessage, build_welink_reply_args, parse_poll_output, should_trigger_review
 from mr_reviewer.process import prepare_command
@@ -211,10 +211,15 @@ def test_git_clone_uses_non_interactive_token_auth(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("subprocess.run", fake_run)
 
     GitClient().clone_checkout_and_diff(
-        "https://gitlab.example.com/team/project.git",
+        GitCheckout(
+            target_repo_url="https://gitlab.example.com/team/project.git",
+            source_repo_url="https://gitlab.example.com/team/project.git",
+            target_branch="main",
+            source_branch="feature/auth",
+            base_sha="base",
+            head_sha="head",
+        ),
         "secret-token",
-        "base",
-        "head",
         tmp_path,
         {"max_files": 50, "max_diff_lines": 2000},
     )
@@ -229,6 +234,11 @@ def test_git_clone_uses_non_interactive_token_auth(tmp_path: Path, monkeypatch):
     assert clone_env["GIT_CONFIG_KEY_0"] == "http.extraHeader"
     assert clone_env["GIT_CONFIG_VALUE_0"].startswith("Authorization: Basic ")
     assert "secret-token" not in " ".join(clone_args)
+
+    commands = [" ".join(args) for args, _ in calls]
+    assert any("fetch origin main" in command for command in commands)
+    assert any("fetch origin feature/auth" in command for command in commands)
+    assert any("checkout head" in command for command in commands)
 
 
 def test_prepare_command_wraps_windows_cmd_files(monkeypatch):

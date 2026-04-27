@@ -4,6 +4,7 @@ import base64
 import logging
 import os
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 from mr_reviewer.process import format_command, prepare_command
@@ -16,13 +17,21 @@ class ResourceLimitError(RuntimeError):
     pass
 
 
+@dataclass(frozen=True, slots=True)
+class GitCheckout:
+    target_repo_url: str
+    source_repo_url: str
+    target_branch: str
+    source_branch: str
+    base_sha: str
+    head_sha: str
+
+
 class GitClient:
     def clone_checkout_and_diff(
         self,
-        repo_url: str,
+        checkout: GitCheckout,
         token: str,
-        base_sha: str,
-        head_sha: str,
         work_dir: Path,
         limits: dict[str, int],
     ) -> dict:
@@ -31,7 +40,7 @@ class GitClient:
 
         env = os.environ.copy()
         git_prefix = ["git"]
-        if repo_url.startswith("http") and token:
+        if checkout.target_repo_url.startswith("http") and token:
             # 禁用 credential helper/GCM 弹窗；token 通过 Git 环境配置传入，避免出现在命令行。
             git_prefix = ["git", "-c", "credential.helper="]
             env.update(
@@ -44,18 +53,26 @@ class GitClient:
                 }
             )
 
-        self._run([*git_prefix, "clone", "--no-checkout", repo_url, str(repo_path)], cwd=work_dir, env=env)
-        self._run(["git", "checkout", head_sha], cwd=repo_path, env=env)
+        self._run([*git_prefix, "clone", "--no-checkout", checkout.target_repo_url, str(repo_path)], cwd=work_dir, env=env)
+        if checkout.source_repo_url != checkout.target_repo_url:
+            self._run(["git", "remote", "add", "source", checkout.source_repo_url], cwd=repo_path, env=env)
+            source_remote = "source"
+        else:
+            source_remote = "origin"
+
+        self._run(["git", "fetch", "origin", checkout.target_branch], cwd=repo_path, env=env)
+        self._run(["git", "fetch", source_remote, checkout.source_branch], cwd=repo_path, env=env)
+        self._run(["git", "checkout", checkout.head_sha], cwd=repo_path, env=env)
 
         changed_files = self._run(
-            ["git", "diff", "--name-only", f"{base_sha}...{head_sha}"],
+            ["git", "diff", "--name-only", f"{checkout.base_sha}...{checkout.head_sha}"],
             cwd=repo_path,
             env=env,
         ).splitlines()
         if len(changed_files) > limits["max_files"]:
             raise ResourceLimitError(f"changed file count exceeds limit: {len(changed_files)} > {limits['max_files']}")
 
-        diff = self._run(["git", "diff", f"{base_sha}...{head_sha}"], cwd=repo_path, env=env)
+        diff = self._run(["git", "diff", f"{checkout.base_sha}...{checkout.head_sha}"], cwd=repo_path, env=env)
         line_count = len(diff.splitlines())
         if line_count > limits["max_diff_lines"]:
             raise ResourceLimitError(f"diff line count exceeds limit: {line_count} > {limits['max_diff_lines']}")
@@ -65,8 +82,8 @@ class GitClient:
             "diff": diff,
             "changed_files": changed_files,
             "truncated": False,
-            "base_sha": base_sha,
-            "head_sha": head_sha,
+            "base_sha": checkout.base_sha,
+            "head_sha": checkout.head_sha,
         }
 
     def _run(self, args: list[str], cwd: Path, env: dict[str, str]) -> str:

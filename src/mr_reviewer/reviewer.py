@@ -5,7 +5,7 @@ import shutil
 from dataclasses import dataclass
 
 from mr_reviewer.config import Config
-from mr_reviewer.git import GitClient
+from mr_reviewer.git import GitCheckout, GitClient
 from mr_reviewer.gitlab import GitLabClient, GitLabMrUrl, choose_diff_refs
 from mr_reviewer.opencode import OpenCodeRunner
 
@@ -30,7 +30,8 @@ class ReviewService:
             LOG.info("task=%s stage=gitlab_fetch repo=%s mr_iid=%s", task_id, mr.project_path, mr.mr_iid)
             mr_data = self.gitlab.get_merge_request(mr)
             base_sha, head_sha = choose_diff_refs(mr_data)
-            repo_url = self.gitlab.get_project_http_url(int(mr_data["target_project_id"]))
+            target_repo_url = self.gitlab.get_project_http_url(int(mr_data["target_project_id"]))
+            source_repo_url = self.gitlab.get_project_http_url(int(mr_data["source_project_id"]))
             LOG.info(
                 "task=%s stage=gitlab_ready repo=%s source=%s target=%s",
                 task_id,
@@ -39,10 +40,15 @@ class ReviewService:
                 mr_data.get("target_branch", ""),
             )
             diff_info = self.git.clone_checkout_and_diff(
-                repo_url,
+                GitCheckout(
+                    target_repo_url=target_repo_url,
+                    source_repo_url=source_repo_url,
+                    target_branch=mr_data["target_branch"],
+                    source_branch=mr_data["source_branch"],
+                    base_sha=base_sha,
+                    head_sha=head_sha,
+                ),
                 config.gitlab_token,
-                base_sha,
-                head_sha,
                 task_dir,
                 {"max_files": config.max_files, "max_diff_lines": config.max_diff_lines},
             )
@@ -67,20 +73,17 @@ class ReviewService:
         # 显式点名 skill，避免依赖模型自动触发。
         return "\n".join(
             [
-                "请使用 mr-review skill 对以下 GitLab Merge Request 做保守代码检视。",
+                "使用 mr-review skill 检视代码。",
+                f"检视范围：{mr_data.get('source_branch', '')} 到 {mr_data.get('target_branch', '')} 的差异。",
+                f"代码仓在 {diff_info['repo_path']} 目录。",
+                "",
+                "请在本地仓库中自行读取代码和 diff 上下文，进行保守代码检视。",
                 "只输出 Markdown 检视报告，不要提交 MR 评论。",
                 "",
                 f"MR: {mr.base_url}/{mr.project_path}/-/merge_requests/{mr.mr_iid}",
                 f"Title: {mr_data.get('title', '')}",
-                f"Source branch: {mr_data.get('source_branch', '')}",
-                f"Target branch: {mr_data.get('target_branch', '')}",
                 f"Base SHA: {diff_info['base_sha']}",
                 f"Head SHA: {diff_info['head_sha']}",
                 f"Changed files: {', '.join(diff_info['changed_files'])}",
-                "",
-                "Diff:",
-                "```diff",
-                diff_info["diff"],
-                "```",
             ]
         )

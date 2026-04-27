@@ -27,6 +27,8 @@ class FakeGitLabClient:
         }
 
     def get_project_http_url(self, project_id: int):
+        if project_id == 2:
+            return "https://gitlab.example.com/fork/project.git"
         return "https://gitlab.example.com/team/project.git"
 
 
@@ -34,8 +36,8 @@ class RecordingGitClient(GitClient):
     def __init__(self):
         self.calls = []
 
-    def clone_checkout_and_diff(self, repo_url, token, base_sha, head_sha, work_dir, limits):
-        self.calls.append((repo_url, token, base_sha, head_sha, Path(work_dir), limits))
+    def clone_checkout_and_diff(self, checkout, token, work_dir, limits):
+        self.calls.append((checkout, token, Path(work_dir), limits))
         repo = Path(work_dir) / "repo"
         repo.mkdir(parents=True)
         return {
@@ -43,8 +45,8 @@ class RecordingGitClient(GitClient):
             "diff": "diff --git a/app.py b/app.py\n@@\n-print('bad')\n+print('good')\n",
             "changed_files": ["app.py"],
             "truncated": False,
-            "base_sha": base_sha,
-            "head_sha": head_sha,
+            "base_sha": checkout.base_sha,
+            "head_sha": checkout.head_sha,
         }
 
 
@@ -79,8 +81,38 @@ def test_review_service_generates_markdown_and_cleans_workdir(tmp_path: Path):
     assert report.markdown.startswith("# Review")
     assert "secret-token" not in opencode.prompts[0][0]
     assert "mr-review" in opencode.prompts[0][0]
-    assert git.calls[0][2:] == ("base123", "head456", tmp_path / "task-1", {"max_files": 50, "max_diff_lines": 2000})
+    assert "检视范围：feature/auth 到 main 的差异" in opencode.prompts[0][0]
+    assert "代码仓在" in opencode.prompts[0][0]
+    assert "diff --git" not in opencode.prompts[0][0]
+    assert "Diff:" not in opencode.prompts[0][0]
+    checkout, token, work_dir, limits = git.calls[0]
+    assert checkout.target_repo_url == "https://gitlab.example.com/team/project.git"
+    assert checkout.source_repo_url == "https://gitlab.example.com/team/project.git"
+    assert checkout.target_branch == "main"
+    assert checkout.source_branch == "feature/auth"
+    assert (token, work_dir, limits) == ("secret-token", tmp_path / "task-1", {"max_files": 50, "max_diff_lines": 2000})
     assert not (tmp_path / "task-1").exists()
+
+
+def test_review_service_uses_source_project_repo_for_fork_mr(tmp_path: Path):
+    class ForkGitLabClient(FakeGitLabClient):
+        def get_merge_request(self, mr: GitLabMrUrl):
+            data = super().get_merge_request(mr)
+            data["source_project_id"] = 2
+            return data
+
+    git = RecordingGitClient()
+    service = ReviewService(ForkGitLabClient(), git, RecordingOpenCodeRunner())
+
+    service.review(
+        GitLabMrUrl("https://gitlab.example.com", "team/project", 7),
+        Config(gitlab_base_url="https://gitlab.example.com", gitlab_token="secret-token", work_dir=tmp_path),
+        task_id="task-fork",
+    )
+
+    checkout = git.calls[0][0]
+    assert checkout.target_repo_url == "https://gitlab.example.com/team/project.git"
+    assert checkout.source_repo_url == "https://gitlab.example.com/fork/project.git"
 
 
 def test_review_service_logs_major_stages(tmp_path: Path, caplog):
@@ -115,7 +147,9 @@ def test_poll_once_runs_review_and_replies(tmp_path: Path):
     (repo / "app.py").write_text("print('base')\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(repo), "add", "app.py"], check=True)
     subprocess.run(["git", "-C", str(repo), "commit", "-m", "base"], check=True, stdout=subprocess.DEVNULL)
+    subprocess.run(["git", "-C", str(repo), "branch", "main"], check=True)
     base = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    subprocess.run(["git", "-C", str(repo), "checkout", "-b", "feature"], check=True, stdout=subprocess.DEVNULL)
     (repo / "app.py").write_text("print('head')\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(repo), "commit", "-am", "head"], check=True, stdout=subprocess.DEVNULL)
     head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()

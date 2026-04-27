@@ -23,9 +23,8 @@ def prepare_command(args: list[str]) -> list[str]:
     if Path(executable).suffix.lower() not in {".bat", ".cmd"}:
         return args
 
-    # CreateProcess 直接执行批处理文件存在兼容性问题，显式交给 cmd.exe。
-    command_line = subprocess.list2cmdline([executable, *args[1:]])
-    return ["cmd.exe", "/d", "/s", "/c", command_line]
+    # CreateProcess 直接执行批处理文件存在兼容性问题；call 能正确处理带空格的 .cmd 路径。
+    return ["cmd.exe", "/d", "/c", "call", executable, *args[1:]]
 
 
 def format_command(args: list[str]) -> str:

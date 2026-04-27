@@ -243,9 +243,10 @@ def test_git_clone_uses_non_interactive_token_auth(tmp_path: Path, monkeypatch):
 
 def test_prepare_command_wraps_windows_cmd_files(monkeypatch):
     monkeypatch.setattr("os.name", "nt")
-    monkeypatch.setattr("shutil.which", lambda command: "C:\\Tools\\welink-cli.cmd" if command == "welink-cli" else None)
+    monkeypatch.setattr("shutil.which", lambda command: "D:\\Program Files\\nodejs\\node_global\\opencode.CMD" if command == "opencode" else None)
 
-    prepared = prepare_command(["welink-cli", "im", "send-to-group"])
+    prepared = prepare_command(["opencode", "run", "使用 mr-review skill 检视代码"])
 
-    assert prepared[:4] == ["cmd.exe", "/d", "/s", "/c"]
-    assert "welink-cli.cmd" in prepared[4]
+    assert prepared[:4] == ["cmd.exe", "/d", "/c", "call"]
+    assert prepared[4] == "D:\\Program Files\\nodejs\\node_global\\opencode.CMD"
+    assert prepared[5:] == ["run", "使用 mr-review skill 检视代码"]

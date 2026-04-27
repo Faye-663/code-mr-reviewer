@@ -137,7 +137,7 @@ welink-cli im send-to-group --group-id "619850427" --text "# Review..."
 - `mr` / `repo` / `mr_iid`：GitLab MR 定位信息。
 - `stage=im_poll`：开始调用 WeLink 历史消息查询。
 - `stage=git` / `stage=im_poll` / `stage=im_send` / `stage=opencode`：会打印实际执行命令；Git token、WeLink 正文和 opencode prompt 会脱敏。
-- Windows 下如果 `welink-cli` 或 `opencode` 解析到 `.cmd`/`.bat`，程序会通过 `cmd.exe /d /s /c` 执行，避免 `subprocess` 直接调用批处理文件的兼容性问题。
+- Windows 下如果 `welink-cli` 或 `opencode` 解析到 `.cmd`/`.bat`，程序会通过 `cmd.exe /d /c call "<cmd路径>" ...` 执行，避免 `subprocess` 直接调用批处理文件的兼容性问题。
 - `status=messages_received`：本轮收到的消息数量。
 - `reason=already_processed`：状态文件显示消息已处理。
 - `reason=not_review_request`：消息不是 `@Bot + MR URL`。
@@ -165,6 +165,7 @@ welink-cli im send-to-group --group-id "619850427" --text "# Review..."
 - `git command failed`：检查 token 是否能 clone 目标仓库，以及 MR 的 base/head SHA 是否存在。
 - Git 弹出用户名/密码窗口：确认运行的是包含当前修复的版本；本项目内部 clone 不会调用交互式凭据窗口。如果弹窗仍出现，通常是外部脚本或旧安装版本绕过了 `mr_reviewer.git.GitClient`。
 - 中文或 emoji 乱码：确认运行的是当前版本；WeLink、Git、opencode 子进程都显式使用 UTF-8 解码，并对非法字节使用替换策略保留日志可读性。
+- opencode `.CMD` 路径带空格时报“不是内部或外部命令”：确认运行的是当前版本；旧版本使用 `cmd /s /c "<整条命令>"`，会触发 Windows `cmd` 引号剥离问题。
 - `IM poll command failed`：单独运行 `MR_REVIEWER_IM_POLL_COMMAND`，确认 stdout 是合法 JSON。
 - `IM reply command failed`：单独运行 `welink-cli im send-to-group --group-id <id> --text "test"`。
 - 重复处理同一条消息：检查 `MR_REVIEWER_STATE_PATH` 是否可写、是否被删除。

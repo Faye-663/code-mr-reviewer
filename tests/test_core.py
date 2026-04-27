@@ -25,6 +25,26 @@ def test_config_treats_empty_dotenv_values_as_defaults(tmp_path: Path, monkeypat
     assert str(config.work_dir).endswith("mr-review")
 
 
+def test_config_enables_opencode_debug_by_default(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("MR_REVIEWER_OPENCODE_DEBUG", raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text("MR_REVIEWER_GITLAB_BASE_URL=https://gitlab.example.com\n", encoding="utf-8")
+
+    assert Config.from_env(env_file).opencode_debug is True
+
+
+def test_config_can_disable_opencode_debug(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("MR_REVIEWER_OPENCODE_DEBUG", raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "MR_REVIEWER_GITLAB_BASE_URL=https://gitlab.example.com\n"
+        "MR_REVIEWER_OPENCODE_DEBUG=false\n",
+        encoding="utf-8",
+    )
+
+    assert Config.from_env(env_file).opencode_debug is False
+
+
 def test_parse_gitlab_mr_url_with_nested_project_path():
     parsed = parse_gitlab_mr_url(
         "https://gitlab.example.com/a/b/c/-/merge_requests/42",

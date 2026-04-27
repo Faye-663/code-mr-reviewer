@@ -260,13 +260,13 @@ def test_opencode_runner_uses_utf8_and_redacts_prompt_in_logs(monkeypatch, tmp_p
     monkeypatch.setattr("subprocess.run", fake_run)
 
     with caplog.at_level(logging.INFO, logger="mr_reviewer"):
-        output = OpenCodeRunner("opencode").run_review("请 review 这段 diff", tmp_path, 60)
+        output = OpenCodeRunner("opencode", debug=True).run_review("请 review 这段 diff", tmp_path, 60)
 
     args, kwargs = calls[0]
-    assert args == ["opencode", "run", "请 review 这段 diff"]
+    assert args == ["opencode", "--print-logs", "--log-level", "DEBUG", "run", "请 review 这段 diff"]
     assert kwargs["encoding"] == "utf-8"
     assert kwargs["errors"] == "replace"
     assert output == "# Review"
     log_text = "\n".join(record.getMessage() for record in caplog.records)
-    assert "opencode run <prompt_chars=16>" in log_text
+    assert "opencode --print-logs --log-level DEBUG run <prompt_chars=16>" in log_text
     assert "请 review" not in log_text

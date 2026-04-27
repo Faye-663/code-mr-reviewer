@@ -40,7 +40,7 @@ def build_service(config: Config) -> ReviewService:
     return ReviewService(
         GitLabClient(config.gitlab_base_url, config.gitlab_token, config.test_gitlab_responses),
         GitClient(),
-        OpenCodeRunner(config.opencode_command),
+        OpenCodeRunner(config.opencode_command, debug=config.opencode_debug),
     )
 
 

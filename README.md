@@ -93,6 +93,7 @@ uv run mr-reviewer poll
 - `MR_REVIEWER_BOT_ACCOUNT`：WeLink bot 账号 ID；配置后会用 `atAccountList` 精确判断是否 @ 了机器人。
 - `MR_REVIEWER_ALLOWED_GROUPS`、`MR_REVIEWER_ALLOWED_USERS`、`MR_REVIEWER_ALLOWED_REPOS`：逗号分隔白名单；为空表示不限制。
 - `MR_REVIEWER_OPENCODE_COMMAND`：opencode 可执行命令，默认 `opencode`。
+- `MR_REVIEWER_OPENCODE_DEBUG`：是否以 debug 模式调用 opencode，默认 `true`。开启时实际使用 `opencode --print-logs --log-level DEBUG run <prompt>`。
 - `MR_REVIEWER_WORK_DIR`：任务临时目录；为空时使用系统临时目录下的 `mr-review`。
 - `MR_REVIEWER_STATE_PATH`：本地状态文件路径，用于记录已处理消息。
 - `MR_REVIEWER_MAX_FILES`：最大变更文件数，默认 `50`。

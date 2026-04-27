@@ -13,11 +13,15 @@ LOG = logging.getLogger("mr_reviewer")
 
 
 class OpenCodeRunner:
-    def __init__(self, command: str = "opencode"):
+    def __init__(self, command: str = "opencode", debug: bool = True):
         self.command = command
+        self.debug = debug
 
     def run_review(self, prompt: str, cwd: Path, timeout_seconds: int) -> str:
-        args = shlex.split(self.command, posix=(os.name != "nt")) + ["run", prompt]
+        args = shlex.split(self.command, posix=(os.name != "nt"))
+        if self.debug:
+            args += ["--print-logs", "--log-level", "DEBUG"]
+        args += ["run", prompt]
         LOG.info("stage=opencode command=%s cwd=%s", _command_for_log(args), cwd)
         result = subprocess.run(
             prepare_command(args),

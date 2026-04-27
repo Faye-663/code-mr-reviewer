@@ -15,6 +15,10 @@ def _split_set(value: str | None) -> set[str]:
     return {item.strip() for item in value.split(",") if item.strip()}
 
 
+def _parse_bool(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def load_dotenv(path: Path) -> dict[str, str]:
     if not path.exists():
         return {}
@@ -43,6 +47,7 @@ class Config:
     work_dir: Path = field(default_factory=lambda: Path(tempfile.gettempdir()) / "mr-review")
     state_path: Path = Path(".mr-reviewer-state.json")
     opencode_command: str = "opencode"
+    opencode_debug: bool = True
     max_files: int = 50
     max_diff_lines: int = 2000
     task_timeout_seconds: int = 900
@@ -72,6 +77,7 @@ class Config:
             work_dir=Path(get("WORK_DIR", str(Path(tempfile.gettempdir()) / "mr-review"))),
             state_path=Path(get("STATE_PATH", ".mr-reviewer-state.json")),
             opencode_command=get("OPENCODE_COMMAND", "opencode"),
+            opencode_debug=_parse_bool(get("OPENCODE_DEBUG", "true")),
             max_files=int(get("MAX_FILES", "50")),
             max_diff_lines=int(get("MAX_DIFF_LINES", "2000")),
             task_timeout_seconds=int(get("TASK_TIMEOUT_SECONDS", "900")),

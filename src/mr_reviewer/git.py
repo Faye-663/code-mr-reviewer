@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -23,25 +24,22 @@ class GitClient:
         work_dir.mkdir(parents=True, exist_ok=True)
 
         env = os.environ.copy()
+        git_prefix = ["git"]
         if repo_url.startswith("http") and token:
-            # Git clone 只能通过 askpass 注入 HTTPS token，避免 token 出现在命令行和日志中。
-            askpass = work_dir / "git_askpass.py"
-            askpass.write_text(
-                "import os, sys\n"
-                "prompt = sys.argv[1] if len(sys.argv) > 1 else ''\n"
-                "print(os.environ.get('GIT_USERNAME', 'oauth2') if 'sername' in prompt else os.environ.get('GIT_PASSWORD', ''))\n",
-                encoding="utf-8",
-            )
+            askpass = self._write_askpass(work_dir)
+            # Windows Git Credential Manager 会弹窗；这里对本次命令禁用 helper，并用 askpass 非交互注入 token。
+            git_prefix = ["git", "-c", "credential.helper=", "-c", f"core.askPass={askpass}"]
             env.update(
                 {
                     "GIT_ASKPASS": str(askpass),
                     "GIT_TERMINAL_PROMPT": "0",
+                    "GCM_INTERACTIVE": "never",
                     "GIT_USERNAME": "oauth2",
                     "GIT_PASSWORD": token,
                 }
             )
 
-        self._run(["git", "clone", "--no-checkout", repo_url, str(repo_path)], cwd=work_dir, env=env)
+        self._run([*git_prefix, "clone", "--no-checkout", repo_url, str(repo_path)], cwd=work_dir, env=env)
         self._run(["git", "checkout", head_sha], cwd=repo_path, env=env)
 
         changed_files = self._run(
@@ -71,3 +69,21 @@ class GitClient:
         if result.returncode != 0:
             raise RuntimeError(f"git command failed: {result.stderr.strip()}")
         return result.stdout
+
+    def _write_askpass(self, work_dir: Path) -> Path:
+        askpass_py = work_dir / "git_askpass.py"
+        askpass_cmd = work_dir / "git_askpass.cmd"
+        askpass_py.write_text(
+            "import os, sys\n"
+            "prompt = ' '.join(sys.argv[1:]).lower()\n"
+            "if 'username' in prompt or 'user name' in prompt:\n"
+            "    print(os.environ.get('GIT_USERNAME', 'oauth2'))\n"
+            "else:\n"
+            "    print(os.environ.get('GIT_PASSWORD', ''))\n",
+            encoding="utf-8",
+        )
+        askpass_cmd.write_text(
+            f'@echo off\r\n"{sys.executable}" "{askpass_py}" "%*"\r\n',
+            encoding="utf-8",
+        )
+        return askpass_cmd

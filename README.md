@@ -142,12 +142,14 @@ welink-cli im send-to-group --group-id "619850427" --text "# Review..."
 - `welink-cli im send-to-user` 是否需要用于私聊回执；当前只回发群组。
 - GitLab token 的权限范围需要在真实环境确认；至少需要 MR API 读取和仓库 HTTPS clone 权限。
 - `opencode run` 的模型配置、鉴权和成本限制由本机 opencode 配置负责，当前项目只做健康检查和调用。
+- Git for Windows Credential Manager 在部分环境会弹出账号密码窗口；当前 clone 命令会禁用 Git credential helper 和 GCM 交互，并通过 askpass 注入 token。
 
 ## 排障
 
 - `healthcheck` 显示 `opencode: missing`：确认 `opencode` 在 PATH 中，或设置 `MR_REVIEWER_OPENCODE_COMMAND`。
 - `GitLab API request failed`：检查 `MR_REVIEWER_GITLAB_BASE_URL`、token 权限和 MR URL 域名是否一致。
 - `git command failed`：检查 token 是否能 clone 目标仓库，以及 MR 的 base/head SHA 是否存在。
+- Git 弹出用户名/密码窗口：确认运行的是包含当前修复的版本；本项目内部 clone 不会调用交互式凭据窗口。如果弹窗仍出现，通常是外部脚本或旧安装版本绕过了 `mr_reviewer.git.GitClient`。
 - `IM poll command failed`：单独运行 `MR_REVIEWER_IM_POLL_COMMAND`，确认 stdout 是合法 JSON。
 - `IM reply command failed`：单独运行 `welink-cli im send-to-group --group-id <id> --text "test"`。
 - 重复处理同一条消息：检查 `MR_REVIEWER_STATE_PATH` 是否可写、是否被删除。

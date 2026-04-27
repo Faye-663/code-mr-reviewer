@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from mr_reviewer.config import Config
+from mr_reviewer.git import GitClient
 from mr_reviewer.gitlab import GitLabMrUrl, choose_diff_refs, parse_gitlab_mr_url
 from mr_reviewer.im import ImMessage, build_welink_reply_args, parse_poll_output, should_trigger_review
 from mr_reviewer.state import StateStore
@@ -189,3 +190,37 @@ def test_state_store_tracks_processed_messages(tmp_path: Path):
     assert reloaded.is_processed("m1")
     assert reloaded.data["lastMessageId"] == "m1"
     assert reloaded.data["processed"]["m1"]["status"] == "success"
+
+
+def test_git_clone_uses_non_interactive_token_auth(tmp_path: Path, monkeypatch):
+    calls = []
+
+    def fake_run(args, cwd, env, text, capture_output, check):
+        calls.append((args, cwd, env))
+
+        class Result:
+            returncode = 0
+            stderr = ""
+            stdout = ""
+
+        if args[-2:] == ["diff", "--name-only"]:
+            Result.stdout = "app.py\n"
+        return Result()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    GitClient().clone_checkout_and_diff(
+        "https://gitlab.example.com/team/project.git",
+        "secret-token",
+        "base",
+        "head",
+        tmp_path,
+        {"max_files": 50, "max_diff_lines": 2000},
+    )
+
+    clone_args, _, clone_env = calls[0]
+    assert clone_args[:5] == ["git", "-c", "credential.helper=", "-c", f"core.askPass={tmp_path / 'git_askpass.cmd'}"]
+    assert clone_env["GIT_TERMINAL_PROMPT"] == "0"
+    assert clone_env["GCM_INTERACTIVE"] == "never"
+    assert clone_env["GIT_ASKPASS"] == str(tmp_path / "git_askpass.cmd")
+    assert "secret-token" not in " ".join(clone_args)

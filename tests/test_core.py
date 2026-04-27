@@ -7,6 +7,7 @@ from mr_reviewer.config import Config
 from mr_reviewer.git import GitClient
 from mr_reviewer.gitlab import GitLabMrUrl, choose_diff_refs, parse_gitlab_mr_url
 from mr_reviewer.im import ImMessage, build_welink_reply_args, parse_poll_output, should_trigger_review
+from mr_reviewer.process import prepare_command
 from mr_reviewer.state import StateStore
 
 
@@ -195,8 +196,8 @@ def test_state_store_tracks_processed_messages(tmp_path: Path):
 def test_git_clone_uses_non_interactive_token_auth(tmp_path: Path, monkeypatch):
     calls = []
 
-    def fake_run(args, cwd, env, text, capture_output, check):
-        calls.append((args, cwd, env))
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
 
         class Result:
             returncode = 0
@@ -218,9 +219,23 @@ def test_git_clone_uses_non_interactive_token_auth(tmp_path: Path, monkeypatch):
         {"max_files": 50, "max_diff_lines": 2000},
     )
 
-    clone_args, _, clone_env = calls[0]
-    assert clone_args[:5] == ["git", "-c", "credential.helper=", "-c", f"core.askPass={tmp_path / 'git_askpass.cmd'}"]
+    clone_args, clone_kwargs = calls[0]
+    clone_env = clone_kwargs["env"]
+    assert clone_args[:3] == ["git", "-c", "credential.helper="]
+    assert clone_kwargs["encoding"] == "utf-8"
+    assert clone_kwargs["errors"] == "replace"
     assert clone_env["GIT_TERMINAL_PROMPT"] == "0"
     assert clone_env["GCM_INTERACTIVE"] == "never"
-    assert clone_env["GIT_ASKPASS"] == str(tmp_path / "git_askpass.cmd")
+    assert clone_env["GIT_CONFIG_KEY_0"] == "http.extraHeader"
+    assert clone_env["GIT_CONFIG_VALUE_0"].startswith("Authorization: Basic ")
     assert "secret-token" not in " ".join(clone_args)
+
+
+def test_prepare_command_wraps_windows_cmd_files(monkeypatch):
+    monkeypatch.setattr("os.name", "nt")
+    monkeypatch.setattr("shutil.which", lambda command: "C:\\Tools\\welink-cli.cmd" if command == "welink-cli" else None)
+
+    prepared = prepare_command(["welink-cli", "im", "send-to-group"])
+
+    assert prepared[:4] == ["cmd.exe", "/d", "/s", "/c"]
+    assert "welink-cli.cmd" in prepared[4]

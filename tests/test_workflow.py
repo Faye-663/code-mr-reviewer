@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from mr_reviewer.config import Config
+from mr_reviewer.cli import _reply
 from mr_reviewer.git import GitClient
 from mr_reviewer.gitlab import GitLabMrUrl
 from mr_reviewer.im import ImMessage
@@ -177,3 +178,61 @@ def test_poll_once_runs_review_and_replies(tmp_path: Path):
     assert reply_args[:2] == ["--group-id", "c1"]
     assert reply_args[2] == "--text"
     assert reply_args[3].startswith("# Review")
+
+
+def test_welink_reply_uses_utf8_and_redacts_text_in_logs(monkeypatch, caplog):
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+
+        class Result:
+            returncode = 0
+            stderr = ""
+
+        return Result()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    config = Config(
+        gitlab_base_url="https://gitlab.example.com",
+        im_reply_command="welink-cli im send-to-group",
+    )
+
+    with caplog.at_level(logging.INFO, logger="mr_reviewer"):
+        _reply(config, "619850427", "# 报告\n内容")
+
+    args, kwargs = calls[0]
+    assert args[-2:] == ["--text", "# 报告\n内容"]
+    assert kwargs["encoding"] == "utf-8"
+    assert kwargs["errors"] == "replace"
+    log_text = "\n".join(record.getMessage() for record in caplog.records)
+    assert "welink-cli im send-to-group --group-id 619850427 --text <text_chars=7>" in log_text
+    assert "# 报告" not in log_text
+
+
+def test_opencode_runner_uses_utf8_and_redacts_prompt_in_logs(monkeypatch, tmp_path: Path, caplog):
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+
+        class Result:
+            returncode = 0
+            stderr = ""
+            stdout = "# Review\n"
+
+        return Result()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    with caplog.at_level(logging.INFO, logger="mr_reviewer"):
+        output = OpenCodeRunner("opencode").run_review("请 review 这段 diff", tmp_path, 60)
+
+    args, kwargs = calls[0]
+    assert args == ["opencode", "run", "请 review 这段 diff"]
+    assert kwargs["encoding"] == "utf-8"
+    assert kwargs["errors"] == "replace"
+    assert output == "# Review"
+    log_text = "\n".join(record.getMessage() for record in caplog.records)
+    assert "opencode run <prompt_chars=16>" in log_text
+    assert "请 review" not in log_text

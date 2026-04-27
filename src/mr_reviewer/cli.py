@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-import shlex
 import shutil
 import subprocess
 import sys
@@ -15,6 +14,7 @@ from mr_reviewer.git import GitClient
 from mr_reviewer.gitlab import GitLabClient, parse_gitlab_mr_url
 from mr_reviewer.im import build_welink_reply_args, parse_poll_output, should_trigger_review
 from mr_reviewer.opencode import OpenCodeRunner
+from mr_reviewer.process import format_command, prepare_command, split_command
 from mr_reviewer.reviewer import ReviewService
 from mr_reviewer.state import StateStore
 
@@ -22,9 +22,18 @@ from mr_reviewer.state import StateStore
 LOG = logging.getLogger("mr_reviewer")
 
 
-def split_command(command: str) -> list[str]:
-    # Windows 路径包含反斜杠，不能使用 POSIX 模式拆分命令。
-    return shlex.split(command, posix=(os.name != "nt"))
+def command_for_log(args: list[str]) -> str:
+    safe_args = []
+    skip_text = False
+    for arg in args:
+        if skip_text:
+            safe_args.append(f"<text_chars={len(arg)}>")
+            skip_text = False
+            continue
+        safe_args.append(arg)
+        if arg == "--text":
+            skip_text = True
+    return format_command(prepare_command(safe_args))
 
 
 def build_service(config: Config) -> ReviewService:
@@ -105,8 +114,9 @@ def poll(config: Config, once: bool) -> int:
 def _poll_messages(config: Config):
     if not config.im_poll_command:
         raise ValueError("IM poll command is required")
-    LOG.info("stage=im_poll command=%s", split_command(config.im_poll_command)[0])
-    result = subprocess.run(split_command(config.im_poll_command), text=True, capture_output=True, check=False)
+    args = split_command(config.im_poll_command)
+    LOG.info("stage=im_poll command=%s", command_for_log(args))
+    result = subprocess.run(prepare_command(args), text=True, encoding="utf-8", errors="replace", capture_output=True, check=False)
     if result.returncode != 0:
         raise RuntimeError(f"IM poll command failed: {result.stderr.strip()}")
     return parse_poll_output(result.stdout)
@@ -115,10 +125,13 @@ def _poll_messages(config: Config):
 def _reply(config: Config, group_id: str, markdown: str) -> None:
     if not config.im_reply_command:
         raise ValueError("IM reply command is required")
-    LOG.info("stage=im_send command=%s group_id=%s text_chars=%s", split_command(config.im_reply_command)[0], group_id, len(markdown))
+    args = build_welink_reply_args(config.im_reply_command, group_id, markdown)
+    LOG.info("stage=im_send command=%s group_id=%s text_chars=%s", command_for_log(args), group_id, len(markdown))
     result = subprocess.run(
-        build_welink_reply_args(config.im_reply_command, group_id, markdown),
+        prepare_command(args),
         text=True,
+        encoding="utf-8",
+        errors="replace",
         capture_output=True,
         check=False,
     )

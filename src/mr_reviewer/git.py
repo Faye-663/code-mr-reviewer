@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import base64
+import logging
 import os
 import subprocess
-import sys
 from pathlib import Path
+
+from mr_reviewer.process import format_command, prepare_command
+
+
+LOG = logging.getLogger("mr_reviewer")
 
 
 class ResourceLimitError(RuntimeError):
@@ -26,16 +32,15 @@ class GitClient:
         env = os.environ.copy()
         git_prefix = ["git"]
         if repo_url.startswith("http") and token:
-            askpass = self._write_askpass(work_dir)
-            # Windows Git Credential Manager 会弹窗；这里对本次命令禁用 helper，并用 askpass 非交互注入 token。
-            git_prefix = ["git", "-c", "credential.helper=", "-c", f"core.askPass={askpass}"]
+            # 禁用 credential helper/GCM 弹窗；token 通过 Git 环境配置传入，避免出现在命令行。
+            git_prefix = ["git", "-c", "credential.helper="]
             env.update(
                 {
-                    "GIT_ASKPASS": str(askpass),
+                    "GIT_CONFIG_COUNT": "1",
+                    "GIT_CONFIG_KEY_0": "http.extraHeader",
+                    "GIT_CONFIG_VALUE_0": f"Authorization: Basic {self._basic_auth_token(token)}",
                     "GIT_TERMINAL_PROMPT": "0",
                     "GCM_INTERACTIVE": "never",
-                    "GIT_USERNAME": "oauth2",
-                    "GIT_PASSWORD": token,
                 }
             )
 
@@ -65,25 +70,25 @@ class GitClient:
         }
 
     def _run(self, args: list[str], cwd: Path, env: dict[str, str]) -> str:
-        result = subprocess.run(args, cwd=cwd, env=env, text=True, capture_output=True, check=False)
+        LOG.info("stage=git command=%s cwd=%s", _format_command(args), cwd)
+        result = subprocess.run(
+            prepare_command(args),
+            cwd=cwd,
+            env=env,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            check=False,
+        )
         if result.returncode != 0:
             raise RuntimeError(f"git command failed: {result.stderr.strip()}")
         return result.stdout
 
-    def _write_askpass(self, work_dir: Path) -> Path:
-        askpass_py = work_dir / "git_askpass.py"
-        askpass_cmd = work_dir / "git_askpass.cmd"
-        askpass_py.write_text(
-            "import os, sys\n"
-            "prompt = ' '.join(sys.argv[1:]).lower()\n"
-            "if 'username' in prompt or 'user name' in prompt:\n"
-            "    print(os.environ.get('GIT_USERNAME', 'oauth2'))\n"
-            "else:\n"
-            "    print(os.environ.get('GIT_PASSWORD', ''))\n",
-            encoding="utf-8",
-        )
-        askpass_cmd.write_text(
-            f'@echo off\r\n"{sys.executable}" "{askpass_py}" "%*"\r\n',
-            encoding="utf-8",
-        )
-        return askpass_cmd
+    def _basic_auth_token(self, token: str) -> str:
+        raw = f"oauth2:{token}".encode("utf-8")
+        return base64.b64encode(raw).decode("ascii")
+
+
+def _format_command(args: list[str]) -> str:
+    return format_command(prepare_command(args))

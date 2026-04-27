@@ -1,0 +1,25 @@
+[project]
+name = "code-mr-reviewer"
+version = "0.1.0"
+description = "IM-driven GitLab MR review assistant powered by opencode."
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+mr-reviewer = "mr_reviewer.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mr_reviewer"]

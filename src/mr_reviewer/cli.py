@@ -3,21 +3,26 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 
 from mr_reviewer.config import Config
 from mr_reviewer.git import GitClient
-from mr_reviewer.gitlab import GitLabClient, parse_gitlab_mr_url
-from mr_reviewer.im import build_welink_reply_args, parse_poll_output, should_trigger_review
+from mr_reviewer.gitlab import GitLabClient, GitLabMrUrl, parse_gitlab_mr_url
+from mr_reviewer.im import (
+    build_welink_reply_args,
+    parse_poll_output,
+    should_trigger_review,
+)
 from mr_reviewer.opencode import OpenCodeRunner
 from mr_reviewer.process import format_command, prepare_command, split_command
 from mr_reviewer.reviewer import ReviewService
 from mr_reviewer.state import StateStore
-
 
 LOG = logging.getLogger("mr_reviewer")
 
@@ -38,7 +43,9 @@ def command_for_log(args: list[str]) -> str:
 
 def build_service(config: Config) -> ReviewService:
     return ReviewService(
-        GitLabClient(config.gitlab_base_url, config.gitlab_token, config.test_gitlab_responses),
+        GitLabClient(
+            config.gitlab_base_url, config.gitlab_token, config.test_gitlab_responses
+        ),
         GitClient(),
         OpenCodeRunner(config.opencode_command, debug=config.opencode_debug),
     )
@@ -69,31 +76,61 @@ def run_once(config: Config, mr_url: str) -> int:
 def poll(config: Config, once: bool) -> int:
     state = StateStore(config.state_path)
     service = build_service(config)
-    LOG.info("poller status=started once=%s interval_seconds=%s state_path=%s", once, config.poll_interval_seconds, config.state_path)
+    LOG.info(
+        "poller status=started once=%s interval_seconds=%s state_path=%s",
+        once,
+        config.poll_interval_seconds,
+        config.state_path,
+    )
 
     while True:
         messages = _poll_messages(config)
         LOG.info("poller status=messages_received count=%s", len(messages))
         for message in messages:
             if state.is_processed(message.message_id):
-                LOG.info("message=%s status=skipped reason=already_processed", message.message_id)
+                LOG.info(
+                    "message=%s status=skipped reason=already_processed",
+                    message.message_id,
+                )
                 continue
 
             request = should_trigger_review(message, config)
             if request is None:
-                LOG.info("message=%s status=skipped reason=not_review_request", message.message_id)
+                LOG.info(
+                    "message=%s status=skipped reason=not_review_request",
+                    message.message_id,
+                )
                 continue
 
             task_id = f"mr-{uuid.uuid4().hex[:12]}"
             start = time.monotonic()
             try:
-                LOG.info("task=%s mr=%s/%s status=started", task_id, request.mr.project_path, request.mr.mr_iid)
+                LOG.info(
+                    "task=%s mr=%s/%s status=started",
+                    task_id,
+                    request.mr.project_path,
+                    request.mr.mr_iid,
+                )
                 report = service.review(request.mr, config, task_id)
-                LOG.info("task=%s stage=im_reply group_id=%s report_chars=%s", task_id, message.chat_id, len(report.markdown))
-                _reply(config, message.chat_id, report.markdown)
+                LOG.info(
+                    "task=%s stage=report_content markdown=%s", task_id, report.markdown
+                )
+                LOG.info(
+                    "task=%s stage=im_reply group_id=%s report_chars=%s",
+                    task_id,
+                    message.chat_id,
+                    len(report.markdown),
+                )
+                _reply(config, message.chat_id, report.markdown, request.mr)
                 elapsed = time.monotonic() - start
                 state.mark_processed(message.message_id, task_id, "success")
-                LOG.info("task=%s mr=%s/%s elapsed=%.2fs status=success", task_id, request.mr.project_path, request.mr.mr_iid, elapsed)
+                LOG.info(
+                    "task=%s mr=%s/%s elapsed=%.2fs status=success",
+                    task_id,
+                    request.mr.project_path,
+                    request.mr.mr_iid,
+                    elapsed,
+                )
             except Exception as exc:  # noqa: BLE001 - 顶层任务必须记录失败并继续轮询。
                 elapsed = time.monotonic() - start
                 state.mark_processed(message.message_id, task_id, "failed", str(exc))
@@ -116,17 +153,6 @@ def _poll_messages(config: Config):
         raise ValueError("IM poll command is required")
     args = split_command(config.im_poll_command)
     LOG.info("stage=im_poll command=%s", command_for_log(args))
-    result = subprocess.run(prepare_command(args), text=True, encoding="utf-8", errors="replace", capture_output=True, check=False)
-    if result.returncode != 0:
-        raise RuntimeError(f"IM poll command failed: {result.stderr.strip()}")
-    return parse_poll_output(result.stdout)
-
-
-def _reply(config: Config, group_id: str, markdown: str) -> None:
-    if not config.im_reply_command:
-        raise ValueError("IM reply command is required")
-    args = build_welink_reply_args(config.im_reply_command, group_id, markdown)
-    LOG.info("stage=im_send command=%s group_id=%s text_chars=%s", command_for_log(args), group_id, len(markdown))
     result = subprocess.run(
         prepare_command(args),
         text=True,
@@ -136,11 +162,73 @@ def _reply(config: Config, group_id: str, markdown: str) -> None:
         check=False,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"IM reply command failed: {result.stderr.strip()}")
+        raise RuntimeError(f"IM poll command failed: {result.stderr.strip()}")
+    return parse_poll_output(result.stdout)
+
+
+def _reply(config: Config, group_id: str, markdown: str, mr: GitLabMrUrl) -> None:
+    if not config.im_reply_command:
+        raise ValueError("IM reply command is required")
+
+    project_name = mr.project_path.split("/")[-1]
+    random_suffix = uuid.uuid4().hex[:6]
+    prefix = f"review-{project_name}-mr-{mr.mr_iid}-{random_suffix}"
+    file_path = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False, encoding="utf-8", prefix=prefix) as f:
+            f.write(markdown)
+            file_path = f.name
+
+        file_name = os.path.basename(file_path)
+        LOG.info("stage=file_upload path=%s chars=%s", file_path, len(markdown))
+        upload_cmd = f'welink-cli onebox file-upload --space-id 16220079 --parent 763 "{file_path}"'
+        upload_result = subprocess.run(
+            upload_cmd,
+            shell=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            check=False,
+        )
+        LOG.info(
+            "stage=file_upload_result returncode=%s stdout=%s stderr=%s",
+            upload_result.returncode,
+            upload_result.stdout.strip(),
+            upload_result.stderr.strip(),
+        )
+        if upload_result.returncode != 0:
+            raise RuntimeError(f"File upload failed: {upload_result.stderr.strip()}")
+
+        notify_text = f"代码审查报告已上传到 WeLink OneBox，群空间Review目录下: {file_name}"
+        LOG.info("stage=im_send group_id=%s text=%s", group_id, notify_text)
+        reply_args = split_command(config.im_reply_command) + ["--group-id", group_id, "--text", notify_text]
+        reply_result = subprocess.run(
+            prepare_command(reply_args),
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            check=False,
+        )
+        LOG.info(
+            "stage=im_send_result returncode=%s stdout=%s stderr=%s",
+            reply_result.returncode,
+            reply_result.stdout.strip(),
+            reply_result.stderr.strip(),
+        )
+        if reply_result.returncode != 0:
+            raise RuntimeError(f"IM reply command failed: {reply_result.stderr.strip()}")
+    finally:
+        if file_path and os.path.exists(file_path):
+            os.remove(file_path)
+            LOG.info("stage=file_cleanup path=%s", file_path)
 
 
 def main(argv: list[str] | None = None) -> int:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
+    )
     parser = argparse.ArgumentParser(prog="mr-reviewer")
     subparsers = parser.add_subparsers(dest="command", required=True)
 

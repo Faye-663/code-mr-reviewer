@@ -8,7 +8,6 @@ from pathlib import Path
 
 from mr_reviewer.process import format_command, prepare_command
 
-
 LOG = logging.getLogger("mr_reviewer")
 
 

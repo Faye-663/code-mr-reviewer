@@ -17,7 +17,7 @@ from mr_reviewer.reviewer import ReviewService
 class FakeGitLabClient:
     def get_merge_request(self, mr: GitLabMrUrl):
         return {
-            "web_url": "https://gitlab.example.com/team/project/-/merge_requests/7",
+            "web_url": "https://gitlab.example.com/team/project/merge_requests/7",
             "title": "Fix auth",
             "source_branch": "feature/auth",
             "target_branch": "main",
@@ -80,7 +80,7 @@ def test_review_service_generates_markdown_and_cleans_workdir(tmp_path: Path):
 
     assert report.markdown.startswith("# Review")
     assert "secret-token" not in opencode.prompts[0][0]
-    assert "mr-review" in opencode.prompts[0][0]
+    assert "code-review" in opencode.prompts[0][0]
     assert "检视范围：feature/auth 到 main 的差异" in opencode.prompts[0][0]
     assert "代码仓在" in opencode.prompts[0][0]
     assert "diff --git" not in opencode.prompts[0][0]
@@ -140,6 +140,16 @@ def test_poll_once_runs_review_and_replies(tmp_path: Path):
     opencode_script = tmp_path / "opencode.py"
     gitlab_file = tmp_path / "gitlab.json"
     repo = tmp_path / "origin"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    welink_cli = bin_dir / "welink-cli.cmd"
+    upload_log = tmp_path / "upload.log"
+    welink_cli.write_text(
+        "@echo off\r\n"
+        f"echo %* > \"{upload_log}\"\r\n"
+        "exit /b 0\r\n",
+        encoding="utf-8",
+    )
 
     subprocess.run(["git", "init", str(repo)], check=True, stdout=subprocess.DEVNULL)
     subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
@@ -156,7 +166,7 @@ def test_poll_once_runs_review_and_replies(tmp_path: Path):
 
     poll_script.write_text(
         "import json\n"
-        "print(json.dumps({'resultCode':'0','respData':{'chatInfo':[{'msgId':1,'groupId':'c1','sender':'u1','content':'@ReviewBot https://gitlab.example.com/team/project/-/merge_requests/7','serverSendTime':'now','at':True,'atAccountList':['bot001']} ]}}))\n",
+        "print(json.dumps({'resultCode':'0','respData':{'chatInfo':[{'msgId':1,'groupId':'c1','sender':'u1','content':'@ReviewBot https://gitlab.example.com/team/project/merge_requests/7','serverSendTime':'now','at':True,'atAccountList':['bot001']} ]}}))\n",
         encoding="utf-8",
     )
     opencode_script.write_text("print('# Review\\n\\nNo high-confidence issues.')\n", encoding="utf-8")
@@ -164,7 +174,7 @@ def test_poll_once_runs_review_and_replies(tmp_path: Path):
         json.dumps(
             {
                 "/api/v4/projects/team%2Fproject/merge_requests/7": {
-                    "web_url": "https://gitlab.example.com/team/project/-/merge_requests/7",
+                    "web_url": "https://gitlab.example.com/team/project/merge_requests/7",
                     "title": "MR",
                     "source_branch": "feature",
                     "target_branch": "main",
@@ -197,6 +207,7 @@ def test_poll_once_runs_review_and_replies(tmp_path: Path):
         "MR_REVIEWER_STATE_PATH": str(tmp_path / "state.json"),
         "MR_REVIEWER_OPENCODE_COMMAND": f"{sys.executable} {opencode_script}",
         "MR_REVIEWER_TEST_GITLAB_RESPONSES": str(gitlab_file),
+        "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
     })
 
     result = subprocess.run(
@@ -211,7 +222,8 @@ def test_poll_once_runs_review_and_replies(tmp_path: Path):
     reply_args = json.loads(reply_file.read_text(encoding="utf-8"))
     assert reply_args[:2] == ["--group-id", "c1"]
     assert reply_args[2] == "--text"
-    assert reply_args[3].startswith("# Review")
+    assert "代码审查报告已上传到 WeLink OneBox" in reply_args[3]
+    assert upload_log.read_text(encoding="utf-8").startswith("onebox file-upload")
 
 
 def test_welink_reply_uses_utf8_and_redacts_text_in_logs(monkeypatch, caplog):
@@ -222,6 +234,7 @@ def test_welink_reply_uses_utf8_and_redacts_text_in_logs(monkeypatch, caplog):
 
         class Result:
             returncode = 0
+            stdout = ""
             stderr = ""
 
         return Result()
@@ -233,14 +246,20 @@ def test_welink_reply_uses_utf8_and_redacts_text_in_logs(monkeypatch, caplog):
     )
 
     with caplog.at_level(logging.INFO, logger="mr_reviewer"):
-        _reply(config, "619850427", "# 报告\n内容")
+        _reply(config, "619850427", "# 报告\n内容", GitLabMrUrl("https://gitlab.example.com", "team/project", 7))
 
-    args, kwargs = calls[0]
-    assert args[-2:] == ["--text", "# 报告\n内容"]
+    upload_args, upload_kwargs = calls[0]
+    assert upload_kwargs["encoding"] == "utf-8"
+    assert upload_kwargs["errors"] == "replace"
+    assert upload_kwargs["shell"] is True
+
+    args, kwargs = calls[1]
+    assert args[-2] == "--text"
+    assert "代码审查报告已上传到 WeLink OneBox" in args[-1]
     assert kwargs["encoding"] == "utf-8"
     assert kwargs["errors"] == "replace"
     log_text = "\n".join(record.getMessage() for record in caplog.records)
-    assert "welink-cli im send-to-group --group-id 619850427 --text <text_chars=7>" in log_text
+    assert "stage=im_send group_id=619850427" in log_text
     assert "# 报告" not in log_text
 
 

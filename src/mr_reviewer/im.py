@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from mr_reviewer.config import Config
 from mr_reviewer.gitlab import GitLabMrUrl, parse_gitlab_mr_url
 
-
 URL_RE = re.compile(r"https?://[^\s<>]+")
 
 

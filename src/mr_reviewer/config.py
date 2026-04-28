@@ -5,7 +5,6 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-
 ENV_PREFIX = "MR_REVIEWER_"
 
 

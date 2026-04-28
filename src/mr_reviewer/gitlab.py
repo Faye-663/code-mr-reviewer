@@ -26,7 +26,7 @@ def parse_gitlab_mr_url(url: str, base_url: str) -> GitLabMrUrl:
     if (parsed.scheme, parsed.netloc.lower()) != (base.scheme, base.netloc.lower()):
         raise ValueError("GitLab host does not match configured base URL")
 
-    marker = "/-/merge_requests/"
+    marker = "/merge_requests/"
     if marker not in parsed.path:
         raise ValueError("URL is not a GitLab merge request URL")
 

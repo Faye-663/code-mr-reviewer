@@ -47,7 +47,7 @@ def test_config_can_disable_opencode_debug(tmp_path: Path, monkeypatch):
 
 def test_parse_gitlab_mr_url_with_nested_project_path():
     parsed = parse_gitlab_mr_url(
-        "https://gitlab.example.com/a/b/c/-/merge_requests/42",
+        "https://gitlab.example.com/a/b/c/merge_requests/42",
         "https://gitlab.example.com",
     )
 
@@ -81,7 +81,7 @@ def test_should_trigger_only_when_mentioned_and_allowed():
         message_id="m1",
         chat_id="group-1",
         sender_id="alice",
-        text="@ReviewBot please review https://gitlab.example.com/team/project/-/merge_requests/7",
+        text="@ReviewBot please review https://gitlab.example.com/team/project/merge_requests/7",
         created_at="2026-04-27T00:00:00Z",
     )
 
@@ -101,7 +101,7 @@ def test_should_trigger_when_welink_at_account_matches():
         message_id="88863928388808372",
         chat_id="619850427",
         sender_id="d00808710",
-        text="@李承阳 https://gitlab.example.com/team/project/-/merge_requests/7",
+        text="@李承阳 https://gitlab.example.com/team/project/merge_requests/7",
         created_at="1777278567776",
         at=True,
         at_account_list=("l00808734",),
@@ -119,7 +119,7 @@ def test_should_not_trigger_without_bot_mention():
         message_id="m1",
         chat_id="group-1",
         sender_id="alice",
-        text="https://gitlab.example.com/team/project/-/merge_requests/7",
+        text="https://gitlab.example.com/team/project/merge_requests/7",
         created_at="2026-04-27T00:00:00Z",
     )
 

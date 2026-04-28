@@ -9,7 +9,6 @@ from mr_reviewer.git import GitCheckout, GitClient
 from mr_reviewer.gitlab import GitLabClient, GitLabMrUrl, choose_diff_refs
 from mr_reviewer.opencode import OpenCodeRunner
 
-
 LOG = logging.getLogger("mr_reviewer")
 
 
@@ -60,7 +59,8 @@ class ReviewService:
                 len(diff_info["diff"].splitlines()),
             )
             prompt = self._build_prompt(mr, mr_data, diff_info)
-            LOG.info("task=%s stage=opencode_review repo=%s timeout_seconds=%s", task_id, mr.project_path, config.task_timeout_seconds)
+            LOG.info("task=%s stage=opencode_review repo=%s timeout_seconds=%s", task_id, mr.project_path,
+                     config.task_timeout_seconds)
             markdown = self.opencode.run_review(prompt, diff_info["repo_path"], config.task_timeout_seconds)
             LOG.info("task=%s stage=report_ready repo=%s report_chars=%s", task_id, mr.project_path, len(markdown))
             return ReviewReport(markdown=markdown)
@@ -73,7 +73,7 @@ class ReviewService:
         # 显式点名 skill，避免依赖模型自动触发。
         return "\n".join(
             [
-                "使用 mr-review skill 检视代码。",
+                "使用 code-review skill 检视代码。",
                 f"检视范围：{mr_data.get('source_branch', '')} 到 {mr_data.get('target_branch', '')} 的差异。",
                 f"代码仓在 {diff_info['repo_path']} 目录。",
                 "",

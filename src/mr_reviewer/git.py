@@ -9,7 +9,6 @@ from pathlib import Path
 
 from mr_reviewer.process import format_command, prepare_command
 
-
 LOG = logging.getLogger("mr_reviewer")
 
 
@@ -29,11 +28,11 @@ class GitCheckout:
 
 class GitClient:
     def clone_checkout_and_diff(
-        self,
-        checkout: GitCheckout,
-        token: str,
-        work_dir: Path,
-        limits: dict[str, int],
+            self,
+            checkout: GitCheckout,
+            token: str,
+            work_dir: Path,
+            limits: dict[str, int],
     ) -> dict:
         repo_path = work_dir / "repo"
         work_dir.mkdir(parents=True, exist_ok=True)
@@ -53,7 +52,8 @@ class GitClient:
                 }
             )
 
-        self._run([*git_prefix, "clone", "--no-checkout", checkout.target_repo_url, str(repo_path)], cwd=work_dir, env=env)
+        self._run([*git_prefix, "clone", "--no-checkout", checkout.target_repo_url, str(repo_path)], cwd=work_dir,
+                  env=env)
         if checkout.source_repo_url != checkout.target_repo_url:
             self._run(["git", "remote", "add", "source", checkout.source_repo_url], cwd=repo_path, env=env)
             source_remote = "source"

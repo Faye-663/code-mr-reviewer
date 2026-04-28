@@ -46,6 +46,7 @@ def parse_poll_output(stdout: str) -> list[ImMessage]:
 
 def _extract_messages(payload: object) -> list[dict]:
     if isinstance(payload, list):
+        # 保留 JSON 数组入口，便于测试和本地模拟，不要求真实 WeLink CLI。
         return payload
     if isinstance(payload, dict):
         if payload.get("resultCode") not in (None, "0", 0):
@@ -58,6 +59,7 @@ def _extract_messages(payload: object) -> list[dict]:
 
 def _normalize_message(raw: dict) -> dict:
     if "msgId" in raw:
+        # WeLink CLI 字段名与内部字段名不同，先归一化后再进入触发判断。
         return {
             "message_id": str(raw.get("msgId")),
             "chat_id": str(raw.get("groupId")),

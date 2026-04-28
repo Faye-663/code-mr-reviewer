@@ -58,6 +58,7 @@ class ReviewService:
                 len(diff_info["changed_files"]),
                 len(diff_info["diff"].splitlines()),
             )
+            # opencode 已在本地 checkout 后的仓库中运行，prompt 只传定位信息，避免把大 diff 塞进模型上下文。
             prompt = self._build_prompt(mr, mr_data, diff_info)
             LOG.info("task=%s stage=opencode_review repo=%s timeout_seconds=%s", task_id, mr.project_path,
                      config.task_timeout_seconds)

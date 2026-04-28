@@ -178,6 +178,7 @@ def _reply(config: Config, markdown: str, mr: GitLabMrUrl) -> None:
     prefix = f"review-{project_name}-mr-{mr.mr_iid}-{random_suffix}"
     file_path = None
     try:
+        # WeLink 群消息不适合承载完整 Markdown，先落临时文件再上传 OneBox。
         with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False, encoding="utf-8", prefix=prefix) as f:
             f.write(markdown)
             file_path = f.name
@@ -203,6 +204,7 @@ def _reply(config: Config, markdown: str, mr: GitLabMrUrl) -> None:
         if upload_result.returncode != 0:
             raise RuntimeError(f"File upload failed: {upload_result.stderr.strip()}")
 
+        # 群里只发送文件名通知，避免日志和 IM 文本中出现完整 review 正文。
         notify_text = f"代码审查报告已上传到 WeLink OneBox，群空间Review目录下: {file_name}"
         LOG.info("stage=im_send group_id=%s text=%s", group_id, notify_text)
         reply_args = split_command(config.im_reply_command) + ["--group-id", group_id, "--text", notify_text]

@@ -55,11 +55,13 @@ class GitClient:
         self._run([*git_prefix, "clone", "--no-checkout", checkout.target_repo_url, str(repo_path)], cwd=work_dir,
                   env=env)
         if checkout.source_repo_url != checkout.target_repo_url:
+            # fork MR 的 source branch 不一定存在于 target repo，必须额外添加 source remote。
             self._run(["git", "remote", "add", "source", checkout.source_repo_url], cwd=repo_path, env=env)
             source_remote = "source"
         else:
             source_remote = "origin"
 
+        # 显式 fetch 两个分支后再 checkout head_sha，保证本地 review 目录拥有完整对比上下文。
         self._run(["git", "fetch", "origin", checkout.target_branch], cwd=repo_path, env=env)
         self._run(["git", "fetch", source_remote, checkout.source_branch], cwd=repo_path, env=env)
         self._run(["git", "checkout", checkout.head_sha], cwd=repo_path, env=env)

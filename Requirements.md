@@ -27,11 +27,11 @@
 flowchart TD
     A[IM群聊] --> B[IM Poller]
     B --> C[确认是MR review请求]
-    C --> D[调用opencode run]
-    D --> E[opencode 调用对应skill]
-    E --> F[本地clone仓库，checkout + diff]
+    C --> D[本地clone仓库，checkout + diff]
+    D --> E[调用opencode run]
+    E --> F[opencode 调用对应skill]
     F --> G[生成Markdown报告]
-    G --> H[IM回复]
+    G --> H[上传报告文件并发送IM通知]
 ```
 
 ------
@@ -89,11 +89,11 @@ git diff <merge-base>...<source-commit>
 
 | 模块     | 技术                |
 | -------- | ------------------- |
-| IM Bot   | Node.js（已有）     |
+| IM Bot   | Python CLI + WeLink CLI |
 | AI Agent | opencode CLI（MVP） |
-| Skill    | mr-review SKILL.md  |
+| Skill    | code-review skill   |
 | Git 操作 | 原生 git CLI        |
-| 存储     | 可选 SQLite（后续） |
+| 存储     | 本地 JSON 状态文件  |
 
 ------
 # 五、关键约束（必须实现）
@@ -122,7 +122,7 @@ MR域名校验
 ## 3. 清理机制
 
 ```bash
-rm -rf /tmp/mr-review/task-xxx
+删除任务临时目录：/tmp/mr-review/task-xxx
 ```
 
 必须在：
@@ -150,12 +150,12 @@ MR链接
 
 # 七、Skill 设计（关键）
 
-## mr-review SKILL.md 要点
+## code-review skill 要点
 
 必须包含：
 
 ```yaml
-name: mr-review
+name: code-review
 description: review merge request for code quality and bugs
 ```
 

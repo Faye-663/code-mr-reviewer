@@ -37,8 +37,9 @@ Copy-Item .env.example .env
 ```env
 MR_REVIEWER_GITLAB_BASE_URL=https://gitlab.example.com
 MR_REVIEWER_GITLAB_TOKEN=your-gitlab-token
-MR_REVIEWER_IM_POLL_COMMAND=welink-cli im query-history-message --group-id 1234567891011 --query-count 20
+MR_REVIEWER_IM_POLL_COMMAND=welink-cli im query-history-message --query-count 20
 MR_REVIEWER_IM_REPLY_COMMAND=welink-cli im send-to-group
+MR_REVIEWER_WELINK_GROUP_ID=1234567891011
 MR_REVIEWER_BOT_MENTION=@Bot
 MR_REVIEWER_BOT_ACCOUNT=l00808734
 ```
@@ -87,8 +88,9 @@ uv run mr-reviewer poll
 
 - `MR_REVIEWER_GITLAB_BASE_URL`：GitLab 根地址，例如 `https://gitlab.example.com`。
 - `MR_REVIEWER_GITLAB_TOKEN`：GitLab token，用于 MR API 和 HTTPS clone。
-- `MR_REVIEWER_IM_POLL_COMMAND`：轮询 WeLink 群历史消息的命令，例如 `welink-cli im query-history-message --group-id 1234567891011 --query-count 20`。
-- `MR_REVIEWER_IM_REPLY_COMMAND`：回发 WeLink 群消息的基础命令，例如 `welink-cli im send-to-group`；程序会追加 `--group-id <groupId> --text <Markdown>`。
+- `MR_REVIEWER_IM_POLL_COMMAND`：轮询 WeLink 群历史消息的基础命令，例如 `welink-cli im query-history-message --query-count 20`；程序会追加 `--group-id <MR_REVIEWER_WELINK_GROUP_ID>`。
+- `MR_REVIEWER_IM_REPLY_COMMAND`：回发 WeLink 群消息的基础命令，例如 `welink-cli im send-to-group`；程序会追加 `--group-id <MR_REVIEWER_WELINK_GROUP_ID> --text <Markdown>`。
+- `MR_REVIEWER_WELINK_GROUP_ID`：当前唯一支持的 WeLink 群 ID，轮询历史消息和发送群通知都会使用这个值。
 - `MR_REVIEWER_BOT_MENTION`：触发用的 bot mention，默认 `@Bot`。
 - `MR_REVIEWER_BOT_ACCOUNT`：WeLink bot 账号 ID；配置后会用 `atAccountList` 精确判断是否 @ 了机器人。
 - `MR_REVIEWER_ALLOWED_GROUPS`、`MR_REVIEWER_ALLOWED_USERS`、`MR_REVIEWER_ALLOWED_REPOS`：逗号分隔白名单；为空表示不限制。
@@ -167,8 +169,8 @@ welink-cli im send-to-group --group-id "619850427" --text "# Review..."
 - Git 弹出用户名/密码窗口：确认运行的是包含当前修复的版本；本项目内部 clone 不会调用交互式凭据窗口。如果弹窗仍出现，通常是外部脚本或旧安装版本绕过了 `mr_reviewer.git.GitClient`。
 - 中文或 emoji 乱码：确认运行的是当前版本；WeLink、Git、opencode 子进程都显式使用 UTF-8 解码，并对非法字节使用替换策略保留日志可读性。
 - opencode `.CMD` 路径带空格时报“不是内部或外部命令”：确认运行的是当前版本；旧版本使用 `cmd /s /c "<整条命令>"`，会触发 Windows `cmd` 引号剥离问题。
-- `IM poll command failed`：单独运行 `MR_REVIEWER_IM_POLL_COMMAND`，确认 stdout 是合法 JSON。
-- `IM reply command failed`：单独运行 `welink-cli im send-to-group --group-id <id> --text "test"`。
+- `IM poll command failed`：单独运行 `MR_REVIEWER_IM_POLL_COMMAND --group-id <MR_REVIEWER_WELINK_GROUP_ID>`，确认 stdout 是合法 JSON。
+- `IM reply command failed`：单独运行 `welink-cli im send-to-group --group-id <MR_REVIEWER_WELINK_GROUP_ID> --text "test"`。
 - 重复处理同一条消息：检查 `MR_REVIEWER_STATE_PATH` 是否可写、是否被删除。
 
 ## 验证命令

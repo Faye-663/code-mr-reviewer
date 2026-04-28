@@ -59,6 +59,7 @@ def healthcheck(config: Config) -> int:
         "gitlab_token": bool(config.gitlab_token),
         "im_poll_command": bool(config.im_poll_command),
         "im_reply_command": bool(config.im_reply_command),
+        "welink_group_id": bool(config.welink_group_id),
     }
     for name, ok in checks.items():
         print(f"{name}: {'ok' if ok else 'missing'}")
@@ -121,7 +122,7 @@ def poll(config: Config, once: bool) -> int:
                     message.chat_id,
                     len(report.markdown),
                 )
-                _reply(config, message.chat_id, report.markdown, request.mr)
+                _reply(config, report.markdown, request.mr)
                 elapsed = time.monotonic() - start
                 state.mark_processed(message.message_id, task_id, "success")
                 LOG.info(
@@ -151,7 +152,8 @@ def poll(config: Config, once: bool) -> int:
 def _poll_messages(config: Config):
     if not config.im_poll_command:
         raise ValueError("IM poll command is required")
-    args = split_command(config.im_poll_command)
+    group_id = _require_welink_group_id(config)
+    args = split_command(config.im_poll_command) + ["--group-id", group_id]
     LOG.info("stage=im_poll command=%s", command_for_log(args))
     result = subprocess.run(
         prepare_command(args),
@@ -166,9 +168,10 @@ def _poll_messages(config: Config):
     return parse_poll_output(result.stdout)
 
 
-def _reply(config: Config, group_id: str, markdown: str, mr: GitLabMrUrl) -> None:
+def _reply(config: Config, markdown: str, mr: GitLabMrUrl) -> None:
     if not config.im_reply_command:
         raise ValueError("IM reply command is required")
+    group_id = _require_welink_group_id(config)
 
     project_name = mr.project_path.split("/")[-1]
     random_suffix = uuid.uuid4().hex[:6]
@@ -223,6 +226,12 @@ def _reply(config: Config, group_id: str, markdown: str, mr: GitLabMrUrl) -> Non
         if file_path and os.path.exists(file_path):
             os.remove(file_path)
             LOG.info("stage=file_cleanup path=%s", file_path)
+
+
+def _require_welink_group_id(config: Config) -> str:
+    if not config.welink_group_id:
+        raise ValueError("WeLink group ID is required")
+    return config.welink_group_id
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -38,6 +38,7 @@ class Config:
     gitlab_token: str = ""
     im_poll_command: str = ""
     im_reply_command: str = ""
+    welink_group_id: str = ""
     bot_mention: str = "@Bot"
     bot_account: str = ""
     allowed_groups: set[str] = field(default_factory=set)
@@ -68,6 +69,7 @@ class Config:
             gitlab_token=get("GITLAB_TOKEN"),
             im_poll_command=get("IM_POLL_COMMAND"),
             im_reply_command=get("IM_REPLY_COMMAND"),
+            welink_group_id=get("WELINK_GROUP_ID"),
             bot_mention=get("BOT_MENTION", "@Bot"),
             bot_account=get("BOT_ACCOUNT"),
             allowed_groups=_split_set(get("ALLOWED_GROUPS")),

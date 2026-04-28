@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from mr_reviewer.config import Config
-from mr_reviewer.cli import _reply
+from mr_reviewer.cli import _poll_messages, _reply, healthcheck
 from mr_reviewer.git import GitClient
 from mr_reviewer.gitlab import GitLabMrUrl
 from mr_reviewer.im import ImMessage
@@ -201,6 +201,7 @@ def test_poll_once_runs_review_and_replies(tmp_path: Path):
         "MR_REVIEWER_GITLAB_TOKEN": "token",
         "MR_REVIEWER_IM_POLL_COMMAND": f"{sys.executable} {poll_script}",
         "MR_REVIEWER_IM_REPLY_COMMAND": f"{sys.executable} {reply_script} {reply_file}",
+        "MR_REVIEWER_WELINK_GROUP_ID": "configured-group",
         "MR_REVIEWER_BOT_MENTION": "@ReviewBot",
         "MR_REVIEWER_BOT_ACCOUNT": "bot001",
         "MR_REVIEWER_WORK_DIR": str(tmp_path / "work"),
@@ -220,7 +221,7 @@ def test_poll_once_runs_review_and_replies(tmp_path: Path):
 
     assert "success" in result.stderr
     reply_args = json.loads(reply_file.read_text(encoding="utf-8"))
-    assert reply_args[:2] == ["--group-id", "c1"]
+    assert reply_args[:2] == ["--group-id", "configured-group"]
     assert reply_args[2] == "--text"
     assert "代码审查报告已上传到 WeLink OneBox" in reply_args[3]
     assert upload_log.read_text(encoding="utf-8").startswith("onebox file-upload")
@@ -243,10 +244,11 @@ def test_welink_reply_uses_utf8_and_redacts_text_in_logs(monkeypatch, caplog):
     config = Config(
         gitlab_base_url="https://gitlab.example.com",
         im_reply_command="welink-cli im send-to-group",
+        welink_group_id="619850427",
     )
 
     with caplog.at_level(logging.INFO, logger="mr_reviewer"):
-        _reply(config, "619850427", "# 报告\n内容", GitLabMrUrl("https://gitlab.example.com", "team/project", 7))
+        _reply(config, "# 报告\n内容", GitLabMrUrl("https://gitlab.example.com", "team/project", 7))
 
     upload_args, upload_kwargs = calls[0]
     assert upload_kwargs["encoding"] == "utf-8"
@@ -254,6 +256,7 @@ def test_welink_reply_uses_utf8_and_redacts_text_in_logs(monkeypatch, caplog):
     assert upload_kwargs["shell"] is True
 
     args, kwargs = calls[1]
+    assert args[-4:-2] == ["--group-id", "619850427"]
     assert args[-2] == "--text"
     assert "代码审查报告已上传到 WeLink OneBox" in args[-1]
     assert kwargs["encoding"] == "utf-8"
@@ -261,6 +264,52 @@ def test_welink_reply_uses_utf8_and_redacts_text_in_logs(monkeypatch, caplog):
     log_text = "\n".join(record.getMessage() for record in caplog.records)
     assert "stage=im_send group_id=619850427" in log_text
     assert "# 报告" not in log_text
+
+
+def test_poll_messages_appends_configured_group_id(monkeypatch):
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+
+        class Result:
+            returncode = 0
+            stdout = "[]"
+            stderr = ""
+
+        return Result()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    config = Config(
+        gitlab_base_url="https://gitlab.example.com",
+        im_poll_command="welink-cli im query-history-message --query-count 20",
+        welink_group_id="619850427",
+    )
+
+    assert _poll_messages(config) == []
+
+    args, kwargs = calls[0]
+    assert args[-2:] == ["--group-id", "619850427"]
+    assert kwargs["encoding"] == "utf-8"
+    assert kwargs["errors"] == "replace"
+
+
+def test_healthcheck_requires_welink_group_id(monkeypatch, capsys):
+    monkeypatch.setattr("shutil.which", lambda command: f"C:/bin/{command}")
+    config = Config(
+        gitlab_base_url="https://gitlab.example.com",
+        gitlab_token="token",
+        im_poll_command="welink-cli im query-history-message --query-count 20",
+        im_reply_command="welink-cli im send-to-group",
+        welink_group_id="619850427",
+    )
+
+    assert healthcheck(config) == 0
+    assert "welink_group_id: ok" in capsys.readouterr().out
+
+    config.welink_group_id = ""
+    assert healthcheck(config) == 1
+    assert "welink_group_id: missing" in capsys.readouterr().out
 
 
 def test_opencode_runner_uses_utf8_and_redacts_prompt_in_logs(monkeypatch, tmp_path: Path, caplog):

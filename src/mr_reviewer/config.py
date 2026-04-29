@@ -44,7 +44,7 @@ class Config:
     allowed_groups: set[str] = field(default_factory=set)
     allowed_users: set[str] = field(default_factory=set)
     allowed_repos: set[str] = field(default_factory=set)
-    work_dir: Path = field(default_factory=lambda: Path(tempfile.gettempdir()) / "mr-review")
+    work_dir: Path = field(default_factory=lambda: Path(tempfile.gettempdir()) / "code-review")
     state_path: Path = Path(".mr-reviewer-state.json")
     opencode_command: str = "opencode"
     opencode_debug: bool = True
@@ -75,7 +75,7 @@ class Config:
             allowed_groups=_split_set(get("ALLOWED_GROUPS")),
             allowed_users=_split_set(get("ALLOWED_USERS")),
             allowed_repos=_split_set(get("ALLOWED_REPOS")),
-            work_dir=Path(get("WORK_DIR", str(Path(tempfile.gettempdir()) / "mr-review"))),
+            work_dir=Path(get("WORK_DIR", str(Path(tempfile.gettempdir()) / "code-review"))),
             state_path=Path(get("STATE_PATH", ".mr-reviewer-state.json")),
             opencode_command=get("OPENCODE_COMMAND", "opencode"),
             opencode_debug=_parse_bool(get("OPENCODE_DEBUG", "true")),

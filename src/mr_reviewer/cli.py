@@ -205,7 +205,7 @@ def _reply(config: Config, markdown: str, mr: GitLabMrUrl) -> None:
             raise RuntimeError(f"File upload failed: {upload_result.stderr.strip()}")
 
         # 群里只发送文件名通知，避免日志和 IM 文本中出现完整 review 正文。
-        notify_text = f"代码审查报告已上传到 WeLink OneBox，群空间Review目录下: {file_name}"
+        notify_text = f"🤖 代码审查报告已上传到 WeLink OneBox，群空间Review目录下: {file_name}"
         LOG.info("stage=im_send group_id=%s text=%s", group_id, notify_text)
         reply_args = split_command(config.im_reply_command) + ["--group-id", group_id, "--text", notify_text]
         reply_result = subprocess.run(

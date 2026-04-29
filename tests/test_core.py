@@ -11,6 +11,29 @@ from mr_reviewer.process import prepare_command
 from mr_reviewer.state import StateStore
 
 
+def test_code_review_skill_targets_gitlab_mr_range():
+    skill = Path(".opencode/skills/code-review/SKILL.md").read_text(encoding="utf-8")
+
+    assert 'description: "Use when reviewing GitLab merge requests' in skill
+    assert "Base SHA" in skill
+    assert "Head SHA" in skill
+    assert "Changed files" in skill
+    assert "git diff <base_sha>...<head_sha>" in skill
+    assert "git diff --staged" not in skill
+    assert "`git diff`" not in skill
+    assert "git log --oneline -5" not in skill
+    assert "HIGH 问题可以谨慎合并" not in skill
+    assert "只有 HIGH 问题" not in skill
+    assert "只有 MEDIUM/LOW 问题" in skill
+    assert "JSDoc" not in skill
+    assert "格式不一致" not in skill
+    assert "src/api/client.ts" not in skill
+    assert "const apiKey" not in skill
+    assert "当可能且合适时" in skill
+    assert "错误做法" in skill
+    assert "正确做法" in skill
+
+
 def test_config_treats_empty_dotenv_values_as_defaults(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("MR_REVIEWER_WORK_DIR", raising=False)
     env_file = tmp_path / ".env"
@@ -22,7 +45,7 @@ def test_config_treats_empty_dotenv_values_as_defaults(tmp_path: Path, monkeypat
 
     config = Config.from_env(env_file)
 
-    assert str(config.work_dir).endswith("mr-review")
+    assert str(config.work_dir).endswith("code-review")
 
 
 def test_config_enables_opencode_debug_by_default(tmp_path: Path, monkeypatch):
@@ -277,8 +300,8 @@ def test_prepare_command_wraps_windows_cmd_files(monkeypatch):
     monkeypatch.setattr("os.name", "nt")
     monkeypatch.setattr("shutil.which", lambda command: "D:\\Program Files\\nodejs\\node_global\\opencode.CMD" if command == "opencode" else None)
 
-    prepared = prepare_command(["opencode", "run", "使用 mr-review skill 检视代码"])
+    prepared = prepare_command(["opencode", "run", "使用 code-review skill 检视代码"])
 
     assert prepared[:4] == ["cmd.exe", "/d", "/c", "call"]
     assert prepared[4] == "D:\\Program Files\\nodejs\\node_global\\opencode.CMD"
-    assert prepared[5:] == ["run", "使用 mr-review skill 检视代码"]
+    assert prepared[5:] == ["run", "使用 code-review skill 检视代码"]

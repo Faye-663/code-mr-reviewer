@@ -122,7 +122,7 @@ MR域名校验
 ## 3. 清理机制
 
 ```bash
-删除任务临时目录：/tmp/mr-review/task-xxx
+删除任务临时目录：/tmp/code-review/task-xxx
 ```
 
 必须在：

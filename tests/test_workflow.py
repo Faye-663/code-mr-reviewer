@@ -341,3 +341,53 @@ def test_opencode_runner_uses_utf8_and_redacts_prompt_in_logs(monkeypatch, tmp_p
     log_text = "\n".join(record.getMessage() for record in caplog.records)
     assert "opencode --print-logs --log-level DEBUG run <prompt_chars=16>" in log_text
     assert "请 review" not in log_text
+
+
+def test_opencode_runner_writes_diagnostics(monkeypatch, tmp_path: Path, caplog):
+    def fake_run(args, **kwargs):
+        class Result:
+            returncode = 0
+            stderr = "debug logs\n"
+            stdout = "# Review\n"
+
+        return Result()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr("shutil.which", lambda command: "C:\\bin\\opencode.exe" if command == "opencode" else None)
+    monkeypatch.setenv("OPENCODE_TEST_FLAG", "enabled")
+    prompt = (
+        "MR: https://gitlab.example.com/team/project/merge_requests/7\n"
+        "Base SHA: base123\n"
+        "Head SHA: head456\n"
+        "Changed files: app.py\n"
+    )
+    diagnostic_root = tmp_path / "diagnostics"
+
+    with caplog.at_level(logging.INFO, logger="mr_reviewer"):
+        output = OpenCodeRunner("opencode", debug=True, diagnostic_dir=diagnostic_root).run_review(
+            prompt,
+            tmp_path,
+            60,
+        )
+
+    assert output == "# Review"
+    diagnostic_path = next(diagnostic_root.iterdir())
+    assert diagnostic_path.joinpath("prompt.md").read_text(encoding="utf-8") == prompt
+    assert diagnostic_path.joinpath("cwd.txt").read_text(encoding="utf-8") == str(tmp_path)
+    command_text = diagnostic_path.joinpath("command.txt").read_text(encoding="utf-8")
+    assert "opencode --print-logs --log-level DEBUG run" in command_text
+    assert "<prompt_chars=" in command_text
+    assert "sha256=" in command_text
+    assert "https://gitlab.example.com" not in command_text
+    env_summary = json.loads(diagnostic_path.joinpath("env-summary.json").read_text(encoding="utf-8"))
+    assert env_summary["debug"] is True
+    assert env_summary["resolved_executable"] == "C:\\bin\\opencode.exe"
+    assert "OPENCODE_TEST_FLAG" in env_summary["related_env_names"]
+    assert diagnostic_path.joinpath("stdout.md").read_text(encoding="utf-8") == "# Review\n"
+    assert diagnostic_path.joinpath("stderr.log").read_text(encoding="utf-8") == "debug logs\n"
+    assert diagnostic_path.joinpath("returncode.txt").read_text(encoding="utf-8") == "0"
+    log_text = "\n".join(record.getMessage() for record in caplog.records)
+    assert "mr_url_present=True" in log_text
+    assert "prompt_sha256=" in log_text
+    assert "diagnostic_path=" in log_text
+    assert "https://gitlab.example.com" not in log_text

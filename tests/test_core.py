@@ -68,6 +68,19 @@ def test_config_can_disable_opencode_debug(tmp_path: Path, monkeypatch):
     assert Config.from_env(env_file).opencode_debug is False
 
 
+def test_config_reads_opencode_diagnostic_dir(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("MR_REVIEWER_OPENCODE_DIAGNOSTIC_DIR", raising=False)
+    diagnostic_dir = tmp_path / "opencode-diag"
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "MR_REVIEWER_GITLAB_BASE_URL=https://gitlab.example.com\n"
+        f"MR_REVIEWER_OPENCODE_DIAGNOSTIC_DIR={diagnostic_dir}\n",
+        encoding="utf-8",
+    )
+
+    assert Config.from_env(env_file).opencode_diagnostic_dir == diagnostic_dir
+
+
 def test_config_reads_welink_group_id(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("MR_REVIEWER_WELINK_GROUP_ID", raising=False)
     env_file = tmp_path / ".env"

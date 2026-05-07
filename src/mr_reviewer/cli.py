@@ -47,7 +47,11 @@ def build_service(config: Config) -> ReviewService:
             config.gitlab_base_url, config.gitlab_token, config.test_gitlab_responses
         ),
         GitClient(),
-        OpenCodeRunner(config.opencode_command, debug=config.opencode_debug),
+        OpenCodeRunner(
+            config.opencode_command,
+            debug=config.opencode_debug,
+            diagnostic_dir=config.opencode_diagnostic_dir,
+        ),
     )
 
 

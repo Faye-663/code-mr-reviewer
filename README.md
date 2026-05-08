@@ -1,6 +1,13 @@
 # code-mr-reviewer
 
-IM 驱动的 GitLab MR Review 助手。MVP 流程是：WeLink CLI 轮询群历史消息，识别 `@Bot + GitLab MR URL`，clone GitLab target 仓库到临时目录，显式拉取 target/source 两个分支，checkout MR head 后在该本地 repo 目录调用 `opencode run` 输出 Markdown review 报告，最后上传 Markdown 报告文件，并通过 WeLink CLI 向群里发送文件名通知。传给 opencode 的 prompt 只描述 review 任务、检视范围和本地代码仓目录，不内嵌完整 git diff。
+IM 驱动的 GitLab MR Review 助手。
+
+流程是：WeLink CLI 轮询群历史消息，识别 `@Bot + GitLab MR URL`，clone GitLab target 仓库到临时目录，显式拉取 target/source 两个分支，checkout MR head 后在该本地 repo 目录调用 `opencode run` 输出 Markdown review 报告，最后上传 Markdown 报告文件，并通过 WeLink CLI 向群里发送文件名通知。
+
+## 项目优势
+
+- 在 Welink 群聊中，通过 `@Bot` 来实现 AI 自动检视，自动输出 CodeReview 报告，并回复群聊。
+- 在本地 clone 完整代码仓，对比 target/source 两个分支，可以读取到更多代码上下文与代码仓的 Skill，提升 Review 质量
 
 ## 当前支持
 
@@ -175,3 +182,7 @@ welink-cli im send-to-group --group-id "619850427" --text "代码审查报告已
 ```powershell
 uv run pytest
 ```
+
+## 如何反馈
+
+联系仓库 Owner

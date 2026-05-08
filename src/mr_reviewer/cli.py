@@ -51,6 +51,7 @@ def build_service(config: Config) -> ReviewService:
             config.opencode_command,
             debug=config.opencode_debug,
             diagnostic_dir=config.opencode_diagnostic_dir,
+            prompt_transport=config.opencode_prompt_transport,
         ),
     )
 

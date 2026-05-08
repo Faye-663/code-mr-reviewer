@@ -97,6 +97,7 @@ uv run mr-reviewer poll
 - `MR_REVIEWER_OPENCODE_COMMAND`：opencode 可执行命令，默认 `opencode`。
 - `MR_REVIEWER_OPENCODE_DEBUG`：是否以 debug 模式调用 opencode，默认 `true`。开启时实际使用 `opencode --print-logs --log-level DEBUG run <prompt>`。
 - `MR_REVIEWER_OPENCODE_DIAGNOSTIC_DIR`：opencode 诊断输出目录；为空时不输出诊断文件。开启后每次调用会写入完整 `prompt.md`、实际 `cwd.txt`、脱敏 `command.txt`、`env-summary.json`、`stdout.md`、`stderr.log` 和 `returncode.txt`。
+- `MR_REVIEWER_OPENCODE_PROMPT_TRANSPORT`：prompt 传输方式，默认 `argument`。设置为 `file` 时会写出 `prompt.md` 并调用 `opencode run --file <prompt.md> "请读取附件 prompt.md，并严格按其中内容执行代码审查。"`，用于验证命令行参数传输和文件附件传输的差异。
 - opencode 的 provider 和 model 当前不由本项目传参控制；本项目只调用 opencode CLI，具体 provider/model 由目标机器上的 opencode 配置、登录状态、环境变量或 opencode 默认规则决定。
 - OneBox 上传的 `space-id=16220079` 和 `parent=763` 当前写在代码中，不由环境变量配置。
 - `MR_REVIEWER_WORK_DIR`：任务临时目录；为空时使用系统临时目录下的 `mr-review`。
@@ -143,7 +144,7 @@ welink-cli im send-to-group --group-id "619850427" --text "代码审查报告已
 - `message`：WeLink 消息 ID。
 - `mr` / `repo` / `mr_iid`：GitLab MR 定位信息。
 - `stage=im_poll`：开始调用 WeLink 历史消息查询。
-- `stage=git` / `stage=im_poll` / `stage=im_send` / `stage=opencode`：会打印实际执行命令；Git token、WeLink 正文和 opencode prompt 会脱敏。opencode 日志会额外记录 `prompt_chars`、`prompt_sha256`、`mr_url_present` 和 `diagnostic_path`。
+- `stage=git` / `stage=im_poll` / `stage=im_send` / `stage=opencode`：会打印实际执行命令；Git token、WeLink 正文和 opencode prompt 会脱敏。opencode 日志会额外记录 `prompt_transport`、`prompt_chars`、`prompt_sha256`、`mr_url_present` 和 `diagnostic_path`。
 - Windows 下如果 `welink-cli` 或 `opencode` 解析到 `.cmd`/`.bat`，程序会通过 `cmd.exe /d /c call "<cmd路径>" ...` 执行，避免 `subprocess` 直接调用批处理文件的兼容性问题。
 - `status=messages_received`：本轮收到的消息数量。
 - `reason=already_processed`：状态文件显示消息已处理。

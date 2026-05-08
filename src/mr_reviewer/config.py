@@ -49,6 +49,7 @@ class Config:
     opencode_command: str = "opencode"
     opencode_debug: bool = True
     opencode_diagnostic_dir: Path | None = None
+    opencode_prompt_transport: str = "argument"
     max_files: int = 50
     max_diff_lines: int = 2000
     task_timeout_seconds: int = 900
@@ -66,6 +67,7 @@ class Config:
 
         test_gitlab_responses = get("TEST_GITLAB_RESPONSES")
         opencode_diagnostic_dir = get("OPENCODE_DIAGNOSTIC_DIR")
+        opencode_prompt_transport = get("OPENCODE_PROMPT_TRANSPORT", "argument").lower()
         return cls(
             gitlab_base_url=get("GITLAB_BASE_URL"),
             gitlab_token=get("GITLAB_TOKEN"),
@@ -82,6 +84,7 @@ class Config:
             opencode_command=get("OPENCODE_COMMAND", "opencode"),
             opencode_debug=_parse_bool(get("OPENCODE_DEBUG", "true")),
             opencode_diagnostic_dir=Path(opencode_diagnostic_dir) if opencode_diagnostic_dir else None,
+            opencode_prompt_transport=opencode_prompt_transport,
             max_files=int(get("MAX_FILES", "50")),
             max_diff_lines=int(get("MAX_DIFF_LINES", "2000")),
             task_timeout_seconds=int(get("TASK_TIMEOUT_SECONDS", "900")),

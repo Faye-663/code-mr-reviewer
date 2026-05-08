@@ -391,3 +391,47 @@ def test_opencode_runner_writes_diagnostics(monkeypatch, tmp_path: Path, caplog)
     assert "prompt_sha256=" in log_text
     assert "diagnostic_path=" in log_text
     assert "https://gitlab.example.com" not in log_text
+
+
+def test_opencode_runner_can_send_prompt_as_file(monkeypatch, tmp_path: Path):
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+
+        class Result:
+            returncode = 0
+            stderr = ""
+            stdout = "# Review\n"
+
+        return Result()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    prompt = (
+        "MR: https://gitlab.example.com/team/project/merge_requests/7\n"
+        "Base SHA: base123\n"
+        "Head SHA: head456\n"
+    )
+    diagnostic_root = tmp_path / "diagnostics"
+
+    output = OpenCodeRunner(
+        "opencode",
+        debug=True,
+        diagnostic_dir=diagnostic_root,
+        prompt_transport="file",
+    ).run_review(prompt, tmp_path, 60)
+
+    args, kwargs = calls[0]
+    assert output == "# Review"
+    assert args[:5] == ["opencode", "--print-logs", "--log-level", "DEBUG", "run"]
+    assert args[5] == "--file"
+    prompt_file = Path(args[6])
+    assert prompt_file.name == "prompt.md"
+    assert prompt_file.read_text(encoding="utf-8") == prompt
+    assert "https://gitlab.example.com" not in args
+    assert "请读取附件 prompt.md" in args[7]
+    assert kwargs["cwd"] == tmp_path
+    command_text = prompt_file.parent.joinpath("command.txt").read_text(encoding="utf-8")
+    assert "--file" in command_text
+    assert "prompt.md" in command_text
+    assert "https://gitlab.example.com" not in command_text

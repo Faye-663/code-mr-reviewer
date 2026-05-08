@@ -72,4 +72,4 @@ class ReviewService:
 
     def _build_prompt(self, mr: GitLabMrUrl, mr_data: dict, diff_info: dict) -> str:
         # 显式点名 skill，避免依赖模型自动触发。
-        return f"使用 code-review skill 检视代码。MR URL: {mr.base_url}/{mr.project_path}/merge_requests/{mr.mr_iid} ，Base SHA: {diff_info['base_sha']} ，Head SHA: {diff_info['head_sha']} ， 检视范围：{mr_data.get('source_branch', '')} 到 {mr_data.get('target_branch', '')} 的差异。代码仓在 {diff_info['repo_path']} 目录。",
+        return f"使用 codehub-mr-review skill 检视代码。MR URL: {mr.base_url}/{mr.project_path}/merge_requests/{mr.mr_iid} ，Base SHA: {diff_info['base_sha']} ，Head SHA: {diff_info['head_sha']} 。代码仓在 {diff_info['repo_path']} 目录。",

@@ -80,12 +80,12 @@ def test_review_service_generates_markdown_and_cleans_workdir(tmp_path: Path):
 
     assert report.markdown.startswith("# Review")
     assert "secret-token" not in opencode.prompts[0][0]
-    assert "code-review" in opencode.prompts[0][0]
-    assert "检视范围：feature/auth 到 main 的差异" in opencode.prompts[0][0]
+    assert isinstance(opencode.prompts[0][0], str)
+    assert "codehub-mr-review" in opencode.prompts[0][0]
+    assert "MR URL: https://gitlab.example.com/team/project/merge_requests/7" in opencode.prompts[0][0]
+    assert "Base SHA: base123" in opencode.prompts[0][0]
+    assert "Head SHA: head456" in opencode.prompts[0][0]
     assert "代码仓在" in opencode.prompts[0][0]
-    assert "git diff base123...head456" in opencode.prompts[0][0]
-    assert "Changed files 是审查入口" in opencode.prompts[0][0]
-    assert "不要使用 git diff --staged、裸 git diff 或 git log -5" in opencode.prompts[0][0]
     assert "diff --git" not in opencode.prompts[0][0]
     assert "Diff:" not in opencode.prompts[0][0]
     checkout, token, work_dir, limits = git.calls[0]
@@ -247,7 +247,7 @@ def test_welink_reply_uses_utf8_and_redacts_text_in_logs(monkeypatch, caplog):
     config = Config(
         gitlab_base_url="https://gitlab.example.com",
         im_reply_command="welink-cli im send-to-group",
-        welink_group_id="619850427",
+        welink_group_id="group-example",
     )
 
     with caplog.at_level(logging.INFO, logger="mr_reviewer"):
@@ -259,13 +259,13 @@ def test_welink_reply_uses_utf8_and_redacts_text_in_logs(monkeypatch, caplog):
     assert upload_kwargs["shell"] is True
 
     args, kwargs = calls[1]
-    assert args[-4:-2] == ["--group-id", "619850427"]
+    assert args[-4:-2] == ["--group-id", "group-example"]
     assert args[-2] == "--text"
     assert "代码审查报告已上传到 WeLink OneBox" in args[-1]
     assert kwargs["encoding"] == "utf-8"
     assert kwargs["errors"] == "replace"
     log_text = "\n".join(record.getMessage() for record in caplog.records)
-    assert "stage=im_send group_id=619850427" in log_text
+    assert "stage=im_send group_id=group-example" in log_text
     assert "# 报告" not in log_text
 
 
@@ -286,13 +286,13 @@ def test_poll_messages_appends_configured_group_id(monkeypatch):
     config = Config(
         gitlab_base_url="https://gitlab.example.com",
         im_poll_command="welink-cli im query-history-message --query-count 20",
-        welink_group_id="619850427",
+        welink_group_id="group-example",
     )
 
     assert _poll_messages(config) == []
 
     args, kwargs = calls[0]
-    assert args[-2:] == ["--group-id", "619850427"]
+    assert args[-2:] == ["--group-id", "group-example"]
     assert kwargs["encoding"] == "utf-8"
     assert kwargs["errors"] == "replace"
 
@@ -304,7 +304,7 @@ def test_healthcheck_requires_welink_group_id(monkeypatch, capsys):
         gitlab_token="token",
         im_poll_command="welink-cli im query-history-message --query-count 20",
         im_reply_command="welink-cli im send-to-group",
-        welink_group_id="619850427",
+        welink_group_id="group-example",
     )
 
     assert healthcheck(config) == 0

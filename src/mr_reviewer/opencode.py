@@ -43,9 +43,9 @@ class OpenCodeRunner:
         cleanup_prompt_file = False
         if self.prompt_transport == "file":
             prompt_file, cleanup_prompt_file = self._write_prompt_transfer_file(prompt, diagnostic_path)
-            args += ["run", "--thinking", "--file", str(prompt_file), PROMPT_FILE_MESSAGE]
+            args += ["run", "--file", str(prompt_file), PROMPT_FILE_MESSAGE]
         else:
-            args += ["run", "--thinking", prompt]
+            args += ["run", prompt]
         LOG.info(
             "stage=opencode command=%s cwd=%s prompt_transport=%s prompt_chars=%s prompt_sha256=%s "
             "mr_url_present=%s diagnostic_path=%s",

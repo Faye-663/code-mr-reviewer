@@ -42,9 +42,9 @@ MR_REVIEWER_GITLAB_BASE_URL=https://gitlab.example.com
 MR_REVIEWER_GITLAB_TOKEN=your-gitlab-token
 MR_REVIEWER_IM_POLL_COMMAND=welink-cli im query-history-message --query-count 20
 MR_REVIEWER_IM_REPLY_COMMAND=welink-cli im send-to-group
-MR_REVIEWER_WELINK_GROUP_ID=1234567891011
+MR_REVIEWER_WELINK_GROUP_ID=group-example
 MR_REVIEWER_BOT_MENTION=@Bot
-MR_REVIEWER_BOT_ACCOUNT=l00808734
+MR_REVIEWER_BOT_ACCOUNT=bot-example
 ```
 
 3. 执行健康检查：
@@ -71,7 +71,7 @@ uv run mr-reviewer run-once https://gitlab.example.com/team/project/merge_reques
 4. fetch source branch。
 5. checkout GitLab MR `diff_refs.head_sha`。
 6. 用 `diff_refs.base_sha...diff_refs.head_sha` 生成 diff。
-7. 在本地 repo 目录下调用 opencode，prompt 形如：`使用 code-review skill 检视代码。检视范围：feature 到 dev 的差异。代码仓在 <repo> 目录。`
+7. 在本地 repo 目录下调用 opencode，prompt 形如：`使用 codehub-mr-review skill 检视代码。MR URL: <mr-url>，Base SHA: <base-sha>，Head SHA: <head-sha>。代码仓在 <repo> 目录。`
 
 5. 单轮验证 WeLink 轮询：
 
@@ -102,8 +102,8 @@ uv run mr-reviewer poll
 - `MR_REVIEWER_OPENCODE_DIAGNOSTIC_DIR`：opencode 诊断输出目录；为空时不输出诊断文件。开启后每次调用会写入完整 `prompt.md`、实际 `cwd.txt`、脱敏 `command.txt`、`env-summary.json`、`stdout.md`、`stderr.log` 和 `returncode.txt`。
 - `MR_REVIEWER_OPENCODE_PROMPT_TRANSPORT`：prompt 传输方式，默认 `argument`。设置为 `file` 时会写出 `prompt.md` 并调用 `opencode run --file <prompt.md> "请读取附件 prompt.md，并严格按其中内容执行代码审查。"`，用于验证命令行参数传输和文件附件传输的差异。
 - opencode 的 provider 和 model 当前不由本项目传参控制；本项目只调用 opencode CLI，具体 provider/model 由目标机器上的 opencode 配置、登录状态、环境变量或 opencode 默认规则决定。
-- OneBox 上传的 `space-id=16220079` 和 `parent=763` 当前写在代码中，不由环境变量配置。
-- `MR_REVIEWER_WORK_DIR`：任务临时目录；为空时使用系统临时目录下的 `mr-review`。
+- OneBox 上传的 `space-id` 和 `parent` 当前写在代码中，不由环境变量配置；公开文档中不展示真实目录标识。
+- `MR_REVIEWER_WORK_DIR`：任务临时目录；为空时使用系统临时目录下的 `code-review`。
 - `MR_REVIEWER_STATE_PATH`：本地状态文件路径，用于记录已处理消息。
 - `MR_REVIEWER_MAX_FILES`：最大变更文件数，默认 `50`。
 - `MR_REVIEWER_MAX_DIFF_LINES`：最大 diff 行数，默认 `2000`。
@@ -118,12 +118,12 @@ WeLink poll 命令 stdout 需要返回 `query-history-message` 的原始 JSON，
     "chatInfo": [
       {
         "at": true,
-        "atAccountList": ["l00808734"],
+        "atAccountList": ["bot-example"],
         "content": "@Bot https://gitlab.example.com/team/project/merge_requests/7",
         "contentType": "TEXT_MSG",
-        "groupId": 619850427,
+        "groupId": "group-example",
         "msgId": 88863928388808372,
-        "sender": "d00808710",
+        "sender": "user-example",
         "serverSendTime": 1777278567776
       }
     ]
@@ -135,8 +135,8 @@ WeLink poll 命令 stdout 需要返回 `query-history-message` 的原始 JSON，
 回发前会先上传 Markdown 报告文件，随后实际发送群通知：
 
 ```powershell
-welink-cli onebox file-upload --space-id 16220079 --parent 763 "<report-file>.md"
-welink-cli im send-to-group --group-id "619850427" --text "代码审查报告已上传到 WeLink OneBox，群空间Review目录下: <report-file>.md"
+welink-cli onebox file-upload --space-id "<space-id>" --parent "<parent-id>" "<report-file>.md"
+welink-cli im send-to-group --group-id "group-example" --text "代码审查报告已上传到 WeLink OneBox，群空间Review目录下: <report-file>.md"
 ```
 
 ## 日志

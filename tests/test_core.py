@@ -98,11 +98,11 @@ def test_config_reads_welink_group_id(tmp_path: Path, monkeypatch):
     env_file = tmp_path / ".env"
     env_file.write_text(
         "MR_REVIEWER_GITLAB_BASE_URL=https://gitlab.example.com\n"
-        "MR_REVIEWER_WELINK_GROUP_ID=619850427\n",
+        "MR_REVIEWER_WELINK_GROUP_ID=group-example\n",
         encoding="utf-8",
     )
 
-    assert Config.from_env(env_file).welink_group_id == "619850427"
+    assert Config.from_env(env_file).welink_group_id == "group-example"
 
 
 def test_parse_gitlab_mr_url_with_nested_project_path():
@@ -155,16 +155,16 @@ def test_should_trigger_only_when_mentioned_and_allowed():
 def test_should_trigger_when_welink_at_account_matches():
     config = Config(
         gitlab_base_url="https://gitlab.example.com",
-        bot_account="l00808734",
+        bot_account="bot-example",
     )
     message = ImMessage(
         message_id="88863928388808372",
-        chat_id="619850427",
-        sender_id="d00808710",
+        chat_id="group-example",
+        sender_id="user-example",
         text="@李承阳 https://gitlab.example.com/team/project/merge_requests/7",
         created_at="1777278567776",
         at=True,
-        at_account_list=("l00808734",),
+        at_account_list=("bot-example",),
     )
 
     request = should_trigger_review(message, config)
@@ -212,14 +212,14 @@ def test_parse_welink_history_response():
                 "chatInfo": [
                     {
                         "at": True,
-                        "atAccountList": ["l00808734"],
+                        "atAccountList": ["bot-example"],
                         "content": "@李承阳 xxx",
                         "contentType": "TEXT_MSG",
-                        "groupId": 619850427,
+                        "groupId": "group-example",
                         "groupType": 0,
                         "msgId": 88863928388808372,
                         "receiver": "",
-                        "sender": "d00808710",
+                        "sender": "user-example",
                         "serverSendTime": 1777278567776,
                     }
                 ],
@@ -237,19 +237,19 @@ def test_parse_welink_history_response():
 
     assert message == ImMessage(
         message_id="88863928388808372",
-        chat_id="619850427",
-        sender_id="d00808710",
+        chat_id="group-example",
+        sender_id="user-example",
         text="@李承阳 xxx",
         created_at="1777278567776",
         at=True,
-        at_account_list=("l00808734",),
+        at_account_list=("bot-example",),
     )
 
 
 def test_build_welink_reply_args_uses_group_id_and_text():
-    args = build_welink_reply_args("welink-cli im send-to-group", "619850427", "# Report")
+    args = build_welink_reply_args("welink-cli im send-to-group", "group-example", "# Report")
 
-    assert args == ["welink-cli", "im", "send-to-group", "--group-id", "619850427", "--text", "# Report"]
+    assert args == ["welink-cli", "im", "send-to-group", "--group-id", "group-example", "--text", "# Report"]
 
 
 def test_choose_diff_refs_prefers_gitlab_diff_refs():
@@ -325,8 +325,8 @@ def test_prepare_command_wraps_windows_cmd_files(monkeypatch):
     monkeypatch.setattr("os.name", "nt")
     monkeypatch.setattr("shutil.which", lambda command: "D:\\Program Files\\nodejs\\node_global\\opencode.CMD" if command == "opencode" else None)
 
-    prepared = prepare_command(["opencode", "run", "使用 code-review skill 检视代码"])
+    prepared = prepare_command(["opencode", "run", "使用 codehub-mr-review skill 检视代码"])
 
     assert prepared[:4] == ["cmd.exe", "/d", "/c", "call"]
     assert prepared[4] == "D:\\Program Files\\nodejs\\node_global\\opencode.CMD"
-    assert prepared[5:] == ["run", "使用 code-review skill 检视代码"]
+    assert prepared[5:] == ["run", "使用 codehub-mr-review skill 检视代码"]

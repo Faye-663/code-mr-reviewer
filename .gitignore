@@ -5,3 +5,5 @@ __pycache__/
 .mr-reviewer-state.json
 .env
 .idea/
+.ruff_cache
+log/

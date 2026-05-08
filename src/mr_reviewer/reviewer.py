@@ -72,22 +72,4 @@ class ReviewService:
 
     def _build_prompt(self, mr: GitLabMrUrl, mr_data: dict, diff_info: dict) -> str:
         # 显式点名 skill，避免依赖模型自动触发。
-        return "\n".join(
-            [
-                "使用 code-review skill 检视代码。",
-                f"检视范围：{mr_data.get('source_branch', '')} 到 {mr_data.get('target_branch', '')} 的差异。",
-                f"代码仓在 {diff_info['repo_path']} 目录。",
-                f"请使用 git diff {diff_info['base_sha']}...{diff_info['head_sha']} 获取 MR 差异。",
-                "Changed files 是审查入口，不是完整上下文；需要自行读取相关源文件、测试和调用关系。",
-                "不要使用 git diff --staged、裸 git diff 或 git log -5 判断范围。",
-                "",
-                "请在本地仓库中自行读取代码和 diff 上下文，进行保守代码检视。",
-                "只输出 Markdown 检视报告，不要提交 MR 评论。",
-                "",
-                f"MR: {mr.base_url}/{mr.project_path}/merge_requests/{mr.mr_iid}",
-                f"Title: {mr_data.get('title', '')}",
-                f"Base SHA: {diff_info['base_sha']}",
-                f"Head SHA: {diff_info['head_sha']}",
-                f"Changed files: {', '.join(diff_info['changed_files'])}",
-            ]
-        )
+        return f"使用 code-review skill 检视代码。MR URL: {mr.base_url}/{mr.project_path}/merge_requests/{mr.mr_iid} ，Base SHA: {diff_info['base_sha']} ，Head SHA: {diff_info['head_sha']} ， 检视范围：{mr_data.get('source_branch', '')} 到 {mr_data.get('target_branch', '')} 的差异。代码仓在 {diff_info['repo_path']} 目录。",

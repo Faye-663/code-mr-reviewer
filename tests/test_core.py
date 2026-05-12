@@ -1,4 +1,5 @@
 import json
+import importlib.util
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,15 @@ from mr_reviewer.gitlab import GitLabMrUrl, choose_diff_refs, parse_gitlab_mr_ur
 from mr_reviewer.im import ImMessage, build_welink_reply_args, parse_poll_output, should_trigger_review
 from mr_reviewer.process import prepare_command
 from mr_reviewer.state import StateStore
+
+
+def _load_gitlab_mr_review_script():
+    path = Path(".opencode/skills/gitlab-mr-review/scripts/review_gitlab_mr.py")
+    spec = importlib.util.spec_from_file_location("gitlab_mr_review_script", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_code_review_skill_targets_gitlab_mr_range():
@@ -32,6 +42,92 @@ def test_code_review_skill_targets_gitlab_mr_range():
     assert "当可能且合适时" in skill
     assert "错误做法" in skill
     assert "正确做法" in skill
+
+
+def test_gitlab_mr_review_skill_package_exists():
+    skill_path = Path(".opencode/skills/gitlab-mr-review/SKILL.md")
+    script_path = Path(".opencode/skills/gitlab-mr-review/scripts/review_gitlab_mr.py")
+
+    skill = skill_path.read_text(encoding="utf-8")
+
+    assert 'name: gitlab-mr-review' in skill
+    assert 'description: "' in skill
+    assert "review_gitlab_mr.py" in skill
+    assert "GITLAB_BASE_URL" in skill
+    assert "GITLAB_TOKEN" in skill
+    assert "code-review skill" in skill
+    assert script_path.exists()
+
+
+def test_readme_documents_optional_opencode_skill_usage():
+    readme = Path("README.md").read_text(encoding="utf-8")
+
+    assert "opencode skill 直接使用" in readme
+    assert "gitlab-mr-review skill" in readme
+    assert "不替代现有 WeLink 自动轮询模式" in readme
+    assert "MR_REVIEW_SUBMIT_COMMENT=false" in readme
+    assert "provider/model" in readme
+
+
+def test_gitlab_mr_review_script_parses_mr_url():
+    script = _load_gitlab_mr_review_script()
+
+    parsed = script.parse_mr_url(
+        "https://gitlab.example.com/team/project/merge_requests/7",
+        "https://gitlab.example.com",
+    )
+
+    assert parsed.project_path == "team/project"
+    assert parsed.mr_iid == 7
+
+
+def test_gitlab_mr_review_script_builds_gitlab_api_paths():
+    script = _load_gitlab_mr_review_script()
+
+    assert script.mr_api_path("team/project", 7) == "/api/v4/projects/team%2Fproject/merge_requests/7"
+    assert script.mr_note_api_path("team/project", 7) == "/api/v4/projects/team%2Fproject/merge_requests/7/notes"
+
+
+def test_gitlab_mr_review_script_builds_scoped_opencode_prompt(tmp_path: Path):
+    script = _load_gitlab_mr_review_script()
+
+    prompt = script.build_review_prompt(
+        mr_url="https://gitlab.example.com/team/project/merge_requests/7",
+        base_sha="base123",
+        head_sha="head456",
+        changed_files=["src/App.java", "src/AppTest.java"],
+        repo_path=tmp_path,
+    )
+
+    assert "code-review skill" in prompt
+    assert "Base SHA: base123" in prompt
+    assert "Head SHA: head456" in prompt
+    assert "Changed files:" in prompt
+    assert "src/App.java" in prompt
+    assert str(tmp_path) in prompt
+    assert "diff --git" not in prompt
+    assert "Diff:" not in prompt
+
+
+def test_gitlab_mr_review_script_redacts_token_from_logs():
+    script = _load_gitlab_mr_review_script()
+
+    text = script.redact("clone failed for secret-token", "secret-token")
+
+    assert "secret-token" not in text
+    assert "<redacted>" in text
+
+
+def test_gitlab_mr_review_script_wraps_windows_cmd_opencode(monkeypatch):
+    script = _load_gitlab_mr_review_script()
+    monkeypatch.setattr(script.os, "name", "nt")
+    monkeypatch.setattr(script.shutil, "which", lambda command: "D:\\Program Files\\nodejs\\opencode.CMD")
+
+    prepared = script.prepare_command(["opencode", "run", "prompt"])
+
+    assert prepared[:4] == ["cmd.exe", "/d", "/c", "call"]
+    assert prepared[4] == "D:\\Program Files\\nodejs\\opencode.CMD"
+    assert prepared[5:] == ["run", "prompt"]
 
 
 def test_config_treats_empty_dotenv_values_as_defaults(tmp_path: Path, monkeypatch):

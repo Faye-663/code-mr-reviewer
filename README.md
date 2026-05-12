@@ -98,6 +98,35 @@ uv run mr-reviewer poll --once
 uv run mr-reviewer poll
 ```
 
+## opencode skill 直接使用
+
+除了现有 WeLink 自动轮询模式，也可以在 opencode 中按需直接使用 `.opencode/skills/gitlab-mr-review`。这个能力不替代现有 WeLink 自动轮询模式；它适合人工触发单个 GitLab MR 检视，并可把 Markdown 报告评论到现有 MR。
+
+推荐在 opencode 中输入：
+
+```text
+使用 gitlab-mr-review skill 检视并评论这个 MR：
+https://gitlab.example.com/team/project/merge_requests/7
+```
+
+该 skill 会调用内置脚本完成 clone/fetch/checkout、调用 `code-review skill` 生成报告，并在默认情况下通过 GitLab API 提交 MR comment。使用前需要配置：
+
+```powershell
+$env:GITLAB_BASE_URL = "https://gitlab.example.com"
+$env:GITLAB_TOKEN = "your-gitlab-token"
+# 可选：只生成本地报告，不提交 MR comment
+$env:MR_REVIEW_SUBMIT_COMMENT = "false"
+# .env 风格等价配置：MR_REVIEW_SUBMIT_COMMENT=false
+```
+
+可选环境变量：
+
+- `OPENCODE_COMMAND`：opencode 可执行命令，默认 `opencode`。
+- `MR_REVIEW_WORK_DIR`：临时 clone 和报告输出目录，默认系统临时目录下的 `gitlab-mr-review`。
+- `MR_REVIEW_SUBMIT_COMMENT`：默认 `true`；设置为 `false` 时只输出本地 Markdown 报告路径。
+
+opencode 的 provider/model 仍由 opencode 自身配置、登录状态和环境变量决定；该 skill 不覆盖模型配置。
+
 ## 配置
 
 复制 `.env.example` 为 `.env`，按需配置：

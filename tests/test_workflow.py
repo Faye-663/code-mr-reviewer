@@ -205,6 +205,8 @@ def test_poll_once_runs_review_and_replies(tmp_path: Path):
         "MR_REVIEWER_IM_POLL_COMMAND": f"{sys.executable} {poll_script}",
         "MR_REVIEWER_IM_REPLY_COMMAND": f"{sys.executable} {reply_script} {reply_file}",
         "MR_REVIEWER_WELINK_GROUP_ID": "configured-group",
+        "MR_REVIEWER_WELINK_ONEBOX_SPACE_ID": "space-example",
+        "MR_REVIEWER_WELINK_ONEBOX_PARENT_ID": "parent-example",
         "MR_REVIEWER_BOT_MENTION": "@ReviewBot",
         "MR_REVIEWER_BOT_ACCOUNT": "bot001",
         "MR_REVIEWER_WORK_DIR": str(tmp_path / "work"),
@@ -227,7 +229,11 @@ def test_poll_once_runs_review_and_replies(tmp_path: Path):
     assert reply_args[:2] == ["--group-id", "configured-group"]
     assert reply_args[2] == "--text"
     assert "代码审查报告已上传到 WeLink OneBox" in reply_args[3]
-    assert upload_log.read_text(encoding="utf-8").startswith("onebox file-upload")
+    upload_text = upload_log.read_text(encoding="utf-8")
+    assert upload_text.startswith("onebox file-upload")
+    assert "--space-id space-example --parent parent-example" in upload_text
+    assert "16220079" not in upload_text
+    assert " 763 " not in upload_text
 
 
 def test_welink_reply_uses_utf8_and_redacts_text_in_logs(monkeypatch, caplog):
@@ -248,15 +254,18 @@ def test_welink_reply_uses_utf8_and_redacts_text_in_logs(monkeypatch, caplog):
         gitlab_base_url="https://gitlab.example.com",
         im_reply_command="welink-cli im send-to-group",
         welink_group_id="group-example",
+        welink_onebox_space_id="space-example",
+        welink_onebox_parent_id="parent-example",
     )
 
     with caplog.at_level(logging.INFO, logger="mr_reviewer"):
         _reply(config, "# 报告\n内容", GitLabMrUrl("https://gitlab.example.com", "team/project", 7))
 
     upload_args, upload_kwargs = calls[0]
+    assert upload_args[:5] == ["welink-cli", "onebox", "file-upload", "--space-id", "space-example"]
+    assert upload_args[5:7] == ["--parent", "parent-example"]
     assert upload_kwargs["encoding"] == "utf-8"
     assert upload_kwargs["errors"] == "replace"
-    assert upload_kwargs["shell"] is True
 
     args, kwargs = calls[1]
     assert args[-4:-2] == ["--group-id", "group-example"]
@@ -267,6 +276,105 @@ def test_welink_reply_uses_utf8_and_redacts_text_in_logs(monkeypatch, caplog):
     log_text = "\n".join(record.getMessage() for record in caplog.records)
     assert "stage=im_send group_id=group-example" in log_text
     assert "# 报告" not in log_text
+
+
+def test_welink_reply_warns_group_when_onebox_upload_fails(monkeypatch, caplog):
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+
+        class Result:
+            stdout = ""
+
+        result = Result()
+        if len(calls) == 1:
+            result.returncode = 1
+            result.stderr = "parent not found"
+        else:
+            result.returncode = 0
+            result.stderr = ""
+        return result
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    config = Config(
+        gitlab_base_url="https://gitlab.example.com",
+        im_reply_command="welink-cli im send-to-group",
+        welink_group_id="group-example",
+        welink_onebox_space_id="space-example",
+        welink_onebox_parent_id="missing-parent",
+    )
+
+    with caplog.at_level(logging.INFO, logger="mr_reviewer"):
+        _reply(config, "# 报告\n内容", GitLabMrUrl("https://gitlab.example.com", "team/project", 7))
+
+    assert len(calls) == 2
+    args, kwargs = calls[1]
+    assert args[-4:-2] == ["--group-id", "group-example"]
+    assert args[-2] == "--text"
+    assert "报告已生成" in args[-1]
+    assert "OneBox 上传失败" in args[-1]
+    assert "space-id/parent" in args[-1]
+    assert "# 报告" not in args[-1]
+    assert kwargs["encoding"] == "utf-8"
+    log_text = "\n".join(record.getMessage() for record in caplog.records)
+    assert "stage=file_upload_result returncode=1" in log_text
+    assert "parent not found" in log_text
+
+
+def test_welink_reply_warns_group_when_onebox_config_missing(monkeypatch):
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+
+        class Result:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return Result()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    config = Config(
+        gitlab_base_url="https://gitlab.example.com",
+        im_reply_command="welink-cli im send-to-group",
+        welink_group_id="group-example",
+    )
+
+    _reply(config, "# 报告\n内容", GitLabMrUrl("https://gitlab.example.com", "team/project", 7))
+
+    assert len(calls) == 1
+    args, _ = calls[0]
+    assert args[-2] == "--text"
+    assert "OneBox 上传失败" in args[-1]
+    assert "space-id/parent" in args[-1]
+
+
+def test_welink_reply_still_fails_when_group_notification_fails(monkeypatch):
+    def fake_run(args, **kwargs):
+        class Result:
+            returncode = 1 if "send-to-group" in args else 0
+            stdout = ""
+            stderr = "send failed"
+
+        return Result()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    config = Config(
+        gitlab_base_url="https://gitlab.example.com",
+        im_reply_command="welink-cli im send-to-group",
+        welink_group_id="group-example",
+        welink_onebox_space_id="space-example",
+        welink_onebox_parent_id="parent-example",
+    )
+
+    try:
+        _reply(config, "# 报告\n内容", GitLabMrUrl("https://gitlab.example.com", "team/project", 7))
+    except RuntimeError as exc:
+        assert "IM reply command failed" in str(exc)
+    else:
+        raise AssertionError("expected IM reply failure")
 
 
 def test_poll_messages_appends_configured_group_id(monkeypatch):
@@ -305,6 +413,8 @@ def test_healthcheck_requires_welink_group_id(monkeypatch, capsys):
         im_poll_command="welink-cli im query-history-message --query-count 20",
         im_reply_command="welink-cli im send-to-group",
         welink_group_id="group-example",
+        welink_onebox_space_id="space-example",
+        welink_onebox_parent_id="parent-example",
     )
 
     assert healthcheck(config) == 0
@@ -313,6 +423,11 @@ def test_healthcheck_requires_welink_group_id(monkeypatch, capsys):
     config.welink_group_id = ""
     assert healthcheck(config) == 1
     assert "welink_group_id: missing" in capsys.readouterr().out
+
+    config.welink_group_id = "group-example"
+    config.welink_onebox_parent_id = ""
+    assert healthcheck(config) == 1
+    assert "welink_onebox_parent_id: missing" in capsys.readouterr().out
 
 
 def test_opencode_runner_uses_utf8_and_redacts_prompt_in_logs(monkeypatch, tmp_path: Path, caplog):

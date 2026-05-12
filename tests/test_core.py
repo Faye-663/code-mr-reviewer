@@ -105,6 +105,23 @@ def test_config_reads_welink_group_id(tmp_path: Path, monkeypatch):
     assert Config.from_env(env_file).welink_group_id == "group-example"
 
 
+def test_config_reads_welink_onebox_target(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("MR_REVIEWER_WELINK_ONEBOX_SPACE_ID", raising=False)
+    monkeypatch.delenv("MR_REVIEWER_WELINK_ONEBOX_PARENT_ID", raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "MR_REVIEWER_GITLAB_BASE_URL=https://gitlab.example.com\n"
+        "MR_REVIEWER_WELINK_ONEBOX_SPACE_ID=space-example\n"
+        "MR_REVIEWER_WELINK_ONEBOX_PARENT_ID=parent-example\n",
+        encoding="utf-8",
+    )
+
+    config = Config.from_env(env_file)
+
+    assert config.welink_onebox_space_id == "space-example"
+    assert config.welink_onebox_parent_id == "parent-example"
+
+
 def test_parse_gitlab_mr_url_with_nested_project_path():
     parsed = parse_gitlab_mr_url(
         "https://gitlab.example.com/a/b/c/merge_requests/42",

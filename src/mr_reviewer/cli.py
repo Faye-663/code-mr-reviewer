@@ -65,6 +65,8 @@ def healthcheck(config: Config) -> int:
         "im_poll_command": bool(config.im_poll_command),
         "im_reply_command": bool(config.im_reply_command),
         "welink_group_id": bool(config.welink_group_id),
+        "welink_onebox_space_id": bool(config.welink_onebox_space_id),
+        "welink_onebox_parent_id": bool(config.welink_onebox_parent_id),
     }
     for name, ok in checks.items():
         print(f"{name}: {'ok' if ok else 'missing'}")
@@ -189,28 +191,16 @@ def _reply(config: Config, markdown: str, mr: GitLabMrUrl) -> None:
             file_path = f.name
 
         file_name = os.path.basename(file_path)
-        LOG.info("stage=file_upload path=%s chars=%s", file_path, len(markdown))
-        upload_cmd = f'welink-cli onebox file-upload --space-id 16220079 --parent 763 "{file_path}"'
-        upload_result = subprocess.run(
-            upload_cmd,
-            shell=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            capture_output=True,
-            check=False,
-        )
-        LOG.info(
-            "stage=file_upload_result returncode=%s stdout=%s stderr=%s",
-            upload_result.returncode,
-            upload_result.stdout.strip(),
-            upload_result.stderr.strip(),
-        )
-        if upload_result.returncode != 0:
-            raise RuntimeError(f"File upload failed: {upload_result.stderr.strip()}")
+        upload_error = _upload_report(config, file_path, markdown)
 
         # 群里只发送文件名通知，避免日志和 IM 文本中出现完整 review 正文。
-        notify_text = f"🤖 代码审查报告已上传到 WeLink OneBox，群空间Review目录下: {file_name}"
+        if upload_error:
+            notify_text = (
+                "代码审查报告已生成，但 OneBox 上传失败，请检查 space-id/parent 是否存在或账号是否有权限。"
+                f"错误: {upload_error}"
+            )
+        else:
+            notify_text = f"代码审查报告已上传到 WeLink OneBox，群空间Review目录下: {file_name}"
         LOG.info("stage=im_send group_id=%s text=%s", group_id, notify_text)
         reply_args = split_command(config.im_reply_command) + ["--group-id", group_id, "--text", notify_text]
         reply_result = subprocess.run(
@@ -233,6 +223,45 @@ def _reply(config: Config, markdown: str, mr: GitLabMrUrl) -> None:
         if file_path and os.path.exists(file_path):
             os.remove(file_path)
             LOG.info("stage=file_cleanup path=%s", file_path)
+
+
+def _upload_report(config: Config, file_path: str, markdown: str) -> str | None:
+    LOG.info("stage=file_upload path=%s chars=%s", file_path, len(markdown))
+    if not config.welink_onebox_space_id or not config.welink_onebox_parent_id:
+        message = "missing OneBox space-id/parent config"
+        LOG.warning("stage=file_upload_result returncode=skipped error=%s", message)
+        return message
+
+    upload_args = [
+        "welink-cli",
+        "onebox",
+        "file-upload",
+        "--space-id",
+        config.welink_onebox_space_id,
+        "--parent",
+        config.welink_onebox_parent_id,
+        file_path,
+    ]
+    LOG.info("stage=file_upload command=%s", command_for_log(upload_args))
+    upload_result = subprocess.run(
+        prepare_command(upload_args),
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        check=False,
+    )
+    LOG.info(
+        "stage=file_upload_result returncode=%s stdout=%s stderr=%s",
+        upload_result.returncode,
+        upload_result.stdout.strip(),
+        upload_result.stderr.strip(),
+    )
+    if upload_result.returncode != 0:
+        error = upload_result.stderr.strip() or upload_result.stdout.strip() or f"returncode={upload_result.returncode}"
+        LOG.warning("stage=file_upload_failed error=%s", error)
+        return error
+    return None
 
 
 def _require_welink_group_id(config: Config) -> str:

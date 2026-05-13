@@ -52,6 +52,12 @@ class Config:
     opencode_debug: bool = True
     opencode_diagnostic_dir: Path | None = None
     opencode_prompt_transport: str = "argument"
+    comment_skill: str = ""
+    webhook_host: str = "127.0.0.1"
+    webhook_port: int = 8080
+    webhook_path: str = "/webhook/gitlab"
+    webhook_secret: str = ""
+    report_dir: Path = Path("log/webhook-reports")
     max_files: int = 50
     max_diff_lines: int = 2000
     task_timeout_seconds: int = 900
@@ -89,6 +95,12 @@ class Config:
             opencode_debug=_parse_bool(get("OPENCODE_DEBUG", "true")),
             opencode_diagnostic_dir=Path(opencode_diagnostic_dir) if opencode_diagnostic_dir else None,
             opencode_prompt_transport=opencode_prompt_transport,
+            comment_skill=get("COMMENT_SKILL"),
+            webhook_host=get("WEBHOOK_HOST", "127.0.0.1"),
+            webhook_port=int(get("WEBHOOK_PORT", "8080")),
+            webhook_path=get("WEBHOOK_PATH", "/webhook/gitlab"),
+            webhook_secret=get("WEBHOOK_SECRET"),
+            report_dir=Path(get("REPORT_DIR", "log/webhook-reports")),
             max_files=int(get("MAX_FILES", "50")),
             max_diff_lines=int(get("MAX_DIFF_LINES", "2000")),
             task_timeout_seconds=int(get("TASK_TIMEOUT_SECONDS", "900")),

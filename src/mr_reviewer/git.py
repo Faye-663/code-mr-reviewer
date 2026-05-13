@@ -22,7 +22,7 @@ class GitCheckout:
     source_repo_url: str
     target_branch: str
     source_branch: str
-    base_sha: str
+    base_sha: str | None
     head_sha: str
 
 
@@ -62,19 +62,43 @@ class GitClient:
             source_remote = "origin"
 
         # 显式 fetch 两个分支后再 checkout head_sha，保证本地 review 目录拥有完整对比上下文。
-        self._run(["git", "fetch", "origin", checkout.target_branch], cwd=repo_path, env=env)
-        self._run(["git", "fetch", source_remote, checkout.source_branch], cwd=repo_path, env=env)
+        self._run(
+            ["git", "fetch", "origin", f"{checkout.target_branch}:refs/remotes/origin/{checkout.target_branch}"],
+            cwd=repo_path,
+            env=env,
+        )
+        self._run(
+            [
+                "git",
+                "fetch",
+                source_remote,
+                f"{checkout.source_branch}:refs/remotes/{source_remote}/{checkout.source_branch}",
+            ],
+            cwd=repo_path,
+            env=env,
+        )
         self._run(["git", "checkout", checkout.head_sha], cwd=repo_path, env=env)
 
+        base_sha = checkout.base_sha
+        if base_sha is None:
+            # Webhook 只提供 head，完整 MR range 需要以 target branch 的 merge-base 为准。
+            base_sha = self._run(
+                ["git", "merge-base", f"refs/remotes/origin/{checkout.target_branch}", checkout.head_sha],
+                cwd=repo_path,
+                env=env,
+            ).strip()
+            if not base_sha:
+                raise RuntimeError("git merge-base did not return a base commit")
+
         changed_files = self._run(
-            ["git", "diff", "--name-only", f"{checkout.base_sha}...{checkout.head_sha}"],
+            ["git", "diff", "--name-only", f"{base_sha}...{checkout.head_sha}"],
             cwd=repo_path,
             env=env,
         ).splitlines()
         if len(changed_files) > limits["max_files"]:
             raise ResourceLimitError(f"changed file count exceeds limit: {len(changed_files)} > {limits['max_files']}")
 
-        diff = self._run(["git", "diff", f"{checkout.base_sha}...{checkout.head_sha}"], cwd=repo_path, env=env)
+        diff = self._run(["git", "diff", f"{base_sha}...{checkout.head_sha}"], cwd=repo_path, env=env)
         line_count = len(diff.splitlines())
         if line_count > limits["max_diff_lines"]:
             raise ResourceLimitError(f"diff line count exceeds limit: {line_count} > {limits['max_diff_lines']}")
@@ -84,7 +108,7 @@ class GitClient:
             "diff": diff,
             "changed_files": changed_files,
             "truncated": False,
-            "base_sha": checkout.base_sha,
+            "base_sha": base_sha,
             "head_sha": checkout.head_sha,
         }
 

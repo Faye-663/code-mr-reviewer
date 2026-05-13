@@ -23,6 +23,7 @@ from mr_reviewer.opencode import OpenCodeRunner
 from mr_reviewer.process import format_command, prepare_command, split_command
 from mr_reviewer.reviewer import ReviewService
 from mr_reviewer.state import StateStore
+from mr_reviewer.webhook import run_webhook_server
 
 LOG = logging.getLogger("mr_reviewer")
 
@@ -70,6 +71,9 @@ def healthcheck(config: Config) -> int:
     }
     for name, ok in checks.items():
         print(f"{name}: {'ok' if ok else 'missing'}")
+    print(f"webhook_endpoint: {config.webhook_host}:{config.webhook_port}{config.webhook_path}")
+    print(f"webhook_secret: {'ok' if config.webhook_secret else 'optional'}")
+    print(f"comment_skill: {'ok' if config.comment_skill else 'missing for webhook'}")
     return 0 if all(checks.values()) else 1
 
 
@@ -285,6 +289,8 @@ def main(argv: list[str] | None = None) -> int:
     poll_parser = subparsers.add_parser("poll")
     poll_parser.add_argument("--once", action="store_true")
 
+    subparsers.add_parser("webhook")
+
     args = parser.parse_args(argv)
     config = Config.from_env()
 
@@ -294,6 +300,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_once(config, args.mr_url)
     if args.command == "poll":
         return poll(config, args.once)
+    if args.command == "webhook":
+        return run_webhook_server(config, build_service(config))
 
     parser.error(f"unknown command: {args.command}")
     return 2

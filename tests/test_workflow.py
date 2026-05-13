@@ -118,6 +118,30 @@ def test_review_service_uses_source_project_repo_for_fork_mr(tmp_path: Path):
     assert checkout.source_repo_url == "https://gitlab.example.com/fork/project.git"
 
 
+def test_review_service_prompt_uses_comment_skill_when_configured(tmp_path: Path):
+    opencode = RecordingOpenCodeRunner()
+    service = ReviewService(FakeGitLabClient(), RecordingGitClient(), opencode)
+
+    service.review(
+        GitLabMrUrl("https://gitlab.example.com", "team/project", 7),
+        Config(
+            gitlab_base_url="https://gitlab.example.com",
+            gitlab_token="secret-token",
+            work_dir=tmp_path,
+            comment_skill="gitlab-mr-comment",
+        ),
+        task_id="task-comment-skill",
+    )
+
+    prompt = opencode.prompts[0][0]
+    assert "gitlab-mr-comment skill" in prompt
+    assert "提交 MR 评论" in prompt
+    assert "MR URL: https://gitlab.example.com/team/project/merge_requests/7" in prompt
+    assert "Base SHA: base123" in prompt
+    assert "Head SHA: head456" in prompt
+    assert "代码仓在" in prompt
+
+
 def test_review_service_logs_major_stages(tmp_path: Path, caplog):
     service = ReviewService(FakeGitLabClient(), RecordingGitClient(), RecordingOpenCodeRunner())
     config = Config(

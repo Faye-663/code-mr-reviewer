@@ -434,6 +434,48 @@ def test_git_clone_uses_non_interactive_token_auth(tmp_path: Path, monkeypatch):
     assert any("checkout head" in command for command in commands)
 
 
+def test_git_clone_computes_merge_base_when_base_sha_missing(tmp_path: Path, monkeypatch):
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+
+        class Result:
+            returncode = 0
+            stderr = ""
+            stdout = ""
+
+        if args[-3:] == ["merge-base", "refs/remotes/origin/main", "head"]:
+            Result.stdout = "base\n"
+        elif args[-3:] == ["diff", "--name-only", "base...head"]:
+            Result.stdout = "app.py\n"
+        elif args[-2:] == ["diff", "base...head"]:
+            Result.stdout = "diff --git a/app.py b/app.py\n"
+        return Result()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    result = GitClient().clone_checkout_and_diff(
+        GitCheckout(
+            target_repo_url="https://gitlab.example.com/team/project.git",
+            source_repo_url="https://gitlab.example.com/team/project.git",
+            target_branch="main",
+            source_branch="feature/auth",
+            base_sha=None,
+            head_sha="head",
+        ),
+        "secret-token",
+        tmp_path,
+        {"max_files": 50, "max_diff_lines": 2000},
+    )
+
+    commands = [" ".join(args) for args, _ in calls]
+    assert any("merge-base refs/remotes/origin/main head" in command for command in commands)
+    assert result["base_sha"] == "base"
+    assert result["head_sha"] == "head"
+    assert result["changed_files"] == ["app.py"]
+
+
 def test_prepare_command_wraps_windows_cmd_files(monkeypatch):
     monkeypatch.setattr("os.name", "nt")
     monkeypatch.setattr("shutil.which", lambda command: "D:\\Program Files\\nodejs\\node_global\\opencode.CMD" if command == "opencode" else None)

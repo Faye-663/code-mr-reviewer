@@ -57,6 +57,12 @@ class Config:
     task_timeout_seconds: int = 900
     poll_interval_seconds: int = 15
     test_gitlab_responses: Path | None = None
+    # webhook server
+    webhook_secret: str = ""
+    webhook_secret_header: str = "X-CodeHub-Token"
+    webhook_host: str = "127.0.0.1"
+    webhook_port: int = 8080
+    webhook_post_comment: bool = True
 
     @classmethod
     def from_env(cls, dotenv_path: Path | None = None) -> "Config":
@@ -94,4 +100,9 @@ class Config:
             task_timeout_seconds=int(get("TASK_TIMEOUT_SECONDS", "900")),
             poll_interval_seconds=int(get("POLL_INTERVAL_SECONDS", "15")),
             test_gitlab_responses=Path(test_gitlab_responses) if test_gitlab_responses else None,
+            webhook_secret=get("WEBHOOK_SECRET"),
+            webhook_secret_header=get("WEBHOOK_SECRET_HEADER", "X-CodeHub-Token"),
+            webhook_host=get("WEBHOOK_HOST", "127.0.0.1"),
+            webhook_port=int(get("WEBHOOK_PORT", "8080")),
+            webhook_post_comment=_parse_bool(get("WEBHOOK_POST_COMMENT", "true")),
         )

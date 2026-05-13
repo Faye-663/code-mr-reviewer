@@ -23,6 +23,7 @@ from mr_reviewer.opencode import OpenCodeRunner
 from mr_reviewer.process import format_command, prepare_command, split_command
 from mr_reviewer.reviewer import ReviewService
 from mr_reviewer.state import StateStore
+from mr_reviewer.webhook import run_webhook_server
 
 LOG = logging.getLogger("mr_reviewer")
 
@@ -285,6 +286,13 @@ def main(argv: list[str] | None = None) -> int:
     poll_parser = subparsers.add_parser("poll")
     poll_parser.add_argument("--once", action="store_true")
 
+    webhook_parser = subparsers.add_parser(
+        "webhook",
+        help="Start webhook server to receive CodeHub Merge Request Hook events",
+    )
+    webhook_parser.add_argument("--host", help="Override bind address")
+    webhook_parser.add_argument("--port", type=int, help="Override bind port")
+
     args = parser.parse_args(argv)
     config = Config.from_env()
 
@@ -294,6 +302,13 @@ def main(argv: list[str] | None = None) -> int:
         return run_once(config, args.mr_url)
     if args.command == "poll":
         return poll(config, args.once)
+
+    if args.command == "webhook":
+        if args.host:
+            config.webhook_host = args.host
+        if args.port:
+            config.webhook_port = args.port
+        return run_webhook_server(config, build_service(config))
 
     parser.error(f"unknown command: {args.command}")
     return 2

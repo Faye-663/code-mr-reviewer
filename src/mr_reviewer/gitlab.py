@@ -71,6 +71,31 @@ class GitLabClient:
             raise ValueError("GitLab project response does not include http_url_to_repo")
         return repo_url
 
+    def post_mr_note(self, mr: GitLabMrUrl, body: str) -> dict:
+        project = urllib.parse.quote(mr.project_path, safe="")
+        return self._post_form(
+            f"/api/v4/projects/{project}/merge_requests/{mr.mr_iid}/notes",
+            {"body": body},
+        )
+
+    def _post_form(self, path: str, fields: dict[str, str]) -> dict:
+        data = urllib.parse.urlencode(fields).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self.base_url}{path}",
+            data=data,
+            method="POST",
+            headers={
+                "PRIVATE-TOKEN": self.token,
+                "Accept": "application/json",
+                "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(f"GitLab API request failed: HTTP {exc.code}") from exc
+
     def _get_json(self, path: str) -> dict:
         if path in self._fixtures:
             return self._fixtures[path]

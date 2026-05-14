@@ -81,10 +81,11 @@ def test_review_service_generates_markdown_and_cleans_workdir(tmp_path: Path):
     assert report.markdown.startswith("# Review")
     assert "secret-token" not in opencode.prompts[0][0]
     assert isinstance(opencode.prompts[0][0], str)
-    assert "codehub-mr-review" in opencode.prompts[0][0]
+    assert "code-review skill" in opencode.prompts[0][0]
     assert "MR URL: https://gitlab.example.com/team/project/merge_requests/7" in opencode.prompts[0][0]
     assert "Base SHA: base123" in opencode.prompts[0][0]
     assert "Head SHA: head456" in opencode.prompts[0][0]
+    assert "Changed files:\n- app.py" in opencode.prompts[0][0]
     assert "代码仓在" in opencode.prompts[0][0]
     assert "diff --git" not in opencode.prompts[0][0]
     assert "Diff:" not in opencode.prompts[0][0]
@@ -135,10 +136,10 @@ def test_review_service_prompt_uses_comment_skill_when_configured(tmp_path: Path
 
     prompt = opencode.prompts[0][0]
     assert "gitlab-mr-comment skill" in prompt
-    assert "提交 MR 评论" in prompt
     assert "MR URL: https://gitlab.example.com/team/project/merge_requests/7" in prompt
     assert "Base SHA: base123" in prompt
     assert "Head SHA: head456" in prompt
+    assert "Changed files:\n- app.py" in prompt
     assert "代码仓在" in prompt
 
 

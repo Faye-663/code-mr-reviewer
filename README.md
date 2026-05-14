@@ -21,7 +21,7 @@ GitLab MR Review 助手。项目支持两种触发入口：
 - `git`，用于 clone 目标 GitLab 仓库、fetch MR 分支和生成 diff。
 - 可访问目标 GitLab 的网络环境，以及具备读取 MR API 和 HTTPS clone 权限的 GitLab Token。
 - `opencode` CLI：必须已安装并可在 PATH 中找到；如果不在 PATH 中，需要通过 `MR_REVIEWER_OPENCODE_COMMAND` 指定可执行命令。
-- `opencode` 安装了 `codehub-mr-review` skill，见 `.opencode` 目录。
+- `opencode` 安装了 `code-review` skill，见 `.opencode` 目录。
 - 使用 WeLink IM poll 时，还需要 `welink-cli` 已安装并完成登录或授权，且当前账号需要能调用 `im query-history-message`、`im send-to-group` 和 `onebox file-upload`。
 
 ## Quick Start
@@ -106,13 +106,13 @@ uv run mr-reviewer poll
 4. fetch source branch。
 5. checkout GitLab MR `diff_refs.head_sha`。
 6. 用 `diff_refs.base_sha...diff_refs.head_sha` 生成 diff。
-7. 在本地 repo 目录下调用 opencode，prompt 形如：`使用 codehub-mr-review skill 检视代码。MR URL: <mr-url>，Base SHA: <base-sha>，Head SHA: <head-sha>。代码仓在 <repo> 目录。`
+7. 在本地 repo 目录下调用 opencode，prompt 形如：`使用 code-review skill 检视 GitLab MR。MR URL: <mr-url>，Base SHA: <base-sha>，Head SHA: <head-sha>。Changed files: <changed-files>。代码仓在 <repo> 目录。`
 
 当前 `run-once` URL 解析以 `/merge_requests/` 为分隔符，示例使用不带 `/-/` 的形式；如果直接粘贴 GitLab Web 页面常见的 `/-/merge_requests/7`，当前版本会把 `-` 解析进项目路径。
 
 ## opencode skill 直接使用
 
-除了现有自动入口，也可以在 opencode 中按需直接使用 `.opencode/skills/gitlab-mr-review`。这个能力适合人工触发单个 GitLab MR 检视，并可把 Markdown 报告评论到现有 MR。
+除了现有自动入口，也可以在 opencode 中按需直接使用 `.opencode/skills/gitlab-mr-review`。这个能力不替代现有 WeLink 自动轮询模式；它适合人工触发单个 GitLab MR 检视，并可把 Markdown 报告评论到现有 MR。
 
 推荐在 opencode 中输入：
 

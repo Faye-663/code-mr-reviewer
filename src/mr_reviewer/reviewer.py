@@ -10,6 +10,7 @@ from mr_reviewer.gitlab import GitLabClient, GitLabMrUrl, choose_diff_refs
 from mr_reviewer.opencode import OpenCodeRunner
 
 LOG = logging.getLogger("mr_reviewer")
+DEFAULT_REVIEW_SKILL = "code-review"
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,7 +95,7 @@ class ReviewService:
                 len(diff_info["diff"].splitlines()),
             )
             # opencode 已在本地 checkout 后的仓库中运行，prompt 只传定位信息，避免把大 diff 塞进模型上下文。
-            prompt = self._build_prompt(target, diff_info, config.comment_skill)
+            prompt = self._build_prompt(target, diff_info, config.comment_skill or DEFAULT_REVIEW_SKILL)
             LOG.info("task=%s stage=opencode_review repo=%s timeout_seconds=%s", task_id, target.project_path,
                      config.task_timeout_seconds)
             markdown = self.opencode.run_review(prompt, diff_info["repo_path"], config.task_timeout_seconds)
@@ -113,18 +114,15 @@ class ReviewService:
             shutil.rmtree(task_dir, ignore_errors=True)
             LOG.info("task=%s stage=cleanup path=%s", task_id, task_dir)
 
-    def _build_prompt(self, target: MergeRequestReviewTarget, diff_info: dict, comment_skill: str) -> str:
-        if comment_skill:
-            changed_files = "\n".join(f"- {path}" for path in diff_info["changed_files"]) or "- <none>"
-            return (
-                f"使用 {comment_skill} skill 检视 GitLab MR，并由该 skill 脚本提交 MR 评论。\n"
-                f"MR URL: {target.mr_url}\n"
-                f"Base SHA: {diff_info['base_sha']}\n"
-                f"Head SHA: {diff_info['head_sha']}\n"
-                "Changed files:\n"
-                f"{changed_files}\n"
-                f"代码仓在 {diff_info['repo_path']} 目录。\n"
-                "只审查 Base SHA 到 Head SHA 的 MR range，不要按本地未提交变更审查。"
-            )
-        # 显式点名 skill，避免依赖模型自动触发。
-        return f"使用 codehub-mr-review skill 检视代码。MR URL: {target.mr_url} ，Base SHA: {diff_info['base_sha']} ，Head SHA: {diff_info['head_sha']} 。代码仓在 {diff_info['repo_path']} 目录。"
+    def _build_prompt(self, target: MergeRequestReviewTarget, diff_info: dict, skill_name: str) -> str:
+        changed_files = "\n".join(f"- {path}" for path in diff_info["changed_files"]) or "- <none>"
+        return (
+            f"使用 {skill_name} skill 检视 GitLab MR。\n"
+            f"MR URL: {target.mr_url}\n"
+            f"Base SHA: {diff_info['base_sha']}\n"
+            f"Head SHA: {diff_info['head_sha']}\n"
+            "Changed files:\n"
+            f"{changed_files}\n"
+            f"代码仓在 {diff_info['repo_path']} 目录。\n"
+            "只审查 Base SHA 到 Head SHA 的 MR range，不要按本地未提交变更审查。"
+        )

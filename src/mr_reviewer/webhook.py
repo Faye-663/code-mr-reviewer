@@ -43,7 +43,13 @@ def parse_gitlab_merge_request_event(payload: dict, config: Config) -> WebhookRe
     attrs = _require_dict(payload, "object_attributes")
     action = str(attrs.get("action") or "")
     update_reason = str(attrs.get("update_reason") or "")
-    if action != "open" and not (action == "update" and update_reason == "source update"):
+    if not (
+        action in {"open", "reopen"}
+        or (
+            action == "update"
+            and update_reason == "source update"
+        )
+    ):
         return None
 
     project = _optional_dict(payload.get("project"))

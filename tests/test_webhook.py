@@ -80,6 +80,19 @@ def test_parse_gitlab_webhook_filters_non_code_update_events():
     ) is not None
 
 
+def test_parse_gitlab_webhook_accepts_reopen_events():
+    config = Config(gitlab_base_url="https://gitlab.example.com")
+
+    event = parse_gitlab_merge_request_event(
+        _merge_request_payload(action="reopen", update_reason=""),
+        config,
+    )
+
+    assert event is not None
+    assert event.action == "reopen"
+    assert event.target.mr_iid == 7
+
+
 def test_webhook_secret_is_optional_but_checked_when_configured(caplog):
     payload = json.dumps(_merge_request_payload()).encode("utf-8")
     accepted = []

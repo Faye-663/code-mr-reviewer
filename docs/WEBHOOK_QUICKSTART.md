@@ -4,7 +4,7 @@
 
 ## 适用场景
 
-- GitLab 在 MR 打开或 source branch 更新时主动回调本机服务。
+- GitLab 在 MR 打开、重新打开或 source branch 更新时主动回调本机服务。
 - 服务收到 webhook 后在后台执行 review，并把本地监视报告写入 `MR_REVIEWER_REPORT_DIR`。
 - MR 评论暂时由 `MR_REVIEWER_COMMENT_SKILL` 指定的 opencode skill 脚本提交；Python 侧负责启动 review、记录成功或失败报告。
 
@@ -98,4 +98,4 @@ Invoke-WebRequest `
 - 返回 `401 WEBHOOK_TOKEN_MISSING`：已配置 `MR_REVIEWER_WEBHOOK_SECRET`，但请求没有 `X-Gitlab-Token` header。
 - 返回 `403 WEBHOOK_TOKEN_INVALID`：GitLab Secret token 和 `MR_REVIEWER_WEBHOOK_SECRET` 不一致。
 - 启动时报 `MR_REVIEWER_COMMENT_SKILL is required for webhook mode`：补齐 `MR_REVIEWER_COMMENT_SKILL`。
-- 返回 `200 skipped`：请求已到达服务，但事件不是可处理的 MR open 或 source update 事件。
+- 返回 `200 skipped`：请求已到达服务，但事件不是可处理的 MR open、reopen 或 source update 事件。

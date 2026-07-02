@@ -104,8 +104,8 @@ uv run mr-reviewer poll
 2. fetch target branch。
 3. 如果 source project 不同，添加 `source` remote。
 4. fetch source branch。
-5. checkout GitLab MR `diff_refs.head_sha`。
-6. 用 `diff_refs.base_sha...diff_refs.head_sha` 生成 diff。
+5. checkout GitLab MR head SHA。
+6. 生成 MR range diff：`run-once` 使用 GitLab MR `diff_refs.base_sha...diff_refs.head_sha`；webhook payload 只提供 head 时，使用 target branch 与 head 的 `merge-base...head`。
 7. 在本地 repo 目录下调用 opencode，prompt 形如：`使用 code-review skill 检视 GitLab MR。MR URL: <mr-url>，Base SHA: <base-sha>，Head SHA: <head-sha>。Changed files: <changed-files>。代码仓在 <repo> 目录。`
 
 当前 `run-once` URL 解析以 `/merge_requests/` 为分隔符，示例使用不带 `/-/` 的形式；如果直接粘贴 GitLab Web 页面常见的 `/-/merge_requests/7`，当前版本会把 `-` 解析进项目路径。

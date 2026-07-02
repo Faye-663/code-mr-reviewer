@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from mr_reviewer.config import Config
-from mr_reviewer.git import GitCheckout, GitClient
+from mr_reviewer.git import GitCheckout, GitClient, ResourceLimitError
 from mr_reviewer.gitlab import GitLabMrUrl, choose_diff_refs, parse_gitlab_mr_url
 from mr_reviewer.im import ImMessage, build_welink_reply_args, parse_poll_output, should_trigger_review
 from mr_reviewer.process import prepare_command
@@ -474,6 +474,74 @@ def test_git_clone_computes_merge_base_when_base_sha_missing(tmp_path: Path, mon
     assert result["base_sha"] == "base"
     assert result["head_sha"] == "head"
     assert result["changed_files"] == ["app.py"]
+
+
+def test_git_clone_rejects_changed_file_count_over_limit(tmp_path: Path, monkeypatch):
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+
+        class Result:
+            returncode = 0
+            stderr = ""
+            stdout = ""
+
+        if args[-3:] == ["diff", "--name-only", "base...head"]:
+            Result.stdout = "a.py\nb.py\nc.py\n"
+        return Result()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    with pytest.raises(ResourceLimitError, match="changed file count exceeds limit: 3 > 2"):
+        GitClient().clone_checkout_and_diff(
+            GitCheckout(
+                target_repo_url="https://gitlab.example.com/team/project.git",
+                source_repo_url="https://gitlab.example.com/team/project.git",
+                target_branch="main",
+                source_branch="feature/auth",
+                base_sha="base",
+                head_sha="head",
+            ),
+            "secret-token",
+            tmp_path,
+            {"max_files": 2, "max_diff_lines": 2000},
+        )
+
+    commands = [" ".join(args) for args, _ in calls]
+    assert any("diff --name-only base...head" in command for command in commands)
+    assert not any(command.endswith("diff base...head") for command in commands)
+
+
+def test_git_clone_rejects_diff_line_count_over_limit(tmp_path: Path, monkeypatch):
+    def fake_run(args, **kwargs):
+        class Result:
+            returncode = 0
+            stderr = ""
+            stdout = ""
+
+        if args[-3:] == ["diff", "--name-only", "base...head"]:
+            Result.stdout = "app.py\n"
+        elif args[-2:] == ["diff", "base...head"]:
+            Result.stdout = "line1\nline2\nline3\n"
+        return Result()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    with pytest.raises(ResourceLimitError, match="diff line count exceeds limit: 3 > 2"):
+        GitClient().clone_checkout_and_diff(
+            GitCheckout(
+                target_repo_url="https://gitlab.example.com/team/project.git",
+                source_repo_url="https://gitlab.example.com/team/project.git",
+                target_branch="main",
+                source_branch="feature/auth",
+                base_sha="base",
+                head_sha="head",
+            ),
+            "secret-token",
+            tmp_path,
+            {"max_files": 50, "max_diff_lines": 2},
+        )
 
 
 def test_prepare_command_wraps_windows_cmd_files(monkeypatch):

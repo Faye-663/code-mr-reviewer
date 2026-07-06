@@ -7,7 +7,7 @@ import queue
 import re
 import threading
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -15,6 +15,7 @@ from typing import Callable
 from urllib.parse import urlparse
 
 from mr_reviewer.config import Config
+from mr_reviewer.gitlab import GitLabClient
 from mr_reviewer.reviewer import MergeRequestReviewTarget, ReviewReport, ReviewService
 
 LOG = logging.getLogger("mr_reviewer")
@@ -50,6 +51,8 @@ def parse_gitlab_merge_request_event(payload: dict, config: Config) -> WebhookRe
             and update_reason == "source update"
         )
     ):
+        return None
+    if attrs.get("conflict") is True:
         return None
 
     project = _optional_dict(payload.get("project"))
@@ -122,7 +125,7 @@ def handle_webhook_request(
     if method.upper() != "POST":
         return _json_response(405, "METHOD_NOT_ALLOWED", "webhook only accepts POST")
 
-    token_status = _check_webhook_token(headers, config.webhook_secret)
+    token_status = _check_webhook_token(headers, config.webhook_secret, config.webhook_secret_header)
     if token_status is not None:
         return token_status
     if not config.webhook_secret:
@@ -141,8 +144,6 @@ def handle_webhook_request(
         return _json_response(400, "INVALID_WEBHOOK", str(exc))
     if event is None:
         return WebhookResponse(200, {"status": "skipped"})
-    if not config.comment_skill:
-        return _json_response(500, "COMMENT_SKILL_REQUIRED", "MR_REVIEWER_COMMENT_SKILL is required for webhook mode")
 
     enqueue(event)
     return WebhookResponse(
@@ -157,8 +158,9 @@ def handle_webhook_request(
 
 
 class WebhookReviewQueue:
-    def __init__(self, service: ReviewService, config: Config):
+    def __init__(self, service: ReviewService, gitlab: GitLabClient, config: Config):
         self.service = service
+        self.gitlab = gitlab
         self.config = config
         self._queue: queue.Queue[WebhookReviewEvent] = queue.Queue()
         self._thread = threading.Thread(target=self._run, name="mr-reviewer-webhook-worker", daemon=True)
@@ -181,6 +183,7 @@ class WebhookReviewQueue:
                     event.target.mr_iid,
                 )
                 report = self.service.review_target(event.target, self.config, task_id)
+                report = self._submit_comment(event, report)
                 path = write_webhook_monitor_report(event, report, self.config, task_id, "success")
                 LOG.info("task=%s stage=webhook_report path=%s status=success", task_id, path)
             except Exception as exc:  # noqa: BLE001 - webhook 后台任务必须记录失败并继续处理队列。
@@ -189,7 +192,7 @@ class WebhookReviewQueue:
                     markdown="",
                     head_sha=event.target.head_sha,
                     changed_files=[],
-                    submission_owner="skill",
+                    submission_owner="python",
                     submission_status="failed",
                 )
                 try:
@@ -203,12 +206,17 @@ class WebhookReviewQueue:
             finally:
                 self._queue.task_done()
 
+    def _submit_comment(self, event: WebhookReviewEvent, report: ReviewReport) -> ReviewReport:
+        if not self.config.webhook_post_comment:
+            return replace(report, submission_owner="python", submission_status="disabled")
+
+        self.gitlab.post_mr_note(event.target, report.markdown)
+        return replace(report, submission_owner="python", submission_status="posted")
+
 
 def run_webhook_server(config: Config, service: ReviewService) -> int:
-    if not config.comment_skill:
-        raise ValueError("MR_REVIEWER_COMMENT_SKILL is required for webhook mode")
-
-    worker = WebhookReviewQueue(service, config)
+    gitlab = GitLabClient(config.gitlab_base_url, config.gitlab_token, config.test_gitlab_responses)
+    worker = WebhookReviewQueue(service, gitlab, config)
     worker.start()
     handler = make_webhook_handler(config, worker.enqueue)
     server = ThreadingHTTPServer((config.webhook_host, config.webhook_port), handler)
@@ -299,15 +307,15 @@ def make_webhook_handler(config: Config, enqueue: Callable[[WebhookReviewEvent],
     return GitLabWebhookHandler
 
 
-def _check_webhook_token(headers: dict[str, str], expected: str) -> WebhookResponse | None:
+def _check_webhook_token(headers: dict[str, str], expected: str, header_name: str) -> WebhookResponse | None:
     if not expected:
         return None
     normalized = {key.lower(): value for key, value in headers.items()}
-    actual = normalized.get("x-gitlab-token")
+    actual = normalized.get(header_name.lower())
     if actual is None:
-        return _json_response(401, "WEBHOOK_TOKEN_MISSING", "X-Gitlab-Token header is required")
+        return _json_response(401, "WEBHOOK_TOKEN_MISSING", f"{header_name} header is required")
     if actual != expected:
-        return _json_response(403, "WEBHOOK_TOKEN_INVALID", "X-Gitlab-Token header is invalid")
+        return _json_response(403, "WEBHOOK_TOKEN_INVALID", f"{header_name} header is invalid")
     return None
 
 

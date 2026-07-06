@@ -73,7 +73,7 @@ def healthcheck(config: Config) -> int:
         print(f"{name}: {'ok' if ok else 'missing'}")
     print(f"webhook_endpoint: {config.webhook_host}:{config.webhook_port}{config.webhook_path}")
     print(f"webhook_secret: {'ok' if config.webhook_secret else 'optional'}")
-    print(f"comment_skill: {'ok' if config.comment_skill else 'missing for webhook'}")
+    print(f"webhook_post_comment: {'enabled' if config.webhook_post_comment else 'disabled'}")
     return 0 if all(checks.values()) else 1
 
 

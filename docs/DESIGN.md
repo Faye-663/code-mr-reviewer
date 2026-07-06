@@ -15,7 +15,8 @@ flowchart TD
     G --> H["OpenCodeRunner: 在 repo 目录运行 opencode"]
     H --> I["Markdown review 报告"]
     I --> J["IM 入口: 上传 OneBox 并通知群聊"]
-    I --> K["webhook 入口: 写入本地监视报告"]
+    I --> K["webhook 入口: Python 提交 MR Comment"]
+    K --> L["写入本地监视报告"]
 ```
 
 ## WeLink IM poll 流程
@@ -41,21 +42,25 @@ flowchart TD
 flowchart TD
     A["GitLab Merge Request Hook"] --> B["webhook: path / method / secret 校验"]
     B --> C["parse_gitlab_merge_request_event"]
-    C --> D{"是否 open 或 source update"}
+    C --> D{"是否 open / reopen / source update 且无冲突"}
     D -- "否" --> E["返回 skipped"]
     D -- "是" --> F["WebhookReviewQueue.enqueue"]
     F --> G["ReviewService.review_target"]
     G --> H["clone / fetch / checkout / diff"]
     H --> I["OpenCodeRunner: 调用 opencode"]
-    I --> J["write_webhook_monitor_report"]
+    I --> J{"MR_REVIEWER_WEBHOOK_POST_COMMENT"}
+    J -- "true" --> K["GitLabClient.post_mr_note"]
+    J -- "false" --> L["跳过评论提交"]
+    K --> M["write_webhook_monitor_report"]
+    L --> M
 ```
 
 ## 模块边界
 
 - `cli.py`：命令入口、轮询循环、WeLink 上传与通知编排。
-- `webhook.py`：GitLab webhook HTTP handler、secret 校验、payload 解析、后台队列和本地监视报告。
+- `webhook.py`：GitLab webhook HTTP handler、secret 校验、payload 解析、后台队列、Python comment 提交编排和本地监视报告。
 - `im.py`：WeLink 历史消息解析、字段归一化、触发条件判断。
-- `gitlab.py`：GitLab MR URL 解析、MR 元数据与项目 clone URL 查询。
+- `gitlab.py`：GitLab MR URL 解析、MR 元数据、项目 clone URL 查询与 MR Comment 提交。
 - `git.py`：临时 clone、fork remote 处理、分支 fetch、checkout、diff 与资源限制。
 - `reviewer.py`：共用 review core，串联 GitLab、Git 和 opencode。
 - `opencode.py`：opencode CLI 调用、debug 参数、prompt 日志脱敏。

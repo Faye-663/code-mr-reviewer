@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from mr_reviewer.config import Config
 from mr_reviewer.cli import _poll_messages, _reply, healthcheck
 from mr_reviewer.git import GitClient
@@ -575,3 +577,8 @@ def test_opencode_runner_can_send_prompt_as_file(monkeypatch, tmp_path: Path):
     assert "--file" in command_text
     assert "prompt.md" in command_text
     assert "https://gitlab.example.com" not in command_text
+
+
+def test_opencode_runner_rejects_unknown_prompt_transport():
+    with pytest.raises(ValueError, match="unsupported opencode prompt transport: clipboard"):
+        OpenCodeRunner("opencode", prompt_transport="clipboard")

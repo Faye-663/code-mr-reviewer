@@ -1,12 +1,13 @@
 import json
 import importlib.util
+import urllib.parse
 from pathlib import Path
 
 import pytest
 
 from mr_reviewer.config import Config
 from mr_reviewer.git import GitCheckout, GitClient, ResourceLimitError
-from mr_reviewer.gitlab import GitLabMrUrl, choose_diff_refs, parse_gitlab_mr_url
+from mr_reviewer.gitlab import GitLabClient, GitLabMrUrl, choose_diff_refs, parse_gitlab_mr_url
 from mr_reviewer.im import ImMessage, build_welink_reply_args, parse_poll_output, should_trigger_review
 from mr_reviewer.process import prepare_command
 from mr_reviewer.state import StateStore
@@ -187,6 +188,23 @@ def test_config_reads_opencode_prompt_transport(tmp_path: Path, monkeypatch):
     )
 
     assert Config.from_env(env_file).opencode_prompt_transport == "file"
+
+
+def test_config_reads_webhook_comment_and_secret_header(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("MR_REVIEWER_WEBHOOK_POST_COMMENT", raising=False)
+    monkeypatch.delenv("MR_REVIEWER_WEBHOOK_SECRET_HEADER", raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "MR_REVIEWER_GITLAB_BASE_URL=https://gitlab.example.com\n"
+        "MR_REVIEWER_WEBHOOK_POST_COMMENT=false\n"
+        "MR_REVIEWER_WEBHOOK_SECRET_HEADER=X-CodeHub-Token\n",
+        encoding="utf-8",
+    )
+
+    config = Config.from_env(env_file)
+
+    assert config.webhook_post_comment is False
+    assert config.webhook_secret_header == "X-CodeHub-Token"
 
 
 def test_config_reads_welink_group_id(tmp_path: Path, monkeypatch):
@@ -372,6 +390,41 @@ def test_choose_diff_refs_prefers_gitlab_diff_refs():
     }
 
     assert choose_diff_refs(mr) == ("base", "head")
+
+
+def test_gitlab_client_posts_mr_note(monkeypatch):
+    requests = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b'{"id": 123}'
+
+    def fake_urlopen(request, timeout):
+        requests.append((request, timeout))
+        return Response()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    client = GitLabClient("https://gitlab.example.com", "secret-token")
+    result = client.post_mr_note(
+        GitLabMrUrl("https://gitlab.example.com", "team/project", 7),
+        "# Review\n\nLooks good.",
+    )
+
+    request, timeout = requests[0]
+    assert result == {"id": 123}
+    assert timeout == 30
+    assert request.full_url == "https://gitlab.example.com/api/v4/projects/team%2Fproject/merge_requests/7/notes"
+    assert request.get_method() == "POST"
+    assert request.headers["Private-token"] == "secret-token"
+    assert request.headers["Content-type"] == "application/x-www-form-urlencoded; charset=utf-8"
+    assert urllib.parse.parse_qs(request.data.decode("utf-8")) == {"body": ["# Review\n\nLooks good."]}
 
 
 def test_state_store_tracks_processed_messages(tmp_path: Path):

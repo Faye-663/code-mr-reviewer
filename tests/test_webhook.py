@@ -10,6 +10,7 @@ from mr_reviewer.config import Config
 from mr_reviewer.reviewer import ReviewReport
 from mr_reviewer.webhook import (
     WebhookReviewEvent,
+    WebhookReviewQueue,
     handle_webhook_request,
     make_webhook_handler,
     parse_gitlab_merge_request_event,
@@ -93,6 +94,18 @@ def test_parse_gitlab_webhook_accepts_reopen_events():
     assert event.target.mr_iid == 7
 
 
+def test_parse_gitlab_webhook_skips_conflicted_merge_requests():
+    payload = _merge_request_payload(action="open", update_reason="")
+    payload["object_attributes"]["conflict"] = True
+
+    event = parse_gitlab_merge_request_event(
+        payload,
+        Config(gitlab_base_url="https://gitlab.example.com"),
+    )
+
+    assert event is None
+
+
 def test_webhook_secret_is_optional_but_checked_when_configured(caplog):
     payload = json.dumps(_merge_request_payload()).encode("utf-8")
     accepted = []
@@ -137,8 +150,9 @@ def test_webhook_secret_is_optional_but_checked_when_configured(caplog):
     ).status == 403
 
 
-def test_webhook_requires_comment_skill_for_accepted_events():
+def test_webhook_accepts_events_without_comment_skill():
     payload = json.dumps(_merge_request_payload()).encode("utf-8")
+    accepted = []
     config = Config(gitlab_base_url="https://gitlab.example.com")
 
     response = handle_webhook_request(
@@ -147,11 +161,42 @@ def test_webhook_requires_comment_skill_for_accepted_events():
         {},
         payload,
         config,
-        lambda event: None,
+        accepted.append,
     )
 
-    assert response.status == 500
-    assert response.body["error"]["code"] == "COMMENT_SKILL_REQUIRED"
+    assert response.status == 202
+    assert accepted[0].target.project_path == "team/project"
+
+
+def test_webhook_secret_uses_configured_header():
+    payload = json.dumps(_merge_request_payload()).encode("utf-8")
+    accepted = []
+    config = Config(
+        gitlab_base_url="https://gitlab.example.com",
+        webhook_secret="expected",
+        webhook_secret_header="X-CodeHub-Token",
+    )
+
+    assert handle_webhook_request(
+        "POST",
+        "/webhook/gitlab",
+        {"X-Gitlab-Token": "expected"},
+        payload,
+        config,
+        accepted.append,
+    ).status == 401
+
+    response = handle_webhook_request(
+        "POST",
+        "/webhook/gitlab",
+        {"X-CodeHub-Token": "expected"},
+        payload,
+        config,
+        accepted.append,
+    )
+
+    assert response.status == 202
+    assert len(accepted) == 1
 
 
 def test_webhook_http_handler_accepts_valid_post():
@@ -230,3 +275,81 @@ def test_write_webhook_monitor_report_redacts_sensitive_values(tmp_path: Path):
     assert data["submission_owner"] == "skill"
     assert data["submission_status"] == "unknown"
     assert data["markdown_preview"] == "# Review\n\nLooks good."
+
+
+def test_webhook_worker_posts_comment_from_python(tmp_path: Path):
+    event = parse_gitlab_merge_request_event(
+        _merge_request_payload(),
+        Config(gitlab_base_url="https://gitlab.example.com"),
+    )
+    assert event is not None
+    service = _RecordingReviewService()
+    gitlab = _RecordingGitLabClient()
+    config = Config(
+        gitlab_base_url="https://gitlab.example.com",
+        gitlab_token="secret-token",
+        report_dir=tmp_path,
+        webhook_post_comment=True,
+    )
+    queue = WebhookReviewQueue(service, gitlab, config)
+    queue.start()
+
+    queue.enqueue(event)
+    queue._queue.join()
+
+    assert service.targets == [event.target]
+    assert gitlab.comments == [(event.target, "# Review\n\nLooks good.")]
+    report = json.loads(next(tmp_path.glob("*.json")).read_text(encoding="utf-8"))
+    assert report["submission_owner"] == "python"
+    assert report["submission_status"] == "posted"
+
+
+def test_webhook_worker_can_skip_python_comment(tmp_path: Path):
+    event = parse_gitlab_merge_request_event(
+        _merge_request_payload(),
+        Config(gitlab_base_url="https://gitlab.example.com"),
+    )
+    assert event is not None
+    service = _RecordingReviewService()
+    gitlab = _RecordingGitLabClient()
+    config = Config(
+        gitlab_base_url="https://gitlab.example.com",
+        report_dir=tmp_path,
+        webhook_post_comment=False,
+    )
+    queue = WebhookReviewQueue(service, gitlab, config)
+    queue.start()
+
+    queue.enqueue(event)
+    queue._queue.join()
+
+    assert gitlab.comments == []
+    report = json.loads(next(tmp_path.glob("*.json")).read_text(encoding="utf-8"))
+    assert report["submission_owner"] == "python"
+    assert report["submission_status"] == "disabled"
+
+
+class _RecordingReviewService:
+    def __init__(self):
+        self.targets = []
+
+    def review_target(self, target, config, task_id):
+        self.targets.append(target)
+        return ReviewReport(
+            markdown="# Review\n\nLooks good.",
+            base_sha="base-sha",
+            head_sha=target.head_sha,
+            changed_files=["app.py"],
+            opencode_returncode=0,
+            submission_owner="none",
+            submission_status="unknown",
+        )
+
+
+class _RecordingGitLabClient:
+    def __init__(self):
+        self.comments = []
+
+    def post_mr_note(self, target, body):
+        self.comments.append((target, body))
+        return {"id": 1}

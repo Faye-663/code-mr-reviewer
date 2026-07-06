@@ -445,7 +445,10 @@ def test_healthcheck_requires_welink_group_id(monkeypatch, capsys):
     )
 
     assert healthcheck(config) == 0
-    assert "welink_group_id: ok" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "welink_group_id: ok" in output
+    assert "webhook_post_comment: enabled" in output
+    assert "missing for webhook" not in output
 
     config.welink_group_id = ""
     assert healthcheck(config) == 1

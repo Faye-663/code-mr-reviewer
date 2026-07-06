@@ -57,6 +57,8 @@ class Config:
     webhook_port: int = 8080
     webhook_path: str = "/webhook/gitlab"
     webhook_secret: str = ""
+    webhook_secret_header: str = "X-Gitlab-Token"
+    webhook_post_comment: bool = True
     report_dir: Path = Path("log/webhook-reports")
     max_files: int = 50
     max_diff_lines: int = 2000
@@ -100,6 +102,8 @@ class Config:
             webhook_port=int(get("WEBHOOK_PORT", "8080")),
             webhook_path=get("WEBHOOK_PATH", "/webhook/gitlab"),
             webhook_secret=get("WEBHOOK_SECRET"),
+            webhook_secret_header=get("WEBHOOK_SECRET_HEADER", "X-Gitlab-Token"),
+            webhook_post_comment=_parse_bool(get("WEBHOOK_POST_COMMENT", "true")),
             report_dir=Path(get("REPORT_DIR", "log/webhook-reports")),
             max_files=int(get("MAX_FILES", "50")),
             max_diff_lines=int(get("MAX_DIFF_LINES", "2000")),

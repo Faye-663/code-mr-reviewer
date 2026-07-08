@@ -57,7 +57,8 @@ flowchart TD
 
 ## 模块边界
 
-- `cli.py`：命令入口、轮询循环、WeLink 上传与通知编排。
+- `cli.py`：命令入口、轮询循环和 review service 装配。
+- `welink.py`：WeLink poll/reply 命令执行、OneBox 上传与群通知编排。
 - `webhook.py`：GitLab webhook HTTP handler、secret 校验、payload 解析、后台队列、Python comment 提交编排和本地监视报告。
 - `im.py`：WeLink 历史消息解析、字段归一化、触发条件判断。
 - `gitlab.py`：GitLab MR URL 解析、MR 元数据、项目 clone URL 查询与 MR Comment 提交。

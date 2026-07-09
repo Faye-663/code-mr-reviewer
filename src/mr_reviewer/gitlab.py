@@ -64,6 +64,10 @@ class GitLabClient:
         project = urllib.parse.quote(mr.project_path, safe="")
         return self._get_json(f"/api/v4/projects/{project}/merge_requests/{mr.mr_iid}")
 
+    def get_mr_detail_for_discussion_position(self, target) -> dict:
+        project = urllib.parse.quote(target.project_path, safe="")
+        return self._get_json(f"/api/v4/projects/{project}/isource/merge_requests/{target.mr_iid}")
+
     def get_project_http_url(self, project_id: int) -> str:
         project = self._get_json(f"/api/v4/projects/{project_id}")
         repo_url = project.get("http_url_to_repo")

@@ -313,6 +313,14 @@ def test_webhook_worker_posts_inline_discussion_from_python(tmp_path: Path):
     assert report["submission_status"] == "posted"
     assert report["structured_parse_status"] == "success"
     assert report["finding_counts"]["posted"] == 1
+    markdown_report_path = Path(report["markdown_report_path"])
+    assert markdown_report_path.exists()
+    markdown_report = markdown_report_path.read_text(encoding="utf-8")
+    assert "# GitLab MR Review Report" in markdown_report
+    assert "team/project!7" in markdown_report
+    assert "posted" in markdown_report
+    assert "discussion-1" in markdown_report
+    assert "123" in markdown_report
 
 
 def test_webhook_worker_can_skip_python_comment(tmp_path: Path):
@@ -394,6 +402,11 @@ def test_webhook_worker_does_not_publish_when_structured_output_is_invalid(tmp_p
     report = json.loads(next(tmp_path.glob("*.json")).read_text(encoding="utf-8"))
     assert report["submission_status"] == "parse_failed"
     assert report["structured_parse_status"] == "failed"
+    markdown_report_path = Path(report["markdown_report_path"])
+    assert markdown_report_path.exists()
+    markdown_report = markdown_report_path.read_text(encoding="utf-8")
+    assert "parse_failed" in markdown_report
+    assert "not json" in markdown_report
 
 
 class _RecordingReviewService:

@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 from mr_reviewer.config import Config
 from mr_reviewer.gitlab import GitLabClient
 from mr_reviewer.inline_review import DiffPositionMap, DiffRefs, FindingValidationDecision, validate_review_findings
+from mr_reviewer.markdown_report import render_markdown_review_report
 from mr_reviewer.review_result import StructuredReviewParseError, parse_structured_review_result
 from mr_reviewer.reviewer import MergeRequestReviewTarget, ReviewReport, ReviewService
 
@@ -338,8 +339,15 @@ def write_webhook_monitor_report(
         data["finding_counts"] = report.finding_counts
     if report.finding_results is not None:
         data["finding_results"] = report.finding_results
+    redacted_error = _redact(error, config) if error else None
+    markdown_path = path.with_suffix(".md")
+    markdown_path.write_text(
+        render_markdown_review_report(event, report, status, redacted_error),
+        encoding="utf-8",
+    )
+    data["markdown_report_path"] = str(markdown_path)
     if error:
-        data["error"] = _redact(error, config)
+        data["error"] = redacted_error
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
     return path
 
@@ -500,6 +508,9 @@ def _finding_result(
         "new_path": finding.new_path,
         "old_line": finding.old_line,
         "new_line": finding.new_line,
+        "title": finding.title,
+        "evidence": finding.evidence,
+        "suggestion": finding.suggestion,
         "status": status,
         "reason": reason,
         "marker": marker,

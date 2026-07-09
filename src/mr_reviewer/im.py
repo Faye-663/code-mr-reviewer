@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import json
-import os
 import re
-import shlex
 from dataclasses import dataclass
 
 from mr_reviewer.config import Config
 from mr_reviewer.gitlab import GitLabMrUrl, parse_gitlab_mr_url
+from mr_reviewer.process import split_command
 
 URL_RE = re.compile(r"https?://[^\s<>]+")
 
@@ -100,11 +99,6 @@ def should_trigger_review(message: ImMessage, config: Config) -> ReviewRequest |
             return None
         return ReviewRequest(message=message, mr=mr)
     return None
-
-
-def split_command(command: str) -> list[str]:
-    return shlex.split(command, posix=(os.name != "nt"))
-
 
 def build_welink_reply_args(command: str, group_id: str, markdown: str) -> list[str]:
     return split_command(command) + ["--group-id", group_id, "--text", markdown]

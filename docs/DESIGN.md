@@ -57,6 +57,73 @@ flowchart TD
     M --> N
 ```
 
+## 结构化 Review 契约
+
+自动入口要求 opencode 只输出 JSON，不输出 Markdown 或代码围栏。Python 侧把 JSON 解析为结构化 finding，再按入口决定后续动作：webhook 发布可定位 finding 的 inline discussion；`run-once` 和 WeLink poll 渲染 Markdown 报告。
+
+顶层结构：
+
+```json
+{
+  "findings": [
+    {
+      "rule_id": "SQL_PERFORMANCE",
+      "severity": "major",
+      "confidence": "HIGH",
+      "old_path": "src/example.py",
+      "new_path": "src/example.py",
+      "old_line": -1,
+      "new_line": 42,
+      "title": "批量查询缺少数量限制",
+      "evidence": "本次变更新增 IN 查询，但未限制集合大小。",
+      "suggestion": "限制集合大小或拆批查询。"
+    }
+  ],
+  "notes": [],
+  "test_gaps": []
+}
+```
+
+字段约束：
+
+- `severity` 使用 GitLab discussions API 枚举：`suggestion`、`minjor`、`major`、`fatal`。
+- `confidence` 只能是 `HIGH`、`MEDIUM`、`LOW`。
+- 新增行使用 `old_line=-1`；删除行使用 `new_line=-1`。
+- `old_path` / `new_path` 使用 GitLab diff 中的路径；重命名时分别填旧路径和新路径。
+- `evidence` 和 `suggestion` 必须非空，否则 finding 不进入发布候选。
+
+## Inline 发布规则
+
+webhook 发布前会读取 GitLab MR 详情 API 的 `diff_refs.base_sha`、`diff_refs.start_sha`、`diff_refs.head_sha`，并基于 MR diff 构建可评论行集合。本地 `merge-base` 只用于 clone/diff fallback，不作为 inline discussion position 的权威来源。
+
+默认只发布 `fatal` / `major` 且 `confidence=HIGH` 的 finding。其它 finding、无法映射到 diff 行的 finding、缺少证据或建议的 finding，只进入本地 JSON / Markdown 报告。
+
+发布前会读取远端 discussions 中的 marker，避免重复 webhook 触发时刷屏。marker 格式：
+
+```markdown
+<!-- ai-cr:finding:{project}:{mr_iid}:{head_sha}:{rule_id}:{old_path}:{new_path}:{old_line}:{new_line} -->
+```
+
+`MR_REVIEWER_WEBHOOK_POST_COMMENT=false` 时不发布 inline discussion，但仍生成本地报告。webhook 不再通过 notes API 提交整段 Markdown note。
+
+## 本地报告与失败策略
+
+webhook 每次 review 都写入同 stem 的机器可读 JSON 监视报告和人类可读 Markdown 报告：
+
+```text
+log/webhook-reports/20260709T120000Z-team_project-mr-7-webhook-abc123.json
+log/webhook-reports/20260709T120000Z-team_project-mr-7-webhook-abc123.md
+```
+
+失败策略：
+
+- opencode 命令失败：写失败态报告。
+- JSON parse failed：不发布 inline discussion，写 `parse_failed` 报告，并在 Markdown 中保留脱敏后的原始输出。
+- finding 全部被过滤：不发布 inline discussion，写成功态本地报告。
+- 读取远端 discussions 失败：不发布新 discussion，避免失去幂等后刷屏。
+- 单条 discussion POST 失败：记录该 finding failed，继续处理其它 finding。
+- Markdown 报告写入失败：任务标记 failed，因为本地 Markdown 报告是 webhook 可观测性的一部分。
+
 ## 模块边界
 
 - `cli.py`：命令入口、轮询循环和 review service 装配。

@@ -1,0 +1,102 @@
+# 创建检视意见API
+
+## URL
+
+https://api.xxx.com/api/api/v4/projects/{id}/merge_requests/{noteable_id}/discussions
+
+参数：
+
+| 名称 | 类型 | 必选 | 描述 |
+|------|------|------|------|
+| id | string | 是 | The ID of a project/Repo |
+| noteable_id | integer | 否 | The ID of the MR|
+
+
+## Request
+
+{
+    "body": "检视意见内容",
+    "severity": "suggestion",
+    "position": {
+        "base_sha": "f6f51e5fb950d36908f4c35ee79a3e3e05668e4f",
+        "start_sha": "37b257aa52223fc6bd69d9fae56bc778b3451983",
+        "head_sha": "160a832ad983cea7e2a9872f3421f5ee4c36b62c",
+        "position_type": "text",
+        "new_path": "README.md",
+        "old_path": "README.md",
+        "new_line": 264,
+        "old_line": -1,
+        "ignore_whitespace_change": false
+    }
+}
+
+参数：
+
+| 名称 | 类型 | 必选 | 描述 |
+|------|------|------|------|
+| body | string | 是 | The content of a note |
+| severity | string | 否 | The severity level: suggestion,minjor,major,fatal|
+
+
+参数position：
+
+| 名称 | 类型 | 必选 | 描述 |
+|------|------|------|------|
+| base_sha | string | 否 | Base commit SHA in the source branch |
+| start_sha | string | 否 | SHA referencing commit in target branch |
+| head_sha | string | 否 | SHA referencing HEAD of this merge request |
+| old_path | string | 否 | File path before change |
+| new_path | string | 否 | File path after change |
+| position_type | string | 否 | Type of the position reference |
+| old_line | integer | 否 | Line number before change |
+| new_line | integer | 否 | Line number after change |
+
+## Response
+
+成功：httpCode 201
+格式：
+{
+    "id": "314a0d092d1b73851a82ab23ad5d8147c626a68a",
+    "notes": [
+        {
+            "id": 142680522
+        }
+    ]
+}
+
+失败：httpCode 500
+
+
+
+# 获取项目合并请求详情
+
+## URL
+GET
+https://api.xxx.com/api/api/v4/projects/{project_id}/isource/merge_requests/{iid}
+
+参数：
+
+| 名称 | 类型 | 必选 | 描述 |
+|------|------|------|------|
+| project_id | string | 是 | The ID of a project/Repo |
+| iid | integer | 否 | The ID of the MR|
+
+
+## Response
+
+成功：httpCode 200
+格式：
+{
+    "id": 48286491,
+    "iid": 10,
+    "project_id": 5713530,
+    "merge_status": "unchecked",
+    "sha": "160a832ad983cea7e2a9872f3421f5ee4c36b62c",
+    "diff_refs": {
+        "base_sha": "f6f51e5fb950d36908f4c35ee79a3e3e05668e4f",
+        "head_sha": "160a832ad983cea7e2a9872f3421f5ee4c36b62c",
+        "start_sha": "37b257aa52223fc6bd69d9fae56bc778b3451983"
+    }
+}
+
+失败：httpCode 500

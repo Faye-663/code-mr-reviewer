@@ -64,6 +64,10 @@ class GitLabClient:
         project = urllib.parse.quote(mr.project_path, safe="")
         return self._get_json(f"/api/v4/projects/{project}/merge_requests/{mr.mr_iid}")
 
+    def get_mr_detail_for_discussion_position(self, target) -> dict:
+        project = urllib.parse.quote(target.project_path, safe="")
+        return self._get_json(f"/api/v4/projects/{project}/isource/merge_requests/{target.mr_iid}")
+
     def get_project_http_url(self, project_id: int) -> str:
         project = self._get_json(f"/api/v4/projects/{project_id}")
         repo_url = project.get("http_url_to_repo")
@@ -76,6 +80,20 @@ class GitLabClient:
         return self._post_form(
             f"/api/v4/projects/{project}/merge_requests/{mr.mr_iid}/notes",
             {"body": body},
+        )
+
+    def list_mr_discussions(self, target) -> list[dict]:
+        project = urllib.parse.quote(target.project_path, safe="")
+        discussions = self._get_json(f"/api/v4/projects/{project}/merge_requests/{target.mr_iid}/discussions")
+        if not isinstance(discussions, list):
+            raise ValueError("GitLab discussions response must be a list")
+        return discussions
+
+    def post_mr_discussion(self, target, body: str, severity: str, position: dict) -> dict:
+        project = urllib.parse.quote(target.project_path, safe="")
+        return self._post_json(
+            f"/api/v4/projects/{project}/merge_requests/{target.mr_iid}/discussions",
+            {"body": body, "severity": severity, "position": position},
         )
 
     def _post_form(self, path: str, fields: dict[str, str]) -> dict:
@@ -99,7 +117,28 @@ class GitLabClient:
         except urllib.error.HTTPError as exc:
             raise RuntimeError(f"GitLab API request failed: HTTP {exc.code}") from exc
 
-    def _get_json(self, path: str) -> dict:
+    def _post_json(self, path: str, payload: dict) -> dict:
+        if not self.token:
+            raise ValueError("GitLab token is required")
+
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self.base_url}{path}",
+            data=data,
+            method="POST",
+            headers={
+                "PRIVATE-TOKEN": self.token,
+                "Accept": "application/json",
+                "Content-Type": "application/json; charset=utf-8",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(f"GitLab API request failed: HTTP {exc.code}") from exc
+
+    def _get_json(self, path: str):
         if path in self._fixtures:
             return self._fixtures[path]
 

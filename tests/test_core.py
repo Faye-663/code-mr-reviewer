@@ -26,6 +26,7 @@ def test_code_review_skill_targets_gitlab_mr_range():
     skill = Path(".opencode/skills/code-review/SKILL.md").read_text(encoding="utf-8")
 
     assert 'description: "Use when reviewing GitLab merge requests' in skill
+    assert "Output: strict JSON" in skill
     assert "Base SHA" in skill
     assert "Head SHA" in skill
     assert "Changed files" in skill
@@ -35,7 +36,12 @@ def test_code_review_skill_targets_gitlab_mr_range():
     assert "git log --oneline -5" not in skill
     assert "HIGH 问题可以谨慎合并" not in skill
     assert "只有 HIGH 问题" not in skill
-    assert "只有 MEDIUM/LOW 问题" in skill
+    assert '"findings"' in skill
+    assert '"severity"' in skill
+    assert "suggestion" in skill
+    assert "minjor" in skill
+    assert "major" in skill
+    assert "fatal" in skill
     assert "JSDoc" not in skill
     assert "格式不一致" not in skill
     assert "src/api/client.ts" not in skill
@@ -425,6 +431,56 @@ def test_gitlab_client_posts_mr_note(monkeypatch):
     assert request.headers["Private-token"] == "secret-token"
     assert request.headers["Content-type"] == "application/x-www-form-urlencoded; charset=utf-8"
     assert urllib.parse.parse_qs(request.data.decode("utf-8")) == {"body": ["# Review\n\nLooks good."]}
+
+
+def test_gitlab_client_posts_mr_discussion_as_json(monkeypatch):
+    requests = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b'{"id": "discussion-1", "notes": [{"id": 456}]}'
+
+    def fake_urlopen(request, timeout):
+        requests.append((request, timeout))
+        return Response()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    client = GitLabClient("https://gitlab.example.com", "secret-token")
+    result = client.post_mr_discussion(
+        GitLabMrUrl("https://gitlab.example.com", "team/project", 7),
+        "**[major][HIGH] title**",
+        "major",
+        {
+            "base_sha": "base",
+            "start_sha": "start",
+            "head_sha": "head",
+            "position_type": "text",
+            "old_path": "src/example.py",
+            "new_path": "src/example.py",
+            "old_line": -1,
+            "new_line": 42,
+            "ignore_whitespace_change": False,
+        },
+    )
+
+    request, timeout = requests[0]
+    payload = json.loads(request.data.decode("utf-8"))
+    assert result == {"id": "discussion-1", "notes": [{"id": 456}]}
+    assert timeout == 30
+    assert request.full_url == "https://gitlab.example.com/api/v4/projects/team%2Fproject/merge_requests/7/discussions"
+    assert request.get_method() == "POST"
+    assert request.headers["Private-token"] == "secret-token"
+    assert request.headers["Content-type"] == "application/json; charset=utf-8"
+    assert payload["body"] == "**[major][HIGH] title**"
+    assert payload["severity"] == "major"
+    assert payload["position"]["new_line"] == 42
 
 
 def test_state_store_tracks_processed_messages(tmp_path: Path):

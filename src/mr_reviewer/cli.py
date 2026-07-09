@@ -11,6 +11,7 @@ from mr_reviewer.config import Config
 from mr_reviewer.git import GitClient
 from mr_reviewer.gitlab import GitLabClient, GitLabMrUrl, parse_gitlab_mr_url
 from mr_reviewer.im import should_trigger_review
+from mr_reviewer.markdown_report import render_structured_output_as_markdown
 from mr_reviewer.opencode import OpenCodeRunner
 from mr_reviewer.process import split_command
 from mr_reviewer.reviewer import ReviewService
@@ -59,7 +60,9 @@ def healthcheck(config: Config) -> int:
 def run_once(config: Config, mr_url: str) -> int:
     service = build_service(config)
     mr = parse_gitlab_mr_url(mr_url, config.gitlab_base_url)
-    report = service.review(mr, config, task_id=f"manual-{uuid.uuid4().hex[:8]}")
+    report = render_structured_output_as_markdown(
+        service.review(mr, config, task_id=f"manual-{uuid.uuid4().hex[:8]}")
+    )
     print(report.markdown)
     return 0
 
@@ -102,7 +105,9 @@ def poll(config: Config, once: bool) -> int:
                     request.mr.project_path,
                     request.mr.mr_iid,
                 )
-                report = service.review(request.mr, config, task_id)
+                report = render_structured_output_as_markdown(
+                    service.review(request.mr, config, task_id)
+                )
                 LOG.info(
                     "task=%s stage=report_content markdown=%s", task_id, report.markdown
                 )

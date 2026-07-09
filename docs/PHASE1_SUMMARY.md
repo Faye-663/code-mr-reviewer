@@ -2,9 +2,9 @@
 
 ## 状态
 
-本文档记录 `deng/code-doc-sync-audit-fixes` worktree 在 `fd5b307 test: cover review guardrail gaps` 时的 Phase1 状态。Phase1 已经完成 GitLab MR 自动 review 的基础闭环：系统可以通过 WeLink IM poll 或 GitLab webhook 接收触发事件，定位 MR，准备本地代码仓上下文，调用 opencode 生成 Markdown review 报告，并把结果写回对应入口的输出通道。
+本文档是历史快照，记录 `deng/code-doc-sync-audit-fixes` worktree 在 `fd5b307 test: cover review guardrail gaps` 时的 Phase1 状态，不代表当前实现。当前行为以 `README.md`、`docs/DESIGN.md` 和 `docs/WEBHOOK_QUICKSTART.md` 为准。
 
-Phase2 开发应以本文档列出的能力、边界和限制为起点；未列为“已实现”的内容不应被默认视为可用能力。
+Phase1 当时已经完成 GitLab MR 自动 review 的基础闭环：系统可以通过 WeLink IM poll 或 GitLab webhook 接收触发事件，定位 MR，准备本地代码仓上下文，调用 opencode 生成 Markdown review 报告，并把结果写回对应入口的输出通道。
 
 ## 已实现功能
 
@@ -97,11 +97,6 @@ uv run pytest
 - webhook comment 提交状态会写入本地监视报告，但尚未记录 GitLab note URL。
 - `healthcheck` 仍偏 IM/OneBox 全量检查，不是 webhook-only mode。
 
-## Phase2 建议入口
+## 后续建议历史记录
 
-- 将 Python GitLab notes API 返回的 note URL 或 note id 写入 webhook 本地监视报告。
-- 兼容 GitLab 标准 `/-/merge_requests/` URL，同时保留现有 `/merge_requests/` 示例兼容。
-- 拆分 `healthcheck` mode，例如区分 IM poll、webhook-only 和 core review 检查。
-- 收紧日志敏感内容边界，尤其是 `stage=report_content` 的完整 Markdown 输出。
-- 设计 WeLink 增量轮询策略，明确是否使用 `maxMsgId`、状态文件迁移和失败重试语义。
-- 评估 WeLink 私聊回发能力是否进入 Phase2，并明确它与群聊通知的配置、权限和失败处理差异。
+本节原本记录 Phase1 之后的演进建议，其中 webhook notes API、结构化 review 和本地 Markdown 报告相关事项已经被后续实现取代。当前仍有效的限制与后续方向以 `README.md` 的“当前限制与待确认”为准。

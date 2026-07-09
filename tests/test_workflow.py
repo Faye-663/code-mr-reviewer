@@ -58,10 +58,10 @@ class RecordingOpenCodeRunner(OpenCodeRunner):
 
     def run_review(self, prompt, cwd, timeout_seconds):
         self.prompts.append((prompt, Path(cwd), timeout_seconds))
-        return "# Review\n\nNo high-confidence issues."
+        return '{"findings":[],"notes":["No high-confidence issues."],"test_gaps":[]}'
 
 
-def test_review_service_generates_markdown_and_cleans_workdir(tmp_path: Path):
+def test_review_service_requests_structured_output_and_cleans_workdir(tmp_path: Path):
     git = RecordingGitClient()
     opencode = RecordingOpenCodeRunner()
     service = ReviewService(FakeGitLabClient(), git, opencode)
@@ -80,7 +80,7 @@ def test_review_service_generates_markdown_and_cleans_workdir(tmp_path: Path):
         task_id="task-1",
     )
 
-    assert report.markdown.startswith("# Review")
+    assert report.markdown.startswith('{"findings"')
     assert "secret-token" not in opencode.prompts[0][0]
     assert isinstance(opencode.prompts[0][0], str)
     assert "code-review skill" in opencode.prompts[0][0]
@@ -89,6 +89,9 @@ def test_review_service_generates_markdown_and_cleans_workdir(tmp_path: Path):
     assert "Head SHA: head456" in opencode.prompts[0][0]
     assert "Changed files:\n- app.py" in opencode.prompts[0][0]
     assert "代码仓在" in opencode.prompts[0][0]
+    assert "Webhook 模式" not in opencode.prompts[0][0]
+    assert "必须只输出 JSON" in opencode.prompts[0][0]
+    assert '"findings"' in opencode.prompts[0][0]
     assert "diff --git" not in opencode.prompts[0][0]
     assert "Diff:" not in opencode.prompts[0][0]
     checkout, token, work_dir, limits = git.calls[0]
@@ -143,6 +146,7 @@ def test_review_service_prompt_uses_comment_skill_when_configured(tmp_path: Path
     assert "Head SHA: head456" in prompt
     assert "Changed files:\n- app.py" in prompt
     assert "代码仓在" in prompt
+    assert "必须只输出 JSON" in prompt
 
 
 def test_review_service_logs_major_stages(tmp_path: Path, caplog):
@@ -199,7 +203,10 @@ def test_poll_once_runs_review_and_replies(tmp_path: Path):
         "print(json.dumps({'resultCode':'0','respData':{'chatInfo':[{'msgId':1,'groupId':'c1','sender':'u1','content':'@ReviewBot https://gitlab.example.com/team/project/merge_requests/7','serverSendTime':'now','at':True,'atAccountList':['bot001']} ]}}))\n",
         encoding="utf-8",
     )
-    opencode_script.write_text("print('# Review\\n\\nNo high-confidence issues.')\n", encoding="utf-8")
+    opencode_script.write_text(
+        "print('{\"findings\":[],\"notes\":[\"No high-confidence issues.\"],\"test_gaps\":[]}')\n",
+        encoding="utf-8",
+    )
     gitlab_file.write_text(
         json.dumps(
             {

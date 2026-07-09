@@ -6,7 +6,7 @@
 
 - GitLab 在 MR 打开、重新打开或 source branch 更新时主动回调本机服务。
 - 服务收到 webhook 后在后台执行 review，并把本地监视报告写入 `MR_REVIEWER_REPORT_DIR`。
-- MR 评论由 Python 侧通过 GitLab notes API 提交；也可以关闭自动评论，只保留本地监视报告。
+- Python 侧会把高置信、可定位的 finding 发布为 GitLab inline discussion；也可以关闭自动发布，只保留本地报告。
 
 ## 最小配置
 
@@ -38,8 +38,8 @@ MR_REVIEWER_REPORT_DIR=log/webhook-reports
 - `MR_REVIEWER_WEBHOOK_HOST` 是服务监听地址。本机自测可用 `127.0.0.1`；GitLab 从其他机器访问本机 IP 时，使用 `0.0.0.0` 或实际网卡 IP。
 - `MR_REVIEWER_WEBHOOK_SECRET` 可为空；配置后会校验 `MR_REVIEWER_WEBHOOK_SECRET_HEADER` 指定的请求头，默认是 `X-Gitlab-Token`。
 - `MR_REVIEWER_WEBHOOK_SECRET_HEADER` 可按平台调整，例如 CodeHub 使用 `X-CodeHub-Token` 时改成该值。
-- `MR_REVIEWER_WEBHOOK_POST_COMMENT=false` 时不会提交 MR Comment，只写本地监视报告。
-- `MR_REVIEWER_COMMENT_SKILL` 仍可选用于指定 review prompt skill；不要配置会自行提交评论的 skill，避免重复评论。
+- `MR_REVIEWER_WEBHOOK_POST_COMMENT=false` 时不会发布 inline discussion，只写本地 JSON 监视报告和 Markdown review 报告。
+- `MR_REVIEWER_COMMENT_SKILL` 仍可选用于指定 review prompt skill；该 skill 必须只输出结构化 JSON，不要配置会自行提交评论的 skill。
 
 ## 启动服务
 
@@ -84,7 +84,7 @@ Invoke-WebRequest `
   -Body '{"object_kind":"push"}'
 ```
 
-如果使用最小 MR payload 自测，可处理事件会返回 `202 accepted`，随后后台任务会尝试 clone、diff、opencode review，并在 `MR_REVIEWER_REPORT_DIR` 写入监视报告；当 `MR_REVIEWER_WEBHOOK_POST_COMMENT=true` 时还会提交 MR Comment。
+如果使用最小 MR payload 自测，可处理事件会返回 `202 accepted`，随后后台任务会尝试 clone、diff、opencode review，并在 `MR_REVIEWER_REPORT_DIR` 写入同 stem 的 `.json` 监视报告和 `.md` review 报告；当 `MR_REVIEWER_WEBHOOK_POST_COMMENT=true` 时还会发布可定位 finding 的 inline discussion。
 
 ## 常见问题
 
@@ -93,4 +93,4 @@ Invoke-WebRequest `
 - 返回 `401 WEBHOOK_TOKEN_MISSING`：已配置 `MR_REVIEWER_WEBHOOK_SECRET`，但请求没有 `MR_REVIEWER_WEBHOOK_SECRET_HEADER` 指定的 header。
 - 返回 `403 WEBHOOK_TOKEN_INVALID`：GitLab Secret token 和 `MR_REVIEWER_WEBHOOK_SECRET` 不一致。
 - 返回 `200 skipped`：请求已到达服务，但事件不是可处理的 MR open、reopen 或 source update 事件。
-- review 成功但 MR 没有评论：检查 `MR_REVIEWER_WEBHOOK_POST_COMMENT` 是否为 `true`，以及 `MR_REVIEWER_GITLAB_TOKEN` 是否有提交 MR note 的权限。
+- review 成功但 MR 没有 inline discussion：检查 `MR_REVIEWER_WEBHOOK_POST_COMMENT` 是否为 `true`，`MR_REVIEWER_GITLAB_TOKEN` 是否有读取 MR diff 与提交 discussion 的权限，并查看本地 `.json`/`.md` 报告中的 finding 是否被过滤、无法定位或判定为重复。

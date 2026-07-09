@@ -16,6 +16,9 @@ from urllib.parse import urlparse
 
 from mr_reviewer.config import Config
 from mr_reviewer.gitlab import GitLabClient
+from mr_reviewer.inline_review import DiffPositionMap, DiffRefs, FindingValidationDecision, validate_review_findings
+from mr_reviewer.markdown_report import render_markdown_review_report
+from mr_reviewer.review_result import StructuredReviewParseError, parse_structured_review_result
 from mr_reviewer.reviewer import MergeRequestReviewTarget, ReviewReport, ReviewService
 
 LOG = logging.getLogger("mr_reviewer")
@@ -182,7 +185,7 @@ class WebhookReviewQueue:
                     event.target.project_path,
                     event.target.mr_iid,
                 )
-                report = self.service.review_target(event.target, self.config, task_id)
+                report = self.service.review_target(event.target, self.config, task_id, structured_output=True)
                 report = self._submit_comment(event, report)
                 path = write_webhook_monitor_report(event, report, self.config, task_id, "success")
                 LOG.info("task=%s stage=webhook_report path=%s status=success", task_id, path)
@@ -210,8 +213,69 @@ class WebhookReviewQueue:
         if not self.config.webhook_post_comment:
             return replace(report, submission_owner="python", submission_status="disabled")
 
-        self.gitlab.post_mr_note(event.target, report.markdown)
-        return replace(report, submission_owner="python", submission_status="posted")
+        try:
+            structured = parse_structured_review_result(report.markdown)
+        except StructuredReviewParseError:
+            return replace(
+                report,
+                submission_owner="python",
+                submission_status="parse_failed",
+                structured_parse_status="failed",
+                finding_counts=_finding_counts([]),
+                finding_results=[],
+            )
+
+        detail = self.gitlab.get_mr_detail_for_discussion_position(event.target)
+        refs = _diff_refs_from_detail(detail)
+        position_map = DiffPositionMap.from_unified_diff(report.diff, refs)
+        decisions = validate_review_findings(structured, position_map)
+        publish_results = DiscussionPublisher(self.gitlab).publish(event.target, decisions)
+        status = "failed" if any(item["status"] == "failed" for item in publish_results) else "posted"
+        return replace(
+            report,
+            submission_owner="python",
+            submission_status=status,
+            structured_parse_status="success",
+            finding_counts=_finding_counts(publish_results),
+            finding_results=publish_results,
+        )
+
+
+class DiscussionPublisher:
+    def __init__(self, gitlab: GitLabClient):
+        self.gitlab = gitlab
+
+    def publish(self, target: MergeRequestReviewTarget, decisions: list[FindingValidationDecision]) -> list[dict]:
+        existing_markers = _extract_existing_markers(self.gitlab.list_mr_discussions(target))
+        results = []
+        for decision in decisions:
+            if decision.status != "publishable":
+                results.append(_finding_result(decision, decision.status, decision.reason))
+                continue
+
+            marker = _finding_marker(target, decision)
+            if marker in existing_markers:
+                results.append(_finding_result(decision, "skipped_duplicate", "duplicate_marker", marker))
+                continue
+
+            try:
+                response = self.gitlab.post_mr_discussion(
+                    target,
+                    _discussion_body(decision, marker),
+                    decision.finding.severity,
+                    decision.position.to_gitlab_position(),
+                )
+            except Exception as exc:  # noqa: BLE001 - 单条发布失败需要记录后继续处理其它 finding。
+                results.append(_finding_result(decision, "failed", str(exc), marker))
+                continue
+
+            result = _finding_result(decision, "posted", "", marker)
+            result["discussion_id"] = response.get("id")
+            notes = response.get("notes") if isinstance(response.get("notes"), list) else []
+            if notes and isinstance(notes[0], dict):
+                result["note_id"] = notes[0].get("id")
+            results.append(result)
+        return results
 
 
 def run_webhook_server(config: Config, service: ReviewService) -> int:
@@ -269,8 +333,21 @@ def write_webhook_monitor_report(
         "comment_url": None,
         "markdown_preview": report.markdown[:4000],
     }
+    if report.structured_parse_status:
+        data["structured_parse_status"] = report.structured_parse_status
+    if report.finding_counts is not None:
+        data["finding_counts"] = report.finding_counts
+    if report.finding_results is not None:
+        data["finding_results"] = report.finding_results
+    redacted_error = _redact(error, config) if error else None
+    markdown_path = path.with_suffix(".md")
+    markdown_path.write_text(
+        render_markdown_review_report(event, report, status, redacted_error),
+        encoding="utf-8",
+    )
+    data["markdown_report_path"] = str(markdown_path)
     if error:
-        data["error"] = _redact(error, config)
+        data["error"] = redacted_error
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
     return path
 
@@ -365,6 +442,95 @@ def _build_mr_url(web_url: object, mr_iid: int) -> str:
 
 def _safe_filename(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("_") or "repo"
+
+
+def _diff_refs_from_detail(detail: dict) -> DiffRefs:
+    diff_refs = detail.get("diff_refs")
+    if not isinstance(diff_refs, dict):
+        raise ValueError("GitLab MR detail response missing diff_refs")
+    base_sha = diff_refs.get("base_sha")
+    start_sha = diff_refs.get("start_sha")
+    head_sha = diff_refs.get("head_sha")
+    if not all(isinstance(value, str) and value for value in (base_sha, start_sha, head_sha)):
+        raise ValueError("GitLab MR detail diff_refs missing base_sha/start_sha/head_sha")
+    return DiffRefs(base_sha=base_sha, start_sha=start_sha, head_sha=head_sha)
+
+
+def _extract_existing_markers(discussions: list[dict]) -> set[str]:
+    markers = set()
+    for discussion in discussions:
+        notes = discussion.get("notes") if isinstance(discussion, dict) else None
+        if not isinstance(notes, list):
+            continue
+        for note in notes:
+            if not isinstance(note, dict):
+                continue
+            body = note.get("body")
+            if not isinstance(body, str):
+                continue
+            markers.update(re.findall(r"<!-- ai-cr:finding:[^>]+ -->", body))
+    return markers
+
+
+def _finding_marker(target: MergeRequestReviewTarget, decision: FindingValidationDecision) -> str:
+    finding = decision.finding
+    head_sha = decision.position.refs.head_sha if decision.position else target.head_sha
+    return (
+        "<!-- ai-cr:finding:"
+        f"{target.project_path}:{target.mr_iid}:{head_sha}:{finding.rule_id}:"
+        f"{finding.old_path}:{finding.new_path}:{finding.old_line}:{finding.new_line}"
+        " -->"
+    )
+
+
+def _discussion_body(decision: FindingValidationDecision, marker: str) -> str:
+    finding = decision.finding
+    return (
+        f"**[{finding.severity}][{finding.confidence}][{finding.rule_id}] {finding.title}**\n\n"
+        f"证据：{finding.evidence}\n\n"
+        f"建议：{finding.suggestion}\n\n"
+        f"{marker}"
+    )
+
+
+def _finding_result(
+        decision: FindingValidationDecision,
+        status: str,
+        reason: str,
+        marker: str = "",
+) -> dict:
+    finding = decision.finding
+    return {
+        "rule_id": finding.rule_id,
+        "severity": finding.severity,
+        "confidence": finding.confidence,
+        "old_path": finding.old_path,
+        "new_path": finding.new_path,
+        "old_line": finding.old_line,
+        "new_line": finding.new_line,
+        "title": finding.title,
+        "evidence": finding.evidence,
+        "suggestion": finding.suggestion,
+        "status": status,
+        "reason": reason,
+        "marker": marker,
+    }
+
+
+def _finding_counts(results: list[dict]) -> dict[str, int]:
+    counts = {
+        "total": len(results),
+        "posted": 0,
+        "skipped_duplicate": 0,
+        "filtered": 0,
+        "invalid": 0,
+        "failed": 0,
+    }
+    for result in results:
+        status = result.get("status")
+        if status in counts:
+            counts[status] += 1
+    return counts
 
 
 def _redact(text: str, config: Config) -> str:

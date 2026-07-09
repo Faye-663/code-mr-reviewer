@@ -219,17 +219,17 @@ git diff --check
 
 ## 3. 整体验收
 
-- [ ] webhook review 不调用 notes API。
-- [ ] webhook 有效 finding 发布到 GitLab inline discussion。
-- [ ] 重复 webhook 不重复发布相同 finding。
-- [ ] 非法 JSON 不发布 MR 评论。
-- [ ] 无可靠行定位的内容只写本地报告。
-- [ ] `MR_REVIEWER_WEBHOOK_POST_COMMENT=false` 行为保持有效。
-- [ ] MR 上不出现整体 Markdown note。
-- [ ] 本地生成 `.json` 监视报告和 `.md` 代码检视报告。
-- [ ] `run-once` 和 WeLink poll 使用 LLM JSON + Python Markdown renderer。
-- [ ] README / docs 与代码行为一致。
-- [ ] 全量测试通过。
+- [x] webhook review 不调用 notes API。
+- [x] webhook 有效 finding 发布到 GitLab inline discussion。
+- [x] 重复 webhook 不重复发布相同 finding。
+- [x] 非法 JSON 不发布 inline discussion。
+- [x] 无可靠行定位的内容只写本地报告。
+- [x] `MR_REVIEWER_WEBHOOK_POST_COMMENT=false` 行为保持有效。
+- [x] MR 上不出现整体 Markdown note。
+- [x] 本地生成 `.json` 监视报告和 `.md` 代码检视报告。
+- [x] `run-once` 和 WeLink poll 使用 LLM JSON + Python Markdown renderer。
+- [x] README / docs 与代码行为一致。
+- [x] 全量测试通过。
 
 ## 4. 风险与缓解
 

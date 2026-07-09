@@ -1,8 +1,8 @@
 # Phase2 Webhook Inline Review 技术设计文档
 
-## 1. 当前架构
+## 1. Phase2 前架构
 
-当前 webhook 流程：
+Phase2 开始前的 webhook 流程：
 
 ```text
 GitLab webhook
@@ -15,7 +15,7 @@ GitLab webhook
  -> local monitor report
 ```
 
-当前主要限制：
+Phase2 开始前的主要限制：
 
 - OpenCode 输出是自由 Markdown。
 - Python 不理解 finding 结构。
@@ -223,8 +223,8 @@ ReviewService.review_target()
 ## 5. 失败策略
 
 - OpenCode command failed：沿用现有 failed monitor report，并生成失败态 Markdown 报告。
-- JSON parse failed：不发布 MR 评论，写 `parse_failed` JSON 和 Markdown 报告。
-- Validator 全部过滤：不发布 MR 评论，写成功态本地报告。
+- JSON parse failed：不发布 inline discussion，写 `parse_failed` JSON 和 Markdown 报告。
+- Validator 全部过滤：不发布 inline discussion，写成功态本地报告。
 - GET discussions failed：不发布新评论，写 `publish_failed`，避免重复刷屏。
 - 单条 discussion POST failed：记录该 finding failed，继续处理其它 finding。
 - Markdown report write failed：任务标记 failed，因为本地 Markdown 报告是 Phase2 必需产物。

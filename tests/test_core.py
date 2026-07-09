@@ -26,6 +26,7 @@ def test_code_review_skill_targets_gitlab_mr_range():
     skill = Path(".opencode/skills/code-review/SKILL.md").read_text(encoding="utf-8")
 
     assert 'description: "Use when reviewing GitLab merge requests' in skill
+    assert "Output: strict JSON" in skill
     assert "Base SHA" in skill
     assert "Head SHA" in skill
     assert "Changed files" in skill
@@ -35,7 +36,12 @@ def test_code_review_skill_targets_gitlab_mr_range():
     assert "git log --oneline -5" not in skill
     assert "HIGH 问题可以谨慎合并" not in skill
     assert "只有 HIGH 问题" not in skill
-    assert "只有 MEDIUM/LOW 问题" in skill
+    assert '"findings"' in skill
+    assert '"severity"' in skill
+    assert "suggestion" in skill
+    assert "minjor" in skill
+    assert "major" in skill
+    assert "fatal" in skill
     assert "JSDoc" not in skill
     assert "格式不一致" not in skill
     assert "src/api/client.ts" not in skill

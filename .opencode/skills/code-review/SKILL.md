@@ -1,6 +1,6 @@
 ---
 name: code-review
-description: "Use when reviewing GitLab merge requests from a checked-out temporary repo. Not for reviewing local uncommitted work. Output: conservative Markdown review findings based on the provided Base SHA, Head SHA, and Changed files."
+description: "Use when reviewing GitLab merge requests from a checked-out temporary repo. Not for reviewing local uncommitted work. Output: strict JSON findings based on the provided Base SHA, Head SHA, and Changed files."
 ---
 
 # Code Review
@@ -33,7 +33,7 @@ git diff <base_sha>...<head_sha>
 2. **构建变更图**：按业务链路关联入口层、服务层、数据层、配置、测试和公共组件，不按单一层级分流。
 3. **阅读必要上下文**：对每个高风险变更读取完整类、相邻方法、接口定义、调用方/被调用方、对应测试和配置。
 4. **检查跨层一致性**：围绕同一业务变更检查参数、权限、事务、异常、数据访问、返回值和测试是否一致。
-5. **输出保守结论**：使用下面的输出格式，只报告置信度超过 80% 的真实问题；没有高置信度问题时明确说明。
+5. **输出保守结论**：使用下面的 JSON 输出格式，只报告置信度超过 80% 的真实问题；没有高置信度问题时返回空发现列表。
 
 ## 基于置信度的筛选
 
@@ -98,45 +98,47 @@ git diff <base_sha>...<head_sha>
 
 ## 输出格式
 
-按严重程度组织发现的问题。对于每个问题按如下格式输出：
+只能输出一个 JSON 对象，不要输出 Markdown、代码围栏或额外解释。顶层结构必须是：
 
+```json
+{
+  "findings": [
+    {
+      "rule_id": "SQL_PERFORMANCE",
+      "severity": "major",
+      "confidence": "HIGH",
+      "old_path": "src/main/java/com/example/UserMapper.java",
+      "new_path": "src/main/java/com/example/UserMapper.java",
+      "old_line": -1,
+      "new_line": 42,
+      "title": "新增列表查询缺少分页限制",
+      "evidence": "新增 findUsers 查询会在未传分页条件时全量扫描用户表。",
+      "suggestion": "复用现有分页参数校验，并在 Mapper 查询中强制 limit。"
+    }
+  ],
+  "notes": [],
+  "test_gaps": []
+}
 ```
-[CRITICAL] Controller 返回了敏感访问令牌
-  - 文件: src/main/java/com/example/user/UserController.java:42
-  - 证据: 
-  - 影响: accessToken 会进入 HTTP 响应体，调用方和日志链路都可能暴露凭据。
-  - 建议: 响应体只返回业务必要字段，敏感凭据保留在服务端或通过安全通道传递。
 
-  // 错误做法：把敏感令牌返回给客户端
-  return Response.ok(new LoginResponse(userId, accessToken));
+字段约束：
 
-  // 正确做法：只返回业务必要字段
-  return Response.ok(new LoginResponse(userId));
-```
-
-当可能且合适时，在 `建议` 后补充 1-3 行 Java 对比例子，标明“错误做法”和“正确做法”。只有当修复方向足够明确时才给示例；不要为了凑格式编造代码。
-
-每次审查结束时使用：
-
-```
-## 审查摘要
-
-| 严重程度 | 数量 | 状态 |
-|----------|-------|--------|
-| CRITICAL | 0     | 通过   |
-| HIGH     | 2     | 警告   |
-| MEDIUM   | 3     | 信息   |
-| LOW      | 1     | 备注   |
-
-裁决：警告 — 2 个 HIGH 级别问题应在合并前解决。
-```
+- `severity` 只能是 `suggestion`、`minjor`、`major`、`fatal`。
+- `confidence` 只能是 `HIGH`、`MEDIUM`、`LOW`。
+- 新增行使用 `old_line: -1`，删除行使用 `new_line: -1`。
+- `old_path` 和 `new_path` 使用 GitLab diff 中的路径；重命名时分别填旧路径和新路径。
+- `evidence` 只写可追溯到本次 MR 差异的证据，不要复述完整 diff。
+- `suggestion` 写可执行修复方向；只有修复方向明确时才包含代码片段文本。
+- 当可能且合适时，在 `suggestion` 中补充 1-3 行 Java 对比例子，标明“错误做法”和“正确做法”。
+- `notes` 用于非阻断说明；`test_gaps` 用于缺失测试的简短说明。
+- 没有高置信问题时输出 `{"findings":[],"notes":["未发现高置信问题"],"test_gaps":[]}`。
 
 ## 批准标准
 
-* **批准**：没有 CRITICAL、HIGH、MEDIUM 问题
-* **警告**：只有 MEDIUM/LOW 问题，可以谨慎合并
-* **阻止**：发现 CRITICAL 问题 — 必须在合并前修复
-* **需修改**：发现 HIGH 问题 — 应在合并前解决
+* **通过**：没有 `fatal`、`major`、`minjor` 问题
+* **提醒**：只有 `suggestion` 问题，可以作为建议处理
+* **阻止**：发现 `fatal` 问题，必须在合并前修复
+* **需修改**：发现 `major` 或 `minjor` 问题，应在合并前解决
 
 ## 项目特定指南
 

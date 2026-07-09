@@ -16,6 +16,11 @@ DEFAULT_REVIEW_SKILL = "code-review"
 @dataclass(frozen=True, slots=True)
 class ReviewReport:
     markdown: str
+    repo: str = ""
+    mr_iid: int | None = None
+    mr_url: str = ""
+    source_branch: str = ""
+    target_branch: str = ""
     base_sha: str = ""
     head_sha: str = ""
     changed_files: list[str] | None = None
@@ -66,14 +71,14 @@ class ReviewService:
             base_sha=base_sha,
             head_sha=head_sha,
         )
-        return self.review_target(target, config, task_id)
+        return self.review_target(target, config, task_id, structured_output=True)
 
     def review_target(
             self,
             target: MergeRequestReviewTarget,
             config: Config,
             task_id: str,
-            structured_output: bool = False,
+            structured_output: bool = True,
     ) -> ReviewReport:
         task_dir = config.work_dir / task_id
         try:
@@ -117,6 +122,11 @@ class ReviewService:
             LOG.info("task=%s stage=report_ready repo=%s report_chars=%s", task_id, target.project_path, len(markdown))
             return ReviewReport(
                 markdown=markdown,
+                repo=target.project_path,
+                mr_iid=target.mr_iid,
+                mr_url=target.mr_url,
+                source_branch=target.source_branch,
+                target_branch=target.target_branch,
                 base_sha=str(diff_info["base_sha"]),
                 head_sha=str(diff_info["head_sha"]),
                 changed_files=list(diff_info["changed_files"]),
@@ -153,7 +163,7 @@ class ReviewService:
 
         return (
             f"{prompt}\n\n"
-            "Webhook 模式必须只输出 JSON，不要输出 Markdown 或代码围栏。JSON 结构为：\n"
+            "自动检视模式必须只输出 JSON，不要输出 Markdown 或代码围栏。JSON 结构为：\n"
             '{"findings":[{"rule_id":"...","severity":"major","confidence":"HIGH",'
             '"old_path":"src/example.py","new_path":"src/example.py","old_line":-1,'
             '"new_line":42,"title":"...","evidence":"...","suggestion":"..."}],'

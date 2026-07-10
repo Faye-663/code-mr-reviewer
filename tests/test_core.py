@@ -61,6 +61,7 @@ def test_gitlab_mr_review_skill_package_exists():
     assert 'description: "' in skill
     assert "review_gitlab_mr.py" in skill
     assert "GITLAB_BASE_URL" in skill
+    assert "GITLAB_API_BASE_URL" in skill
     assert "GITLAB_TOKEN" in skill
     assert "MR_REVIEWER_AGENT_TYPE" in skill
     assert "MR_REVIEWER_AGENT_COMMAND" in skill
@@ -77,6 +78,7 @@ def test_readme_documents_optional_agent_skill_usage():
     assert "gitlab-mr-review skill" in readme
     assert "不替代现有 WeLink 自动轮询模式" in readme
     assert "MR_REVIEW_SUBMIT_COMMENT=false" in readme
+    assert "MR_REVIEWER_GITLAB_API_BASE_URL" in readme
     assert "provider/model" in readme
 
 

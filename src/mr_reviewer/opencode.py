@@ -8,10 +8,11 @@ import shlex
 import shutil
 import subprocess
 import tempfile
-import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
 
+from mr_reviewer.observability import current_task_context, redact_text
 from mr_reviewer.process import format_command, prepare_command
 
 LOG = logging.getLogger("mr_reviewer")
@@ -30,6 +31,7 @@ class OpenCodeRunner:
             command: str = "opencode",
             debug: bool = False,
             diagnostic_dir: Path | None = None,
+            redaction_token: str = "",
             prompt_transport: str = "argument",
     ):
         if prompt_transport not in PROMPT_TRANSPORTS:
@@ -37,6 +39,7 @@ class OpenCodeRunner:
         self.command = command
         self.debug = debug
         self.diagnostic_dir = diagnostic_dir
+        self.redaction_token = redaction_token
         # argument 仅作为旧配置兼容输入；实际传输始终使用安全的文件附件。
         self.prompt_transport = "file"
 
@@ -86,15 +89,26 @@ class OpenCodeRunner:
                 prompt_file.unlink(missing_ok=True)
 
     def _create_diagnostic_path(self, prompt_sha256: str) -> Path:
-        path = self.diagnostic_dir / f"agent-{prompt_sha256[:12]}-{uuid.uuid4().hex[:8]}"
+        context = current_task_context()
+        if context is None:
+            task_root = self.diagnostic_dir
+            stage = "review"
+        else:
+            day = datetime.now(timezone.utc).strftime("%Y%m%d")
+            task_root = context.debug_dir / day / context.task_id / "agent"
+            stage = context.stage or "review"
+        timestamp = datetime.now(timezone.utc).strftime("%H%M%S%f")
+        agent = "claude-code" if isinstance(self, ClaudeCodeRunner) else "opencode"
+        path = task_root / f"{stage}-{agent}-{timestamp}-{prompt_sha256[:12]}"
         path.mkdir(parents=True, exist_ok=False)
         return path
 
     def _write_prompt_transfer_file(self, prompt: str, diagnostic_path: Path | None) -> tuple[Path, bool]:
         if diagnostic_path:
-            prompt_file = diagnostic_path / "prompt.md"
-            prompt_file.write_text(prompt, encoding="utf-8")
-            return prompt_file, False
+            # 诊断副本必须脱敏；实际附件保留在临时目录，避免改变传给 Agent 的原始 prompt。
+            diagnostic_path.joinpath("prompt.md").write_text(
+                redact_text(prompt, self.redaction_token), encoding="utf-8"
+            )
 
         with tempfile.NamedTemporaryFile(
                 mode="w",
@@ -108,21 +122,34 @@ class OpenCodeRunner:
 
     def _write_diagnostic_inputs(self, diagnostic_path: Path, args: list[str], prompt: str, cwd: Path,
                                  prompt_sha256: str) -> None:
-        diagnostic_path.joinpath("prompt.md").write_text(prompt, encoding="utf-8")
-        diagnostic_path.joinpath("cwd.txt").write_text(str(cwd), encoding="utf-8")
-        diagnostic_path.joinpath("command.txt").write_text(
-            _command_for_log(args, prompt_sha256, redact_prompt=False),
-            encoding="utf-8",
-        )
-        diagnostic_path.joinpath("env-summary.json").write_text(
-            json.dumps(_env_summary(args[0], self.debug), ensure_ascii=False, indent=2, sort_keys=True),
+        diagnostic_path.joinpath("request.json").write_text(
+            json.dumps(
+                {
+                    "cwd": str(cwd),
+                    "command": _command_for_log(args, prompt_sha256, redact_prompt=False),
+                    "prompt_sha256": prompt_sha256,
+                    "prompt_chars": len(prompt),
+                    "environment": _env_summary(args[0], self.debug),
+                },
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            ),
             encoding="utf-8",
         )
 
     def _write_diagnostic_result(self, diagnostic_path: Path, result: subprocess.CompletedProcess[str]) -> None:
-        diagnostic_path.joinpath("stdout.md").write_text(result.stdout or "", encoding="utf-8")
-        diagnostic_path.joinpath("stderr.log").write_text(result.stderr or "", encoding="utf-8")
-        diagnostic_path.joinpath("returncode.txt").write_text(str(result.returncode), encoding="utf-8")
+        diagnostic_path.joinpath("stdout.md").write_text(redact_text(result.stdout or "", self.redaction_token), encoding="utf-8")
+        diagnostic_path.joinpath("stderr.log").write_text(redact_text(result.stderr or "", self.redaction_token), encoding="utf-8")
+        diagnostic_path.joinpath("result.json").write_text(
+            json.dumps(
+                {"returncode": result.returncode, "stdout_chars": len(result.stdout or ""), "stderr_chars": len(result.stderr or "")},
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
 
 
 class ClaudeCodeRunner(OpenCodeRunner):
@@ -169,11 +196,12 @@ def build_agent_runner(
         *,
         debug: bool = False,
         diagnostic_dir: Path | None = None,
+        redaction_token: str = "",
 ) -> AgentRunner:
     if agent_type == "opencode":
-        return OpenCodeRunner(command, debug=debug, diagnostic_dir=diagnostic_dir, prompt_transport="file")
+        return OpenCodeRunner(command, debug=debug, diagnostic_dir=diagnostic_dir, redaction_token=redaction_token, prompt_transport="file")
     if agent_type == "claude-code":
-        return ClaudeCodeRunner(command, debug=debug, diagnostic_dir=diagnostic_dir, prompt_transport="file")
+        return ClaudeCodeRunner(command, debug=debug, diagnostic_dir=diagnostic_dir, redaction_token=redaction_token, prompt_transport="file")
     raise ValueError(f"unsupported agent type: {agent_type}")
 
 

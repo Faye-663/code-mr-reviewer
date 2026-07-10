@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from mr_reviewer.config import Config
 from mr_reviewer.git import GitCheckout, GitClient
 from mr_reviewer.gitlab import GitLabClient, GitLabMrUrl, choose_diff_refs
+from mr_reviewer.observability import task_stage
 from mr_reviewer.opencode import AgentRunner
 from mr_reviewer.review_result import parse_review_summary
 
@@ -126,11 +127,12 @@ class ReviewService:
             summary_prompt = self._build_summary_prompt(target, diff_info)
             LOG.info("task=%s stage=summary repo=%s status=started", task_id, target.project_path)
             try:
-                summary_raw = self.opencode.run_review(
-                    summary_prompt,
-                    diff_info["repo_path"],
-                    _remaining_timeout(deadline),
-                )
+                with task_stage("summary"):
+                    summary_raw = self.opencode.run_review(
+                        summary_prompt,
+                        diff_info["repo_path"],
+                        _remaining_timeout(deadline),
+                    )
                 summary = parse_review_summary(summary_raw)
             except Exception as exc:  # noqa: BLE001 - 对外保留明确的执行阶段。
                 raise ReviewStageError("summary", exc) from exc
@@ -147,11 +149,12 @@ class ReviewService:
             LOG.info("task=%s stage=opencode_review repo=%s timeout_seconds=%s", task_id, target.project_path,
                      config.task_timeout_seconds)
             try:
-                markdown = self.opencode.run_review(
-                    prompt,
-                    diff_info["repo_path"],
-                    _remaining_timeout(deadline),
-                )
+                with task_stage("review"):
+                    markdown = self.opencode.run_review(
+                        prompt,
+                        diff_info["repo_path"],
+                        _remaining_timeout(deadline),
+                    )
             except Exception as exc:  # noqa: BLE001 - 对外保留概要和失败阶段。
                 raise ReviewStageError("review", exc, summary) from exc
             LOG.info("task=%s stage=report_ready repo=%s report_chars=%s", task_id, target.project_path, len(markdown))

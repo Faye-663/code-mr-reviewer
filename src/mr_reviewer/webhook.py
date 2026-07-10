@@ -18,6 +18,7 @@ from mr_reviewer.config import Config
 from mr_reviewer.gitlab import GitLabClient
 from mr_reviewer.inline_review import DiffPositionMap, DiffRefs, FindingValidationDecision, validate_review_findings
 from mr_reviewer.markdown_report import render_markdown_review_report
+from mr_reviewer.observability import task_context
 from mr_reviewer.review_result import StructuredReviewParseError, parse_structured_review_result
 from mr_reviewer.reviewer import MergeRequestReviewTarget, ReviewReport, ReviewService, ReviewStageError
 
@@ -179,16 +180,17 @@ class WebhookReviewQueue:
             event = self._queue.get()
             task_id = f"webhook-{uuid.uuid4().hex[:12]}"
             try:
-                LOG.info(
-                    "task=%s stage=webhook_review repo=%s mr_iid=%s status=started",
-                    task_id,
-                    event.target.project_path,
-                    event.target.mr_iid,
-                )
-                report = self.service.review_target(event.target, self.config, task_id, structured_output=True)
-                report = self._submit_comment(event, report)
-                path = write_webhook_monitor_report(event, report, self.config, task_id, "success")
-                LOG.info("task=%s stage=webhook_report path=%s status=success", task_id, path)
+                with task_context(task_id, self.config.debug_dir, self.config.log_level == "DEBUG"):
+                    LOG.info(
+                        "task=%s stage=webhook_review repo=%s mr_iid=%s status=started",
+                        task_id,
+                        event.target.project_path,
+                        event.target.mr_iid,
+                    )
+                    report = self.service.review_target(event.target, self.config, task_id, structured_output=True)
+                    report = self._submit_comment(event, report)
+                    path = write_webhook_monitor_report(event, report, self.config, task_id, "success")
+                    LOG.info("task=%s stage=webhook_report path=%s status=success", task_id, path)
             except Exception as exc:  # noqa: BLE001 - webhook 后台任务必须记录失败并继续处理队列。
                 LOG.error("task=%s stage=webhook_review status=failed error=%s", task_id, _redact(str(exc), self.config))
                 summary = exc.summary if isinstance(exc, ReviewStageError) else None

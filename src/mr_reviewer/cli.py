@@ -12,6 +12,7 @@ from mr_reviewer.git import GitClient
 from mr_reviewer.gitlab import GitLabClient, GitLabMrUrl, parse_gitlab_mr_url
 from mr_reviewer.im import should_trigger_review
 from mr_reviewer.markdown_report import render_structured_output_as_markdown
+from mr_reviewer.observability import configure_logging, task_context
 from mr_reviewer.opencode import build_agent_runner
 from mr_reviewer.process import split_command
 from mr_reviewer.reviewer import ReviewService
@@ -33,6 +34,7 @@ def build_service(config: Config) -> ReviewService:
             config.agent_command or config.opencode_command,
             debug=config.agent_debug,
             diagnostic_dir=config.agent_diagnostic_dir,
+            redaction_token=config.gitlab_token,
         ),
     )
 
@@ -61,9 +63,9 @@ def healthcheck(config: Config) -> int:
 def run_once(config: Config, mr_url: str) -> int:
     service = build_service(config)
     mr = parse_gitlab_mr_url(mr_url, config.gitlab_base_url)
-    report = render_structured_output_as_markdown(
-        service.review(mr, config, task_id=f"manual-{uuid.uuid4().hex[:8]}")
-    )
+    task_id = f"manual-{uuid.uuid4().hex[:8]}"
+    with task_context(task_id, config.debug_dir, config.log_level == "DEBUG"):
+        report = render_structured_output_as_markdown(service.review(mr, config, task_id=task_id))
     print(report.markdown)
     return 0
 
@@ -106,19 +108,17 @@ def poll(config: Config, once: bool) -> int:
                     request.mr.project_path,
                     request.mr.mr_iid,
                 )
-                report = render_structured_output_as_markdown(
-                    service.review(request.mr, config, task_id)
-                )
-                LOG.info(
-                    "task=%s stage=report_content markdown=%s", task_id, report.markdown
-                )
-                LOG.info(
-                    "task=%s stage=im_reply group_id=%s report_chars=%s",
-                    task_id,
-                    message.chat_id,
-                    len(report.markdown),
-                )
-                _reply(config, report.markdown, request.mr)
+                with task_context(task_id, config.debug_dir, config.log_level == "DEBUG"):
+                    report = render_structured_output_as_markdown(
+                        service.review(request.mr, config, task_id)
+                    )
+                    LOG.info(
+                        "task=%s stage=im_reply group_id=%s report_chars=%s",
+                        task_id,
+                        message.chat_id,
+                        len(report.markdown),
+                    )
+                    _reply(config, report.markdown, request.mr)
                 elapsed = time.monotonic() - start
                 state.mark_processed(message.message_id, task_id, "success")
                 LOG.info(
@@ -154,9 +154,6 @@ def _reply(config: Config, markdown: str, mr: GitLabMrUrl) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
-    )
     parser = argparse.ArgumentParser(prog="mr-reviewer")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -172,6 +169,7 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     config = Config.from_env()
+    configure_logging(config.log_level)
 
     if args.command == "healthcheck":
         return healthcheck(config)

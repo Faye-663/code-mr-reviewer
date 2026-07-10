@@ -107,18 +107,19 @@ def review_gitlab_mr(mr_url: str, config: Config) -> dict[str, object]:
             token=config.gitlab_token,
         )
         changed_files = git_output(["git", "diff", "--name-only", f"{base_sha}...{head_sha}"], repo_path).splitlines()
-        prompt = build_review_prompt(
+        two_step = run_two_step_review(
+            config.agent_type,
+            config.agent_command,
             mr_url=f"{mr.base_url}/{mr.project_path}/merge_requests/{mr.mr_iid}",
             base_sha=base_sha,
             head_sha=head_sha,
             changed_files=changed_files,
             repo_path=repo_path,
         )
-        report = run_agent_review(config.agent_type, config.agent_command, prompt, repo_path)
-        report_path.write_text(report, encoding="utf-8")
+        report_path.write_text(str(two_step["local_report"]), encoding="utf-8")
         comment_submitted = False
         if config.submit_comment:
-            client.post_form(mr_note_api_path(mr.project_path, mr.mr_iid), {"body": report})
+            client.post_form(mr_note_api_path(mr.project_path, mr.mr_iid), {"body": str(two_step["comment_body"])})
             comment_submitted = True
         return {
             "report_path": str(report_path),
@@ -179,9 +180,10 @@ def build_review_prompt(
     head_sha: str,
     changed_files: list[str],
     repo_path: Path,
+    summary: dict[str, object] | None = None,
 ) -> str:
     files = "\n".join(f"- {path}" for path in changed_files) or "- <none>"
-    return (
+    prompt = (
         "使用 code-review skill 检视 GitLab MR。\n"
         f"MR URL: {mr_url}\n"
         f"Base SHA: {base_sha}\n"
@@ -191,6 +193,120 @@ def build_review_prompt(
         f"代码仓在 {repo_path} 目录。\n"
         "只审查 Base SHA 到 Head SHA 的 MR range，不要按本地未提交变更审查。"
     )
+    if summary is None:
+        return prompt
+    return (
+        f"{prompt}\n\n"
+        "以下是第一阶段生成的 MR 概要，作为本次代码审查的上下文：\n"
+        f"{json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True)}"
+    )
+
+
+def build_summary_prompt(
+    *,
+    mr_url: str,
+    base_sha: str,
+    head_sha: str,
+    changed_files: list[str],
+    repo_path: Path,
+) -> str:
+    files = "\n".join(f"- {path}" for path in changed_files) or "- <none>"
+    return (
+        "分析本次 GitLab MR 并生成 MR 概要，不执行代码审查，不要输出 finding。\n"
+        f"MR URL: {mr_url}\n"
+        f"Base SHA: {base_sha}\n"
+        f"Head SHA: {head_sha}\n"
+        "Changed files:\n"
+        f"{files}\n"
+        f"代码仓在 {repo_path} 目录。\n"
+        "只输出 JSON："
+        '{"overview":"...","change_areas":["..."],"behavior_changes":["..."],'
+        '"risk_areas":["..."],"test_changes":["..."]}'
+    )
+
+
+def parse_review_summary(raw_output: str) -> dict[str, object]:
+    try:
+        payload = json.loads(raw_output)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"summary output must be valid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("summary output must be a JSON object")
+    expected_fields = {"overview", "change_areas", "behavior_changes", "risk_areas", "test_changes"}
+    unexpected_fields = set(payload) - expected_fields
+    if unexpected_fields:
+        raise ValueError(f"summary output contains unexpected fields: {sorted(unexpected_fields)}")
+    overview = payload.get("overview")
+    if not isinstance(overview, str) or not overview.strip():
+        raise ValueError("overview must be a non-empty string")
+    result: dict[str, object] = {"overview": overview}
+    for field in ("change_areas", "behavior_changes", "risk_areas", "test_changes"):
+        value = payload.get(field)
+        if not isinstance(value, list) or not all(isinstance(item, str) and item.strip() for item in value):
+            raise ValueError(f"{field} must be a list of non-empty strings")
+        result[field] = value
+    return result
+
+
+def run_two_step_review(
+    agent_type: str,
+    command: str,
+    mr_url: str,
+    base_sha: str,
+    head_sha: str,
+    changed_files: list[str],
+    repo_path: Path,
+) -> dict[str, object]:
+    summary_raw = run_agent_review(
+        agent_type,
+        command,
+        build_summary_prompt(
+            mr_url=mr_url,
+            base_sha=base_sha,
+            head_sha=head_sha,
+            changed_files=changed_files,
+            repo_path=repo_path,
+        ),
+        repo_path,
+    )
+    summary = parse_review_summary(summary_raw)
+    comment_body = run_agent_review(
+        agent_type,
+        command,
+        build_review_prompt(
+            mr_url=mr_url,
+            base_sha=base_sha,
+            head_sha=head_sha,
+            changed_files=changed_files,
+            repo_path=repo_path,
+            summary=summary,
+        ),
+        repo_path,
+    )
+    return {
+        "summary": summary,
+        "comment_body": comment_body,
+        "local_report": render_local_report(summary, comment_body),
+    }
+
+
+def render_local_report(summary: dict[str, object], review: str) -> str:
+    lines = ["# GitLab MR Review Report", "", "## MR Summary", "", str(summary["overview"])]
+    labels = {
+        "change_areas": "Change areas",
+        "behavior_changes": "Behavior changes",
+        "risk_areas": "Risk areas",
+        "test_changes": "Test changes",
+    }
+    for field, label in labels.items():
+        lines.extend(["", f"### {label}", ""])
+        values = summary[field]
+        if values:
+            lines.extend(f"- {value}" for value in values)
+        else:
+            lines.append("- <none>")
+    lines.extend(["", "## Review", "", review])
+    return "\n".join(lines) + "\n"
 
 
 def clone_checkout(

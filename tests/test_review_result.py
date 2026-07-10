@@ -1,8 +1,50 @@
 import pytest
 
+import mr_reviewer.review_result as review_result_module
 from mr_reviewer.markdown_report import render_structured_output_as_markdown
 from mr_reviewer.review_result import StructuredReviewParseError, parse_structured_review_result
 from mr_reviewer.reviewer import ReviewReport
+
+
+def test_parse_review_summary_accepts_strict_summary_contract():
+    parser = getattr(review_result_module, "parse_review_summary")
+
+    summary = parser(
+        '{"overview":"修复认证流程","change_areas":["auth"],"behavior_changes":["刷新token"],'
+        '"risk_areas":["并发刷新"],"test_changes":["新增过期token测试"]}'
+    )
+
+    assert summary == {
+        "overview": "修复认证流程",
+        "change_areas": ["auth"],
+        "behavior_changes": ["刷新token"],
+        "risk_areas": ["并发刷新"],
+        "test_changes": ["新增过期token测试"],
+    }
+
+
+def test_parse_review_summary_rejects_missing_or_wrong_typed_fields():
+    parser = getattr(review_result_module, "parse_review_summary")
+    error_class = getattr(review_result_module, "ReviewSummaryParseError")
+
+    with pytest.raises(error_class, match="risk_areas"):
+        parser('{"overview":"x","change_areas":[],"behavior_changes":[],"test_changes":[]}')
+    with pytest.raises(error_class, match="change_areas"):
+        parser(
+            '{"overview":"x","change_areas":"auth","behavior_changes":[],'
+            '"risk_areas":[],"test_changes":[]}'
+        )
+
+
+def test_parse_review_summary_rejects_unknown_fields():
+    parser = getattr(review_result_module, "parse_review_summary")
+    error_class = getattr(review_result_module, "ReviewSummaryParseError")
+
+    with pytest.raises(error_class, match="unexpected fields"):
+        parser(
+            '{"overview":"x","change_areas":[],"behavior_changes":[],'
+            '"risk_areas":[],"test_changes":[],"findings":[]}'
+        )
 
 
 def test_parse_structured_review_result_accepts_valid_findings():
@@ -92,6 +134,13 @@ def test_parse_structured_review_result_rejects_unknown_confidence(confidence):
 def test_render_structured_output_as_markdown_uses_python_renderer():
     report = ReviewReport(
         markdown=_structured_payload(),
+        summary={
+            "overview": "修复认证流程",
+            "change_areas": ["auth"],
+            "behavior_changes": ["刷新token"],
+            "risk_areas": ["并发刷新"],
+            "test_changes": [],
+        },
         repo="team/project",
         mr_iid=7,
         mr_url="https://gitlab.example.com/team/project/merge_requests/7",
@@ -110,6 +159,8 @@ def test_render_structured_output_as_markdown_uses_python_renderer():
     assert "team/project!7" in rendered.markdown
     assert "SQL_PERFORMANCE" in rendered.markdown
     assert "monitor_only" in rendered.markdown
+    assert "## MR Summary" in rendered.markdown
+    assert "修复认证流程" in rendered.markdown
 
 
 def _structured_payload(severity: str = "major", confidence: str = "HIGH") -> str:

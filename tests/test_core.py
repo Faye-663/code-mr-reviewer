@@ -203,6 +203,49 @@ def test_gitlab_mr_review_script_sends_claude_prompt_via_stdin(monkeypatch, tmp_
     assert kwargs["input"] == prompt
 
 
+def test_gitlab_mr_review_script_runs_summary_before_review_and_keeps_summary_local(monkeypatch, tmp_path: Path):
+    script = _load_gitlab_mr_review_script()
+    prompts = []
+    responses = iter(
+        [
+            json.dumps(
+                {
+                    "overview": "修复认证流程",
+                    "change_areas": ["auth"],
+                    "behavior_changes": ["刷新token"],
+                    "risk_areas": ["并发刷新"],
+                    "test_changes": ["新增测试"],
+                },
+                ensure_ascii=False,
+            ),
+            "# Review\n\nOnly review findings.",
+        ]
+    )
+
+    def fake_run(agent_type, command, prompt, repo_path):
+        prompts.append(prompt)
+        return next(responses)
+
+    monkeypatch.setattr(script, "run_agent_review", fake_run)
+
+    result = script.run_two_step_review(
+        "opencode",
+        "opencode",
+        "https://gitlab.example.com/team/project/merge_requests/7",
+        "base",
+        "head",
+        ["auth.py"],
+        tmp_path,
+    )
+
+    assert len(prompts) == 2
+    assert "生成 MR 概要" in prompts[0]
+    assert '"overview": "修复认证流程"' in prompts[1]
+    assert "修复认证流程" in result["local_report"]
+    assert result["comment_body"] == "# Review\n\nOnly review findings."
+    assert "修复认证流程" not in result["comment_body"]
+
+
 def test_config_treats_empty_dotenv_values_as_defaults(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("MR_REVIEWER_WORK_DIR", raising=False)
     env_file = tmp_path / ".env"

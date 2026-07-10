@@ -19,7 +19,7 @@ from mr_reviewer.gitlab import GitLabClient
 from mr_reviewer.inline_review import DiffPositionMap, DiffRefs, FindingValidationDecision, validate_review_findings
 from mr_reviewer.markdown_report import render_markdown_review_report
 from mr_reviewer.review_result import StructuredReviewParseError, parse_structured_review_result
-from mr_reviewer.reviewer import MergeRequestReviewTarget, ReviewReport, ReviewService
+from mr_reviewer.reviewer import MergeRequestReviewTarget, ReviewReport, ReviewService, ReviewStageError
 
 LOG = logging.getLogger("mr_reviewer")
 
@@ -191,12 +191,16 @@ class WebhookReviewQueue:
                 LOG.info("task=%s stage=webhook_report path=%s status=success", task_id, path)
             except Exception as exc:  # noqa: BLE001 - webhook 后台任务必须记录失败并继续处理队列。
                 LOG.error("task=%s stage=webhook_review status=failed error=%s", task_id, _redact(str(exc), self.config))
+                summary = exc.summary if isinstance(exc, ReviewStageError) else None
+                failure_stage = exc.stage if isinstance(exc, ReviewStageError) else ""
                 failure_report = ReviewReport(
                     markdown="",
+                    summary=summary,
                     head_sha=event.target.head_sha,
                     changed_files=[],
                     submission_owner="python",
                     submission_status="failed",
+                    failure_stage=failure_stage,
                 )
                 try:
                     write_webhook_monitor_report(event, failure_report, self.config, task_id, "failed", str(exc))
@@ -332,6 +336,7 @@ def write_webhook_monitor_report(
         "submission_status": report.submission_status,
         "comment_url": None,
         "markdown_preview": report.markdown[:4000],
+        "summary": report.summary,
     }
     if report.structured_parse_status:
         data["structured_parse_status"] = report.structured_parse_status
@@ -339,6 +344,8 @@ def write_webhook_monitor_report(
         data["finding_counts"] = report.finding_counts
     if report.finding_results is not None:
         data["finding_results"] = report.finding_results
+    if report.failure_stage:
+        data["failure_stage"] = report.failure_stage
     redacted_error = _redact(error, config) if error else None
     markdown_path = path.with_suffix(".md")
     markdown_path.write_text(

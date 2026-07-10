@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import json
 import logging
+import math
 import shutil
+import time
 from dataclasses import dataclass
 
 from mr_reviewer.config import Config
 from mr_reviewer.git import GitCheckout, GitClient
 from mr_reviewer.gitlab import GitLabClient, GitLabMrUrl, choose_diff_refs
 from mr_reviewer.opencode import AgentRunner
+from mr_reviewer.review_result import parse_review_summary
 
 LOG = logging.getLogger("mr_reviewer")
 DEFAULT_REVIEW_SKILL = "code-review"
@@ -16,6 +20,7 @@ DEFAULT_REVIEW_SKILL = "code-review"
 @dataclass(frozen=True, slots=True)
 class ReviewReport:
     markdown: str
+    summary: dict[str, object] | None = None
     repo: str = ""
     mr_iid: int | None = None
     mr_url: str = ""
@@ -31,6 +36,14 @@ class ReviewReport:
     structured_parse_status: str = ""
     finding_counts: dict[str, int] | None = None
     finding_results: list[dict] | None = None
+    failure_stage: str = ""
+
+
+class ReviewStageError(RuntimeError):
+    def __init__(self, stage: str, cause: Exception, summary: dict[str, object] | None = None):
+        super().__init__(f"{stage} stage failed: {cause}")
+        self.stage = stage
+        self.summary = summary
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +94,7 @@ class ReviewService:
             structured_output: bool = True,
     ) -> ReviewReport:
         task_dir = config.work_dir / task_id
+        deadline = time.monotonic() + config.task_timeout_seconds
         try:
             LOG.info(
                 "task=%s stage=gitlab_ready repo=%s source=%s target=%s",
@@ -109,19 +123,41 @@ class ReviewService:
                 len(diff_info["changed_files"]),
                 len(diff_info["diff"].splitlines()),
             )
-            # opencode 已在本地 checkout 后的仓库中运行，prompt 只传定位信息，避免把大 diff 塞进模型上下文。
+            summary_prompt = self._build_summary_prompt(target, diff_info)
+            LOG.info("task=%s stage=summary repo=%s status=started", task_id, target.project_path)
+            try:
+                summary_raw = self.opencode.run_review(
+                    summary_prompt,
+                    diff_info["repo_path"],
+                    _remaining_timeout(deadline),
+                )
+                summary = parse_review_summary(summary_raw)
+            except Exception as exc:  # noqa: BLE001 - 对外保留明确的执行阶段。
+                raise ReviewStageError("summary", exc) from exc
+            LOG.info("task=%s stage=summary repo=%s status=ready", task_id, target.project_path)
+
+            # Agent 已在本地 checkout 后的仓库中运行，prompt 只传定位信息，避免把大 diff 塞进模型上下文。
             prompt = self._build_prompt(
                 target,
                 diff_info,
                 config.comment_skill or DEFAULT_REVIEW_SKILL,
                 structured_output,
+                summary,
             )
             LOG.info("task=%s stage=opencode_review repo=%s timeout_seconds=%s", task_id, target.project_path,
                      config.task_timeout_seconds)
-            markdown = self.opencode.run_review(prompt, diff_info["repo_path"], config.task_timeout_seconds)
+            try:
+                markdown = self.opencode.run_review(
+                    prompt,
+                    diff_info["repo_path"],
+                    _remaining_timeout(deadline),
+                )
+            except Exception as exc:  # noqa: BLE001 - 对外保留概要和失败阶段。
+                raise ReviewStageError("review", exc, summary) from exc
             LOG.info("task=%s stage=report_ready repo=%s report_chars=%s", task_id, target.project_path, len(markdown))
             return ReviewReport(
                 markdown=markdown,
+                summary=summary,
                 repo=target.project_path,
                 mr_iid=target.mr_iid,
                 mr_url=target.mr_url,
@@ -146,6 +182,7 @@ class ReviewService:
             diff_info: dict,
             skill_name: str,
             structured_output: bool = False,
+            summary: dict[str, object] | None = None,
     ) -> str:
         changed_files = "\n".join(f"- {path}" for path in diff_info["changed_files"]) or "- <none>"
         prompt = (
@@ -161,8 +198,11 @@ class ReviewService:
         if not structured_output:
             return prompt
 
+        summary_json = json.dumps(summary or {}, ensure_ascii=False, indent=2, sort_keys=True)
         return (
             f"{prompt}\n\n"
+            "以下是第一阶段生成的 MR 概要，作为本次代码审查的上下文：\n"
+            f"{summary_json}\n\n"
             "自动检视模式必须只输出 JSON，不要输出 Markdown 或代码围栏。JSON 结构为：\n"
             '{"findings":[{"rule_id":"...","severity":"major","confidence":"HIGH",'
             '"old_path":"src/example.py","new_path":"src/example.py","old_line":-1,'
@@ -170,3 +210,26 @@ class ReviewService:
             '"notes":[],"test_gaps":[]}\n'
             "severity 只能使用 suggestion、minjor、major、fatal；confidence 只能使用 HIGH、MEDIUM、LOW。"
         )
+
+    def _build_summary_prompt(self, target: MergeRequestReviewTarget, diff_info: dict) -> str:
+        changed_files = "\n".join(f"- {path}" for path in diff_info["changed_files"]) or "- <none>"
+        return (
+            "分析本次 GitLab MR 并生成 MR 概要。只总结变更目标、范围、行为、风险和测试变化，不执行代码审查，"
+            "不要输出 finding。\n"
+            f"MR URL: {target.mr_url}\n"
+            f"Base SHA: {diff_info['base_sha']}\n"
+            f"Head SHA: {diff_info['head_sha']}\n"
+            "Changed files:\n"
+            f"{changed_files}\n"
+            f"代码仓在 {diff_info['repo_path']} 目录。\n"
+            "MR 概要必须只输出 JSON，不要输出 Markdown 或代码围栏。JSON 结构为：\n"
+            '{"overview":"...","change_areas":["..."],"behavior_changes":["..."],'
+            '"risk_areas":["..."],"test_changes":["..."]}'
+        )
+
+
+def _remaining_timeout(deadline: float) -> int:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("review task timeout exhausted")
+    return max(1, math.ceil(remaining))

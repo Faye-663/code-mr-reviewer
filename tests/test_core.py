@@ -95,8 +95,20 @@ def test_gitlab_mr_review_script_parses_mr_url():
 def test_gitlab_mr_review_script_builds_gitlab_api_paths():
     script = _load_gitlab_mr_review_script()
 
-    assert script.mr_api_path("team/project", 7) == "/api/v4/projects/team%2Fproject/merge_requests/7"
-    assert script.mr_note_api_path("team/project", 7) == "/api/v4/projects/team%2Fproject/merge_requests/7/notes"
+    assert script.mr_api_path("team/project", 7) == "/projects/team%2Fproject/merge_requests/7"
+    assert script.mr_note_api_path("team/project", 7) == "/projects/team%2Fproject/merge_requests/7/notes"
+
+
+def test_gitlab_mr_review_script_reads_independent_api_base_url(monkeypatch):
+    script = _load_gitlab_mr_review_script()
+    monkeypatch.setenv("GITLAB_BASE_URL", "https://gitlab.example.com")
+    monkeypatch.setenv("GITLAB_API_BASE_URL", "https://api.example.com/api/api/v4")
+    monkeypatch.setenv("GITLAB_TOKEN", "secret-token")
+
+    config = script.load_config()
+
+    assert config.gitlab_base_url == "https://gitlab.example.com"
+    assert config.gitlab_api_base_url == "https://api.example.com/api/api/v4"
 
 
 def test_gitlab_mr_review_script_builds_scoped_opencode_prompt(tmp_path: Path):
@@ -320,6 +332,31 @@ def test_config_reads_welink_onebox_target(tmp_path: Path, monkeypatch):
     assert config.welink_onebox_parent_id == "parent-example"
 
 
+def test_config_reads_independent_gitlab_api_base_url(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("MR_REVIEWER_GITLAB_API_BASE_URL", raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "MR_REVIEWER_GITLAB_BASE_URL=https://gitlab.example.com\n"
+        "MR_REVIEWER_GITLAB_API_BASE_URL=https://api.example.com/api/api/v4\n",
+        encoding="utf-8",
+    )
+
+    config = Config.from_env(env_file)
+
+    assert config.gitlab_base_url == "https://gitlab.example.com"
+    assert config.gitlab_api_base_url == "https://api.example.com/api/api/v4"
+
+
+def test_config_defaults_gitlab_api_base_url_to_web_api_v4(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("MR_REVIEWER_GITLAB_API_BASE_URL", raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text("MR_REVIEWER_GITLAB_BASE_URL=https://gitlab.example.com/\n", encoding="utf-8")
+
+    config = Config.from_env(env_file)
+
+    assert config.gitlab_api_base_url == "https://gitlab.example.com/api/v4"
+
+
 def test_parse_gitlab_mr_url_with_nested_project_path():
     parsed = parse_gitlab_mr_url(
         "https://gitlab.example.com/a/b/c/merge_requests/42",
@@ -495,7 +532,7 @@ def test_gitlab_client_posts_mr_note(monkeypatch):
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
 
-    client = GitLabClient("https://gitlab.example.com", "secret-token")
+    client = GitLabClient("https://api.example.com/api/api/v4", "secret-token")
     result = client.post_mr_note(
         GitLabMrUrl("https://gitlab.example.com", "team/project", 7),
         "# Review\n\nLooks good.",
@@ -504,7 +541,7 @@ def test_gitlab_client_posts_mr_note(monkeypatch):
     request, timeout = requests[0]
     assert result == {"id": 123}
     assert timeout == 30
-    assert request.full_url == "https://gitlab.example.com/api/v4/projects/team%2Fproject/merge_requests/7/notes"
+    assert request.full_url == "https://api.example.com/api/api/v4/projects/team%2Fproject/merge_requests/7/notes"
     assert request.get_method() == "POST"
     assert request.headers["Private-token"] == "secret-token"
     assert request.headers["Content-type"] == "application/x-www-form-urlencoded; charset=utf-8"
@@ -530,7 +567,7 @@ def test_gitlab_client_posts_mr_discussion_as_json(monkeypatch):
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
 
-    client = GitLabClient("https://gitlab.example.com", "secret-token")
+    client = GitLabClient("https://api.example.com/api/api/v4", "secret-token")
     result = client.post_mr_discussion(
         GitLabMrUrl("https://gitlab.example.com", "team/project", 7),
         "**[major][HIGH] title**",
@@ -552,13 +589,24 @@ def test_gitlab_client_posts_mr_discussion_as_json(monkeypatch):
     payload = json.loads(request.data.decode("utf-8"))
     assert result == {"id": "discussion-1", "notes": [{"id": 456}]}
     assert timeout == 30
-    assert request.full_url == "https://gitlab.example.com/api/v4/projects/team%2Fproject/merge_requests/7/discussions"
+    assert request.full_url == "https://api.example.com/api/api/v4/projects/team%2Fproject/merge_requests/7/discussions"
     assert request.get_method() == "POST"
     assert request.headers["Private-token"] == "secret-token"
     assert request.headers["Content-type"] == "application/json; charset=utf-8"
     assert payload["body"] == "**[major][HIGH] title**"
     assert payload["severity"] == "major"
     assert payload["position"]["new_line"] == 42
+
+
+def test_gitlab_client_uses_mr_detail_endpoint_without_isource(monkeypatch):
+    paths = []
+    client = GitLabClient("https://api.example.com/api/api/v4", "secret-token")
+    monkeypatch.setattr(client, "_get_json", lambda path: paths.append(path) or {"diff_refs": {}})
+
+    target = type("Target", (), {"project_path": "team/project", "mr_iid": 7})()
+    client.get_mr_detail_for_discussion_position(target)
+
+    assert paths == ["/projects/team%2Fproject/merge_requests/7"]
 
 
 def test_state_store_tracks_processed_messages(tmp_path: Path):

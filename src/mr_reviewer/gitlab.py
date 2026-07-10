@@ -62,14 +62,14 @@ class GitLabClient:
 
     def get_merge_request(self, mr: GitLabMrUrl) -> dict:
         project = urllib.parse.quote(mr.project_path, safe="")
-        return self._get_json(f"/api/v4/projects/{project}/merge_requests/{mr.mr_iid}")
+        return self._get_json(f"/projects/{project}/merge_requests/{mr.mr_iid}")
 
     def get_mr_detail_for_discussion_position(self, target) -> dict:
         project = urllib.parse.quote(target.project_path, safe="")
-        return self._get_json(f"/api/v4/projects/{project}/isource/merge_requests/{target.mr_iid}")
+        return self._get_json(f"/projects/{project}/merge_requests/{target.mr_iid}")
 
     def get_project_http_url(self, project_id: int) -> str:
-        project = self._get_json(f"/api/v4/projects/{project_id}")
+        project = self._get_json(f"/projects/{project_id}")
         repo_url = project.get("http_url_to_repo")
         if not repo_url:
             raise ValueError("GitLab project response does not include http_url_to_repo")
@@ -78,13 +78,13 @@ class GitLabClient:
     def post_mr_note(self, mr: GitLabMrUrl, body: str) -> dict:
         project = urllib.parse.quote(mr.project_path, safe="")
         return self._post_form(
-            f"/api/v4/projects/{project}/merge_requests/{mr.mr_iid}/notes",
+            f"/projects/{project}/merge_requests/{mr.mr_iid}/notes",
             {"body": body},
         )
 
     def list_mr_discussions(self, target) -> list[dict]:
         project = urllib.parse.quote(target.project_path, safe="")
-        discussions = self._get_json(f"/api/v4/projects/{project}/merge_requests/{target.mr_iid}/discussions")
+        discussions = self._get_json(f"/projects/{project}/merge_requests/{target.mr_iid}/discussions")
         if not isinstance(discussions, list):
             raise ValueError("GitLab discussions response must be a list")
         return discussions
@@ -92,7 +92,7 @@ class GitLabClient:
     def post_mr_discussion(self, target, body: str, severity: str, position: dict) -> dict:
         project = urllib.parse.quote(target.project_path, safe="")
         return self._post_json(
-            f"/api/v4/projects/{project}/merge_requests/{target.mr_iid}/discussions",
+            f"/projects/{project}/merge_requests/{target.mr_iid}/discussions",
             {"body": body, "severity": severity, "position": position},
         )
 

@@ -279,7 +279,7 @@ class DiscussionPublisher:
 
 
 def run_webhook_server(config: Config, service: ReviewService) -> int:
-    gitlab = GitLabClient(config.gitlab_base_url, config.gitlab_token, config.test_gitlab_responses)
+    gitlab = GitLabClient(config.gitlab_api_base_url, config.gitlab_token, config.test_gitlab_responses)
     worker = WebhookReviewQueue(service, gitlab, config)
     worker.start()
     handler = make_webhook_handler(config, worker.enqueue)

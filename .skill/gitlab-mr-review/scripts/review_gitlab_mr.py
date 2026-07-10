@@ -25,6 +25,7 @@ class MrUrl(NamedTuple):
 
 class Config(NamedTuple):
     gitlab_base_url: str
+    gitlab_api_base_url: str
     gitlab_token: str
     agent_type: str
     agent_command: str
@@ -70,6 +71,9 @@ def load_config() -> Config:
         agent_command = "opencode" if agent_type == "opencode" else "claude"
     return Config(
         gitlab_base_url=normalize_base_url(base_url),
+        gitlab_api_base_url=normalize_base_url(
+            os.environ.get("GITLAB_API_BASE_URL", "").strip() or f"{normalize_base_url(base_url)}/api/v4"
+        ),
         gitlab_token=token,
         agent_type=agent_type,
         agent_command=agent_command,
@@ -80,7 +84,7 @@ def load_config() -> Config:
 
 def review_gitlab_mr(mr_url: str, config: Config) -> dict[str, object]:
     mr = parse_mr_url(mr_url, config.gitlab_base_url)
-    client = GitLabApi(config.gitlab_base_url, config.gitlab_token)
+    client = GitLabApi(config.gitlab_api_base_url, config.gitlab_token)
     metadata = client.get_json(mr_api_path(mr.project_path, mr.mr_iid))
     base_sha, head_sha = choose_diff_refs(metadata)
     target_repo_url = client.get_project_http_url(int(metadata["target_project_id"]))
@@ -150,7 +154,7 @@ def normalize_base_url(base_url: str) -> str:
 
 def mr_api_path(project_path: str, mr_iid: int) -> str:
     project = urllib.parse.quote(project_path, safe="")
-    return f"/api/v4/projects/{project}/merge_requests/{mr_iid}"
+    return f"/projects/{project}/merge_requests/{mr_iid}"
 
 
 def mr_note_api_path(project_path: str, mr_iid: int) -> str:
@@ -317,7 +321,7 @@ class GitLabApi:
         return self._open_json(request)
 
     def get_project_http_url(self, project_id: int) -> str:
-        project = self.get_json(f"/api/v4/projects/{project_id}")
+        project = self.get_json(f"/projects/{project_id}")
         repo_url = project.get("http_url_to_repo")
         if not isinstance(repo_url, str) or not repo_url:
             raise ValueError("GitLab project response does not include http_url_to_repo")

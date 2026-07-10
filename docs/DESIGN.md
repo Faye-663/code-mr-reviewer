@@ -1,6 +1,6 @@
 # 设计方案图
 
-本项目有两类触发入口：WeLink IM poll 和 GitLab webhook。入口负责接收事件、过滤不可处理请求，然后把 GitLab MR 信息交给共用的 review core。review core 负责 clone/fetch/checkout、生成 diff、调用所选 Agent，并返回结构化 JSON review 结果；Python 侧再负责校验、inline 发布或 Markdown 渲染。
+本项目有两类触发入口：WeLink IM poll 和 GitLab webhook。入口负责接收事件、过滤不可处理请求，然后把 GitLab MR 信息交给共用的 review core。review core 负责 clone/fetch/checkout、生成 diff，并按同一总超时预算执行 two-step Agent 调用：先生成结构化 MR 概要，再把概要作为上下文生成结构化 review 结果；Python 侧再负责校验、inline 发布或 Markdown 渲染。
 
 ## 总体结构
 
@@ -12,8 +12,8 @@ flowchart TD
     B --> F["ReviewService"]
     E --> F
     F --> G["GitClient: clone / fetch / checkout / diff"]
-    G --> H["AgentRunner: 在 repo 目录运行 OpenCode 或 Claude Code"]
-    H --> I["结构化 JSON review 结果"]
+    G --> H["AgentRunner: 生成结构化 MR 概要"]
+    H --> I["AgentRunner: 携带概要执行 code review"]
     I --> J["Python parser / validator"]
     J --> K["IM 入口: 渲染 Markdown 上传 OneBox 并通知群聊"]
     J --> L["webhook 入口: 发布 GitLab inline discussion"]
@@ -30,8 +30,9 @@ flowchart TD
     D -- "未 @Bot / 不在白名单 / 无 MR URL" --> E["跳过消息"]
     D -- "命中 GitLab MR URL" --> F["GitLabClient: 获取 MR 元数据"]
     F --> G["ReviewService.review"]
-    G --> H["生成结构化 JSON review 结果"]
-    H --> I["Python 渲染 Markdown 报告"]
+    G --> H["生成结构化 MR 概要"]
+    H --> H2["携带概要生成结构化 JSON review 结果"]
+    H2 --> I["Python 渲染概要与 review Markdown 报告"]
     I --> J["WeLink OneBox 文件上传"]
     J --> K["WeLink 群通知报告文件名"]
     K --> L["StateStore: 标记消息已处理"]
@@ -48,8 +49,9 @@ flowchart TD
     D -- "是" --> F["WebhookReviewQueue.enqueue"]
     F --> G["ReviewService.review_target"]
     G --> H["clone / fetch / checkout / diff"]
-    H --> I["AgentRunner: 调用 OpenCode 或 Claude Code"]
-    I --> J["parse JSON / validate finding position"]
+    H --> I["AgentRunner: 生成并校验 MR 概要"]
+    I --> I2["AgentRunner: 携带概要生成 review"]
+    I2 --> J["parse JSON / validate finding position"]
     J --> K{"MR_REVIEWER_WEBHOOK_POST_COMMENT"}
     K -- "true" --> L["GitLabClient.post_mr_discussion"]
     K -- "false" --> M["跳过 inline 发布"]
@@ -59,7 +61,7 @@ flowchart TD
 
 ## 结构化 Review 契约
 
-自动入口要求 Agent 只输出 JSON，不输出 Markdown 或代码围栏。Python 侧把 JSON 解析为结构化 finding，再按入口决定后续动作：webhook 发布可定位 finding 的 inline discussion；`run-once` 和 WeLink poll 渲染 Markdown 报告。
+自动入口的两步都要求 Agent 只输出 JSON，不输出 Markdown 或代码围栏。第一步概要严格包含 `overview`、`change_areas`、`behavior_changes`、`risk_areas`、`test_changes`；第二步把该概要作为只读上下文，生成下面的结构化 finding。概要进入本地 JSON/Markdown 报告，但不进入 GitLab comment/discussion；webhook 只发布可定位 finding 的 inline discussion，`run-once` 和 WeLink poll 渲染包含两步结果的 Markdown 报告。
 
 顶层结构：
 
@@ -117,7 +119,8 @@ log/webhook-reports/20260709T120000Z-team_project-mr-7-webhook-abc123.md
 
 失败策略：
 
-- opencode 命令失败：写失败态报告。
+- 概要生成或校验失败：停止第二步，写 `failure_stage=summary` 的失败态报告。
+- 第二次 Agent 调用失败：保留已完成概要，写 `failure_stage=review` 的失败态报告。
 - JSON parse failed：不发布 inline discussion，写 `parse_failed` 报告，并在 Markdown 中保留脱敏后的原始输出。
 - finding 全部被过滤：不发布 inline discussion，写成功态本地报告。
 - 读取远端 discussions 失败：不发布新 discussion，避免失去幂等后刷屏。
@@ -134,7 +137,7 @@ MR Web URL 与 REST API root 是两个独立边界：`MR_REVIEWER_GITLAB_BASE_UR
 - `im.py`：WeLink 历史消息解析、字段归一化、触发条件判断。
 - `gitlab.py`：GitLab MR URL 解析、MR 元数据、MR 详情 diff_refs、项目 clone URL 查询、discussions 读取与 inline discussion 发布。
 - `git.py`：临时 clone、fork remote 处理、分支 fetch、checkout、diff 与资源限制。
-- `reviewer.py`：共用 review core，串联 GitLab、Git 和 Agent。
-- `review_result.py` / `inline_review.py` / `markdown_report.py`：结构化 JSON 解析、finding 行定位校验、GitLab inline 发布结果整理和 Markdown 报告渲染。
+- `reviewer.py`：共用 review core，串联 GitLab、Git 和 two-step Agent 调用，并管理两步共享的任务超时预算。
+- `review_result.py` / `inline_review.py` / `markdown_report.py`：概要与 review JSON 解析、finding 行定位校验、GitLab inline 发布结果整理和本地 Markdown 报告渲染。
 - `opencode.py`：AgentRunner protocol、OpenCode/Claude Code adapter、debug 参数和 prompt 日志脱敏。
 - `state.py`：IM poll 的本地去重状态文件，避免重复处理同一条 IM 消息。

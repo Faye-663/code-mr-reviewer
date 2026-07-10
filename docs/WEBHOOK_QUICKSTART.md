@@ -5,7 +5,7 @@
 ## 适用场景
 
 - GitLab 在 MR 打开、重新打开或 source branch 更新时主动回调本机服务。
-- 服务收到 webhook 后在后台执行 review，并把本地监视报告写入 `MR_REVIEWER_REPORT_DIR`。
+- 服务收到 webhook 后在后台执行 two-step review：先生成 MR 概要，再把概要作为第二步 code review 上下文，并把两步结果写入 `MR_REVIEWER_REPORT_DIR`。
 - Python 侧会把高置信、可定位的 finding 发布为 GitLab inline discussion；也可以关闭自动发布，只保留本地报告。
 
 ## 最小配置
@@ -44,6 +44,8 @@ MR_REVIEWER_REPORT_DIR=log/webhook-reports
 - `MR_REVIEWER_WEBHOOK_SECRET_HEADER` 可按平台调整，例如 CodeHub 使用 `X-CodeHub-Token` 时改成该值。
 - `MR_REVIEWER_WEBHOOK_POST_COMMENT=false` 时不会发布 inline discussion，只写本地 JSON 监视报告和 Markdown review 报告。
 - `MR_REVIEWER_COMMENT_SKILL` 仍可选用于指定 review prompt skill；该 skill 必须只输出结构化 JSON，不要配置会自行提交评论的 skill。
+- MR 概要只保存在本地 JSON/Markdown 报告中，不会发布到 GitLab；线上仅发布第二步产生且满足条件的 review finding。
+- `MR_REVIEWER_AGENT_DEBUG` 默认关闭，只用于 Agent CLI 故障诊断；常规 webhook 审计使用 `MR_REVIEWER_REPORT_DIR`，不需要额外开启 debug。
 
 ## 启动服务
 
@@ -88,7 +90,7 @@ Invoke-WebRequest `
   -Body '{"object_kind":"push"}'
 ```
 
-如果使用最小 MR payload 自测，可处理事件会返回 `202 accepted`，随后后台任务会尝试 clone、diff、opencode review，并在 `MR_REVIEWER_REPORT_DIR` 写入同 stem 的 `.json` 监视报告和 `.md` review 报告；当 `MR_REVIEWER_WEBHOOK_POST_COMMENT=true` 时还会发布可定位 finding 的 inline discussion。
+如果使用最小 MR payload 自测，可处理事件会返回 `202 accepted`，随后后台任务会尝试 clone、diff、Agent 概要生成和 Agent review，并在 `MR_REVIEWER_REPORT_DIR` 写入同 stem 的 `.json` 监视报告和 `.md` review 报告；当 `MR_REVIEWER_WEBHOOK_POST_COMMENT=true` 时还会发布可定位 finding 的 inline discussion。
 
 ## 常见问题
 
@@ -98,3 +100,4 @@ Invoke-WebRequest `
 - 返回 `403 WEBHOOK_TOKEN_INVALID`：GitLab Secret token 和 `MR_REVIEWER_WEBHOOK_SECRET` 不一致。
 - 返回 `200 skipped`：请求已到达服务，但事件不是可处理的 MR open、reopen 或 source update 事件。
 - review 成功但 MR 没有 inline discussion：检查 `MR_REVIEWER_WEBHOOK_POST_COMMENT` 是否为 `true`，`MR_REVIEWER_GITLAB_TOKEN` 是否有读取 MR diff 与提交 discussion 的权限，并查看本地 `.json`/`.md` 报告中的 finding 是否被过滤、无法定位或判定为重复。
+- 本地报告失败：查看 JSON/Markdown 中的 `failure_stage`。`summary` 表示第一步概要失败且未进入 review；`review` 表示第二步失败，报告仍会保留已生成的概要。

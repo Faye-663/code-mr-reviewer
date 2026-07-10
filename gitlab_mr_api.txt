@@ -72,7 +72,7 @@ https://api.xxx.com/api/api/v4/projects/{id}/merge_requests/{noteable_id}/discus
 
 ## URL
 GET
-https://api.xxx.com/api/api/v4/projects/{project_id}/isource/merge_requests/{iid}
+https://api.xxx.com/api/api/v4/projects/{project_id}/merge_requests/{iid}
 
 参数：
 

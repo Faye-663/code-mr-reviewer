@@ -20,13 +20,14 @@ https://gitlab.example.com/team/project/merge_requests/7
 ## 环境变量
 
 - `GITLAB_BASE_URL`：GitLab 根地址，例如 `https://gitlab.example.com`。
+- `GITLAB_API_BASE_URL`：完整 GitLab REST API 根地址；为空时使用 `<GITLAB_BASE_URL>/api/v4`。
 - `GITLAB_TOKEN`：GitLab token，用于 MR API、HTTPS clone 和提交 MR comment。
 - `MR_REVIEWER_AGENT_TYPE`：可选，`opencode` 或 `claude-code`，默认 `opencode`。
 - `MR_REVIEWER_AGENT_COMMAND`：可选；为空时根据 agent type 使用 `opencode` 或 `claude`。
 - `MR_REVIEW_WORK_DIR`：可选，默认系统临时目录下的 `gitlab-mr-review`。
 - `MR_REVIEW_SUBMIT_COMMENT`：可选，默认 `true`；设置为 `false` 时只生成本地 Markdown 报告，不写回 MR。
 
-缺少 `GITLAB_BASE_URL` 或 `GITLAB_TOKEN` 时停止执行，并说明缺少的配置。
+缺少 `GITLAB_BASE_URL` 或 `GITLAB_TOKEN` 时停止执行，并说明缺少的配置。API 使用独立域名或前缀时必须显式配置 `GITLAB_API_BASE_URL`。
 
 ## 执行方式
 

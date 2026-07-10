@@ -20,6 +20,7 @@ Copy-Item .env.example .env
 
 ```env
 MR_REVIEWER_GITLAB_BASE_URL=https://gitlab.example.com
+MR_REVIEWER_GITLAB_API_BASE_URL=https://api.example.com/api/api/v4
 MR_REVIEWER_GITLAB_TOKEN=your-gitlab-token
 
 MR_REVIEWER_AGENT_TYPE=opencode
@@ -37,6 +38,7 @@ MR_REVIEWER_REPORT_DIR=log/webhook-reports
 
 说明：
 
+- `MR_REVIEWER_GITLAB_BASE_URL` 用于 MR Web URL 校验；`MR_REVIEWER_GITLAB_API_BASE_URL` 是完整 REST API 根地址。后者为空时回退为 `<GitLab根地址>/api/v4`。
 - `MR_REVIEWER_WEBHOOK_HOST` 是服务监听地址。本机自测可用 `127.0.0.1`；GitLab 从其他机器访问本机 IP 时，使用 `0.0.0.0` 或实际网卡 IP。
 - `MR_REVIEWER_WEBHOOK_SECRET` 可为空；配置后会校验 `MR_REVIEWER_WEBHOOK_SECRET_HEADER` 指定的请求头，默认是 `X-Gitlab-Token`。
 - `MR_REVIEWER_WEBHOOK_SECRET_HEADER` 可按平台调整，例如 CodeHub 使用 `X-CodeHub-Token` 时改成该值。

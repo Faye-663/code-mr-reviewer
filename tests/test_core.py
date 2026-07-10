@@ -157,9 +157,11 @@ def test_gitlab_mr_review_script_wraps_windows_cmd_opencode(monkeypatch):
 
 def test_gitlab_mr_review_script_sends_opencode_prompt_as_file(monkeypatch, tmp_path: Path):
     script = _load_gitlab_mr_review_script()
+    calls = []
     transferred = []
 
     def fake_run(args, **kwargs):
+        calls.append(args)
         prompt_file = Path(args[args.index("--file") + 1])
         transferred.append(prompt_file.read_text(encoding="utf-8"))
 
@@ -176,6 +178,12 @@ def test_gitlab_mr_review_script_sends_opencode_prompt_as_file(monkeypatch, tmp_
 
     assert result == "review"
     assert transferred == ["line1\nBase SHA: base"]
+    assert calls[0][1:4] == [
+        "run",
+        "Follow the instructions in the attached file.",
+        "--file",
+    ]
+    assert Path(calls[0][4]).suffix == ".md"
 
 
 def test_gitlab_mr_review_script_sends_claude_prompt_via_stdin(monkeypatch, tmp_path: Path):

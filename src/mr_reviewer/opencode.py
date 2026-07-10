@@ -15,7 +15,7 @@ from typing import Protocol
 from mr_reviewer.process import format_command, prepare_command
 
 LOG = logging.getLogger("mr_reviewer")
-PROMPT_FILE_MESSAGE = "Read the attached prompt.md and follow it exactly."
+PROMPT_FILE_MESSAGE = "Follow the instructions in the attached file."
 PROMPT_TRANSPORTS = {"argument", "file"}
 
 
@@ -45,12 +45,13 @@ class OpenCodeRunner:
         if self.debug:
             args += ["--print-logs", "--log-level", "DEBUG"]
         prompt_sha256 = _prompt_sha256(prompt)
-        diagnostic_path = self._create_diagnostic_path(prompt_sha256) if self.diagnostic_dir else None
+        diagnostic_path = self._create_diagnostic_path(prompt_sha256) if self.debug and self.diagnostic_dir else None
         prompt_file = None
         cleanup_prompt_file = False
         # 多行 prompt 不进入 argv，避免 Windows 批处理重解析，并统一 Linux/Windows 行为。
         prompt_file, cleanup_prompt_file = self._write_prompt_transfer_file(prompt, diagnostic_path)
-        args += ["run", "--file", str(prompt_file), PROMPT_FILE_MESSAGE]
+        # OpenCode 的 --file 是数组参数；位置参数必须放在它之前，避免被解析为额外附件。
+        args += ["run", PROMPT_FILE_MESSAGE, "--file", str(prompt_file)]
         LOG.info(
             "stage=opencode command=%s cwd=%s prompt_transport=%s prompt_chars=%s prompt_sha256=%s "
             "mr_url_present=%s diagnostic_path=%s",
@@ -131,7 +132,7 @@ class ClaudeCodeRunner(OpenCodeRunner):
             args += ["--debug"]
         args += ["-p", "--output-format", "text"]
         prompt_sha256 = _prompt_sha256(prompt)
-        diagnostic_path = self._create_diagnostic_path(prompt_sha256) if self.diagnostic_dir else None
+        diagnostic_path = self._create_diagnostic_path(prompt_sha256) if self.debug and self.diagnostic_dir else None
         LOG.info(
             "stage=claude_code command=%s cwd=%s prompt_transport=stdin prompt_chars=%s prompt_sha256=%s "
             "mr_url_present=%s diagnostic_path=%s",

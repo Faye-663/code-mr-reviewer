@@ -577,14 +577,15 @@ def test_opencode_runner_uses_utf8_and_redacts_prompt_in_logs(monkeypatch, tmp_p
 
     args, kwargs = calls[0]
     assert args[:5] == ["opencode", "--print-logs", "--log-level", "DEBUG", "run"]
-    assert args[5] == "--file"
+    assert args[5] == "Follow the instructions in the attached file."
+    assert args[6] == "--file"
     assert transferred_prompts == ["请 review 这段 diff"]
     assert "请 review 这段 diff" not in args
     assert kwargs["encoding"] == "utf-8"
     assert kwargs["errors"] == "replace"
     assert output == "# Review"
     log_text = "\n".join(record.getMessage() for record in caplog.records)
-    assert "opencode --print-logs --log-level DEBUG run --file" in log_text
+    assert "opencode --print-logs --log-level DEBUG run \"Follow the instructions in the attached file.\" --file" in log_text
     assert "请 review" not in log_text
 
 
@@ -697,6 +698,28 @@ def test_opencode_runner_writes_diagnostics(monkeypatch, tmp_path: Path, caplog)
     assert "https://gitlab.example.com" not in log_text
 
 
+def test_opencode_runner_does_not_write_diagnostics_when_debug_is_disabled(monkeypatch, tmp_path: Path):
+    def fake_run(args, **kwargs):
+        class Result:
+            returncode = 0
+            stderr = ""
+            stdout = "# Review\n"
+
+        return Result()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    diagnostic_root = tmp_path / "diagnostics"
+
+    output = OpenCodeRunner(
+        "opencode",
+        debug=False,
+        diagnostic_dir=diagnostic_root,
+    ).run_review("请 review 这段 diff", tmp_path, 60)
+
+    assert output == "# Review"
+    assert not diagnostic_root.exists()
+
+
 def test_opencode_runner_can_send_prompt_as_file(monkeypatch, tmp_path: Path):
     calls = []
 
@@ -728,12 +751,12 @@ def test_opencode_runner_can_send_prompt_as_file(monkeypatch, tmp_path: Path):
     args, kwargs = calls[0]
     assert output == "# Review"
     assert args[:5] == ["opencode", "--print-logs", "--log-level", "DEBUG", "run"]
-    assert args[5] == "--file"
-    prompt_file = Path(args[6])
+    assert args[5] == "Follow the instructions in the attached file."
+    assert args[6] == "--file"
+    prompt_file = Path(args[7])
     assert prompt_file.name == "prompt.md"
     assert prompt_file.read_text(encoding="utf-8") == prompt
     assert "https://gitlab.example.com" not in args
-    assert args[7] == "Read the attached prompt.md and follow it exactly."
     assert kwargs["cwd"] == tmp_path
     command_text = prompt_file.parent.joinpath("command.txt").read_text(encoding="utf-8")
     assert "--file" in command_text

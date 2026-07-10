@@ -9,6 +9,7 @@ import uuid
 from mr_reviewer.config import Config
 from mr_reviewer.gitlab import GitLabMrUrl
 from mr_reviewer.im import parse_poll_output
+from mr_reviewer.observability import write_debug_text
 from mr_reviewer.process import format_command, prepare_command, split_command
 
 LOG = logging.getLogger("mr_reviewer")
@@ -41,6 +42,14 @@ def poll_messages(config: Config):
         errors="replace",
         capture_output=True,
         check=False,
+    )
+    write_debug_text("im", "poll-stdout", ".log", result.stdout or "", config.gitlab_token)
+    write_debug_text("im", "poll-stderr", ".log", result.stderr or "", config.gitlab_token)
+    LOG.info(
+        "stage=im_poll_result returncode=%s stdout_chars=%s stderr_chars=%s",
+        result.returncode,
+        len(result.stdout or ""),
+        len(result.stderr or ""),
     )
     if result.returncode != 0:
         raise RuntimeError(f"IM poll command failed: {result.stderr.strip()}")
@@ -79,7 +88,7 @@ def reply(config: Config, markdown: str, mr: GitLabMrUrl) -> None:
             )
         else:
             notify_text = f"代码审查报告已上传到 WeLink OneBox，群空间Review目录下: {file_name}"
-        LOG.info("stage=im_send group_id=%s text=%s", group_id, notify_text)
+        LOG.info("stage=im_send group_id=%s text_chars=%s", group_id, len(notify_text))
         reply_args = split_command(config.im_reply_command) + [
             "--group-id",
             group_id,
@@ -94,12 +103,9 @@ def reply(config: Config, markdown: str, mr: GitLabMrUrl) -> None:
             capture_output=True,
             check=False,
         )
-        LOG.info(
-            "stage=im_send_result returncode=%s stdout=%s stderr=%s",
-            reply_result.returncode,
-            reply_result.stdout.strip(),
-            reply_result.stderr.strip(),
-        )
+        write_debug_text("im", "send-stdout", ".log", reply_result.stdout or "", config.gitlab_token)
+        write_debug_text("im", "send-stderr", ".log", reply_result.stderr or "", config.gitlab_token)
+        LOG.info("stage=im_send_result returncode=%s stdout_chars=%s stderr_chars=%s", reply_result.returncode, len(reply_result.stdout or ""), len(reply_result.stderr or ""))
         if reply_result.returncode != 0:
             raise RuntimeError(f"IM reply command failed: {reply_result.stderr.strip()}")
     finally:
@@ -134,12 +140,9 @@ def upload_report(config: Config, file_path: str, markdown: str) -> str | None:
         capture_output=True,
         check=False,
     )
-    LOG.info(
-        "stage=file_upload_result returncode=%s stdout=%s stderr=%s",
-        upload_result.returncode,
-        upload_result.stdout.strip(),
-        upload_result.stderr.strip(),
-    )
+    write_debug_text("im", "upload-stdout", ".log", upload_result.stdout or "", config.gitlab_token)
+    write_debug_text("im", "upload-stderr", ".log", upload_result.stderr or "", config.gitlab_token)
+    LOG.info("stage=file_upload_result returncode=%s stdout_chars=%s stderr_chars=%s", upload_result.returncode, len(upload_result.stdout or ""), len(upload_result.stderr or ""))
     if upload_result.returncode != 0:
         error = upload_result.stderr.strip() or upload_result.stdout.strip() or f"returncode={upload_result.returncode}"
         LOG.warning("stage=file_upload_failed error=%s", error)

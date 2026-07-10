@@ -333,6 +333,7 @@ def test_poll_once_runs_review_and_replies(tmp_path: Path):
         "MR_REVIEWER_STATE_PATH": str(tmp_path / "state.json"),
         "MR_REVIEWER_OPENCODE_COMMAND": f"{sys.executable} {opencode_script}",
         "MR_REVIEWER_TEST_GITLAB_RESPONSES": str(gitlab_file),
+        "MR_REVIEWER_LOG_LEVEL": "INFO",
         "PYTHONPATH": str(Path("src").resolve()),
         "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
     })
@@ -678,19 +679,20 @@ def test_opencode_runner_writes_diagnostics(monkeypatch, tmp_path: Path, caplog)
     assert output == "# Review"
     diagnostic_path = next(diagnostic_root.iterdir())
     assert diagnostic_path.joinpath("prompt.md").read_text(encoding="utf-8") == prompt
-    assert diagnostic_path.joinpath("cwd.txt").read_text(encoding="utf-8") == str(tmp_path)
-    command_text = diagnostic_path.joinpath("command.txt").read_text(encoding="utf-8")
+    request = json.loads(diagnostic_path.joinpath("request.json").read_text(encoding="utf-8"))
+    assert request["cwd"] == str(tmp_path)
+    command_text = request["command"]
     assert "opencode --print-logs --log-level DEBUG run" in command_text
     assert "--file" in command_text
-    assert "prompt.md" in command_text
+    assert "mr-reviewer-agent-prompt-" in command_text
     assert "https://gitlab.example.com" not in command_text
-    env_summary = json.loads(diagnostic_path.joinpath("env-summary.json").read_text(encoding="utf-8"))
+    env_summary = request["environment"]
     assert env_summary["debug"] is True
     assert env_summary["resolved_executable"] == "C:\\bin\\opencode.exe"
     assert "OPENCODE_TEST_FLAG" in env_summary["related_env_names"]
     assert diagnostic_path.joinpath("stdout.md").read_text(encoding="utf-8") == "# Review\n"
     assert diagnostic_path.joinpath("stderr.log").read_text(encoding="utf-8") == "debug logs\n"
-    assert diagnostic_path.joinpath("returncode.txt").read_text(encoding="utf-8") == "0"
+    assert json.loads(diagnostic_path.joinpath("result.json").read_text(encoding="utf-8"))["returncode"] == 0
     log_text = "\n".join(record.getMessage() for record in caplog.records)
     assert "mr_url_present=True" in log_text
     assert "prompt_sha256=" in log_text
@@ -754,13 +756,15 @@ def test_opencode_runner_can_send_prompt_as_file(monkeypatch, tmp_path: Path):
     assert args[5] == "Follow the instructions in the attached file."
     assert args[6] == "--file"
     prompt_file = Path(args[7])
-    assert prompt_file.name == "prompt.md"
-    assert prompt_file.read_text(encoding="utf-8") == prompt
+    assert prompt_file.name.startswith("mr-reviewer-agent-prompt-")
+    assert not prompt_file.exists()
     assert "https://gitlab.example.com" not in args
     assert kwargs["cwd"] == tmp_path
-    command_text = prompt_file.parent.joinpath("command.txt").read_text(encoding="utf-8")
+    diagnostic_path = next(diagnostic_root.iterdir())
+    assert diagnostic_path.joinpath("prompt.md").read_text(encoding="utf-8") == prompt
+    command_text = json.loads(diagnostic_path.joinpath("request.json").read_text(encoding="utf-8"))["command"]
     assert "--file" in command_text
-    assert "prompt.md" in command_text
+    assert "mr-reviewer-agent-prompt-" in command_text
     assert "https://gitlab.example.com" not in command_text
 
 

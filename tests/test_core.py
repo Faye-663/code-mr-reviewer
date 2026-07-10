@@ -9,6 +9,7 @@ from mr_reviewer.config import Config
 from mr_reviewer.git import GitCheckout, GitClient, ResourceLimitError
 from mr_reviewer.gitlab import GitLabClient, GitLabMrUrl, choose_diff_refs, parse_gitlab_mr_url
 from mr_reviewer.im import ImMessage, build_welink_reply_args, parse_poll_output, should_trigger_review
+from mr_reviewer.observability import task_context
 from mr_reviewer.process import prepare_command
 from mr_reviewer.state import StateStore
 
@@ -281,6 +282,53 @@ def test_config_defaults_to_opencode_agent_with_debug_disabled(tmp_path: Path, m
     assert config.agent_type == "opencode"
     assert config.agent_command == "opencode"
     assert config.agent_debug is False
+    assert config.log_level == "OFF"
+
+
+def test_config_uses_explicit_log_level_before_legacy_agent_debug(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("MR_REVIEWER_LOG_LEVEL", raising=False)
+    monkeypatch.delenv("MR_REVIEWER_AGENT_DEBUG", raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "MR_REVIEWER_GITLAB_BASE_URL=https://gitlab.example.com\n"
+        "MR_REVIEWER_LOG_LEVEL=INFO\n"
+        "MR_REVIEWER_AGENT_DEBUG=true\n",
+        encoding="utf-8",
+    )
+
+    config = Config.from_env(env_file)
+
+    assert config.log_level == "INFO"
+    assert config.agent_debug is False
+
+
+def test_config_maps_legacy_agent_debug_to_debug_log_level(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("MR_REVIEWER_LOG_LEVEL", raising=False)
+    monkeypatch.delenv("MR_REVIEWER_AGENT_DEBUG", raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "MR_REVIEWER_GITLAB_BASE_URL=https://gitlab.example.com\n"
+        "MR_REVIEWER_AGENT_DEBUG=true\n",
+        encoding="utf-8",
+    )
+
+    config = Config.from_env(env_file)
+
+    assert config.log_level == "DEBUG"
+    assert config.agent_debug is True
+
+
+def test_config_rejects_unsupported_log_level(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("MR_REVIEWER_LOG_LEVEL", raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "MR_REVIEWER_GITLAB_BASE_URL=https://gitlab.example.com\n"
+        "MR_REVIEWER_LOG_LEVEL=TRACE\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="unsupported log level"):
+        Config.from_env(env_file)
 
 
 def test_config_can_disable_opencode_debug(tmp_path: Path, monkeypatch):
@@ -649,6 +697,32 @@ def test_gitlab_client_posts_mr_discussion_as_json(monkeypatch):
     assert payload["body"] == "**[major][HIGH] title**"
     assert payload["severity"] == "major"
     assert payload["position"]["new_line"] == 42
+
+
+def test_gitlab_api_debug_artifact_is_task_scoped_and_redacted(monkeypatch, tmp_path: Path):
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b'{"id": 123}'
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout: Response())
+    client = GitLabClient("https://api.example.com/api/v4", "secret-token")
+
+    with task_context("webhook-abc", tmp_path / "debug", enabled=True):
+        client.post_mr_note(GitLabMrUrl("https://gitlab.example.com", "team/project", 7), "token=secret-token")
+
+    artifacts = list((tmp_path / "debug").glob("*/webhook-abc/api/*.json"))
+    assert len(artifacts) == 1
+    content = artifacts[0].read_text(encoding="utf-8")
+    assert "secret-token" not in content
+    assert "<redacted>" in content
 
 
 def test_gitlab_client_uses_mr_detail_endpoint_without_isource(monkeypatch):

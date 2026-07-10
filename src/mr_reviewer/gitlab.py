@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import json
+import logging
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+
+from mr_reviewer.observability import write_debug_json
+
+
+LOG = logging.getLogger("mr_reviewer")
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,60 +104,55 @@ class GitLabClient:
         )
 
     def _post_form(self, path: str, fields: dict[str, str]) -> dict:
-        if not self.token:
-            raise ValueError("GitLab token is required")
-
-        data = urllib.parse.urlencode(fields).encode("utf-8")
-        request = urllib.request.Request(
-            f"{self.base_url}{path}",
-            data=data,
-            method="POST",
-            headers={
-                "PRIVATE-TOKEN": self.token,
-                "Accept": "application/json",
-                "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
-            },
+        return self._request_json(
+            "POST",
+            path,
+            urllib.parse.urlencode(fields).encode("utf-8"),
+            "application/x-www-form-urlencoded; charset=utf-8",
         )
-        try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                return json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            raise RuntimeError(f"GitLab API request failed: HTTP {exc.code}") from exc
 
     def _post_json(self, path: str, payload: dict) -> dict:
-        if not self.token:
-            raise ValueError("GitLab token is required")
-
-        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        request = urllib.request.Request(
-            f"{self.base_url}{path}",
-            data=data,
-            method="POST",
-            headers={
-                "PRIVATE-TOKEN": self.token,
-                "Accept": "application/json",
-                "Content-Type": "application/json; charset=utf-8",
-            },
+        return self._request_json(
+            "POST", path, json.dumps(payload, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8"
         )
-        try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                return json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            raise RuntimeError(f"GitLab API request failed: HTTP {exc.code}") from exc
 
     def _get_json(self, path: str):
         if path in self._fixtures:
+            LOG.info("stage=gitlab_api method=GET path=%s status=fixture", path)
+            write_debug_json("api", f"GET-{_resource_name(path)}", {"method": "GET", "path": path, "fixture": True, "response": self._fixtures[path]}, self.token)
             return self._fixtures[path]
 
+        return self._request_json("GET", path)
+
+    def _request_json(self, method: str, path: str, data: bytes | None = None, content_type: str = "") -> dict:
         if not self.token:
             raise ValueError("GitLab token is required")
-
-        request = urllib.request.Request(
-            f"{self.base_url}{path}",
-            headers={"PRIVATE-TOKEN": self.token, "Accept": "application/json"},
-        )
+        headers = {"PRIVATE-TOKEN": self.token, "Accept": "application/json"}
+        if content_type:
+            headers["Content-Type"] = content_type
+        request = urllib.request.Request(f"{self.base_url}{path}", data=data, method=method, headers=headers)
+        started = time.monotonic()
         try:
             with urllib.request.urlopen(request, timeout=30) as response:
-                return json.loads(response.read().decode("utf-8"))
+                raw = response.read().decode("utf-8")
+                result = json.loads(raw)
+                elapsed = time.monotonic() - started
+                status = getattr(response, "status", 200)
+                LOG.info("stage=gitlab_api method=%s path=%s status=%s elapsed=%.2fs response_chars=%s", method, path, status, elapsed, len(raw))
+                write_debug_json("api", f"{method}-{_resource_name(path)}", {"method": method, "path": path, "headers": headers, "request_body": data.decode("utf-8") if data else "", "status": status, "response": result, "elapsed_seconds": elapsed}, self.token)
+                return result
         except urllib.error.HTTPError as exc:
+            elapsed = time.monotonic() - started
+            raw = exc.read().decode("utf-8", errors="replace")
+            LOG.warning("stage=gitlab_api method=%s path=%s status=%s elapsed=%.2fs error_chars=%s", method, path, exc.code, elapsed, len(raw))
+            write_debug_json("api", f"{method}-{_resource_name(path)}", {"method": method, "path": path, "headers": headers, "request_body": data.decode("utf-8") if data else "", "status": exc.code, "error": raw, "elapsed_seconds": elapsed}, self.token)
             raise RuntimeError(f"GitLab API request failed: HTTP {exc.code}") from exc
+        except Exception as exc:
+            elapsed = time.monotonic() - started
+            LOG.warning("stage=gitlab_api method=%s path=%s status=failed elapsed=%.2fs error_type=%s", method, path, elapsed, type(exc).__name__)
+            write_debug_json("api", f"{method}-{_resource_name(path)}", {"method": method, "path": path, "headers": headers, "request_body": data.decode("utf-8") if data else "", "error": str(exc), "elapsed_seconds": elapsed}, self.token)
+            raise
+
+
+def _resource_name(path: str) -> str:
+    return path.strip("/").replace("/", "-") or "root"

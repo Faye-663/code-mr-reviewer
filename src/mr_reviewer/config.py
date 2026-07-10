@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 ENV_PREFIX = "MR_REVIEWER_"
+LOG_LEVELS = {"OFF", "INFO", "DEBUG"}
 
 
 def _split_set(value: str | None) -> set[str]:
@@ -16,6 +17,14 @@ def _split_set(value: str | None) -> set[str]:
 
 def _parse_bool(value: str) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_log_level(value: str) -> str:
+    level = value.strip().upper()
+    if level not in LOG_LEVELS:
+        supported = ", ".join(sorted(LOG_LEVELS))
+        raise ValueError(f"unsupported log level: {value}; expected one of {supported}")
+    return level
 
 
 def load_dotenv(path: Path) -> dict[str, str]:
@@ -53,6 +62,8 @@ class Config:
     agent_command: str = ""
     agent_debug: bool = False
     agent_diagnostic_dir: Path | None = None
+    log_level: str = "OFF"
+    debug_dir: Path = Path("log/debug")
     opencode_command: str = "opencode"
     opencode_debug: bool = False
     opencode_diagnostic_dir: Path | None = None
@@ -87,6 +98,10 @@ class Config:
             value = os.environ.get(env_name, dotenv_values.get(env_name, default))
             return value if value != "" else default
 
+        def has_value(name: str) -> bool:
+            env_name = f"{ENV_PREFIX}{name}"
+            return bool(os.environ.get(env_name, dotenv_values.get(env_name, "")))
+
         test_gitlab_responses = get("TEST_GITLAB_RESPONSES")
         opencode_diagnostic_dir = get("OPENCODE_DIAGNOSTIC_DIR")
         opencode_prompt_transport = get("OPENCODE_PROMPT_TRANSPORT", "argument").lower()
@@ -103,6 +118,13 @@ class Config:
         agent_diagnostic_dir = get("AGENT_DIAGNOSTIC_DIR")
         if not agent_diagnostic_dir and agent_type == "opencode":
             agent_diagnostic_dir = opencode_diagnostic_dir
+        if has_value("LOG_LEVEL"):
+            log_level = _parse_log_level(get("LOG_LEVEL"))
+        else:
+            log_level = "DEBUG" if _parse_bool(agent_debug_value or "false") else "OFF"
+        debug_dir_value = get("DEBUG_DIR")
+        if not debug_dir_value:
+            debug_dir_value = agent_diagnostic_dir or "log/debug"
         return cls(
             gitlab_base_url=get("GITLAB_BASE_URL"),
             gitlab_api_base_url=get("GITLAB_API_BASE_URL"),
@@ -121,8 +143,10 @@ class Config:
             state_path=Path(get("STATE_PATH", ".mr-reviewer-state.json")),
             agent_type=agent_type,
             agent_command=agent_command,
-            agent_debug=_parse_bool(agent_debug_value or "false"),
-            agent_diagnostic_dir=Path(agent_diagnostic_dir) if agent_diagnostic_dir else None,
+            agent_debug=log_level == "DEBUG",
+            agent_diagnostic_dir=Path(debug_dir_value),
+            log_level=log_level,
+            debug_dir=Path(debug_dir_value),
             opencode_command=legacy_opencode_command,
             opencode_debug=_parse_bool(get("OPENCODE_DEBUG", "false")),
             opencode_diagnostic_dir=Path(opencode_diagnostic_dir) if opencode_diagnostic_dir else None,

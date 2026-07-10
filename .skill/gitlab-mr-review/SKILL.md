@@ -1,6 +1,6 @@
 ---
 name: gitlab-mr-review
-description: "Use when reviewing a GitLab merge request from its URL, cloning the repo, running the code-review skill, and optionally posting the Markdown report back as an MR comment."
+description: "Use when reviewing a GitLab merge request from its URL with OpenCode or Claude Code, cloning the repo, running the code-review skill, and optionally posting the report back as an MR comment."
 ---
 
 # GitLab MR Review
@@ -21,7 +21,8 @@ https://gitlab.example.com/team/project/merge_requests/7
 
 - `GITLAB_BASE_URL`：GitLab 根地址，例如 `https://gitlab.example.com`。
 - `GITLAB_TOKEN`：GitLab token，用于 MR API、HTTPS clone 和提交 MR comment。
-- `OPENCODE_COMMAND`：可选，默认 `opencode`。
+- `MR_REVIEWER_AGENT_TYPE`：可选，`opencode` 或 `claude-code`，默认 `opencode`。
+- `MR_REVIEWER_AGENT_COMMAND`：可选；为空时根据 agent type 使用 `opencode` 或 `claude`。
 - `MR_REVIEW_WORK_DIR`：可选，默认系统临时目录下的 `gitlab-mr-review`。
 - `MR_REVIEW_SUBMIT_COMMENT`：可选，默认 `true`；设置为 `false` 时只生成本地 Markdown 报告，不写回 MR。
 
@@ -32,7 +33,7 @@ https://gitlab.example.com/team/project/merge_requests/7
 从当前 skill 目录运行脚本：
 
 ```powershell
-python .opencode/skills/gitlab-mr-review/scripts/review_gitlab_mr.py "<mr-url>"
+python <复制后的skill目录>/gitlab-mr-review/scripts/review_gitlab_mr.py "<mr-url>"
 ```
 
 脚本会执行以下确定性动作：
@@ -41,7 +42,7 @@ python .opencode/skills/gitlab-mr-review/scripts/review_gitlab_mr.py "<mr-url>"
 2. 调 GitLab API 获取 MR 元数据和 target/source project 的 HTTPS clone URL。
 3. clone target repo 到临时目录，显式 fetch target/source 分支。
 4. checkout `diff_refs.head_sha`，读取 `Base SHA`、`Head SHA` 和 `Changed files`。
-5. 调用 `opencode run`，要求使用现有 `code-review skill` 审查本地 repo 的 MR range。
+5. 调用已配置的 OpenCode 或 Claude Code，要求使用现有 `code-review skill` 审查本地 repo 的 MR range。
 6. 写出 Markdown 报告；当 `MR_REVIEW_SUBMIT_COMMENT` 不是 `false` 时，提交到现有 MR comment。
 
 ## 边界

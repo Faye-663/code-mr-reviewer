@@ -48,8 +48,12 @@ class Config:
     allowed_repos: set[str] = field(default_factory=set)
     work_dir: Path = field(default_factory=lambda: Path(tempfile.gettempdir()) / "code-review")
     state_path: Path = Path(".mr-reviewer-state.json")
+    agent_type: str = "opencode"
+    agent_command: str = ""
+    agent_debug: bool = False
+    agent_diagnostic_dir: Path | None = None
     opencode_command: str = "opencode"
-    opencode_debug: bool = True
+    opencode_debug: bool = False
     opencode_diagnostic_dir: Path | None = None
     opencode_prompt_transport: str = "argument"
     comment_skill: str = ""
@@ -78,6 +82,19 @@ class Config:
         test_gitlab_responses = get("TEST_GITLAB_RESPONSES")
         opencode_diagnostic_dir = get("OPENCODE_DIAGNOSTIC_DIR")
         opencode_prompt_transport = get("OPENCODE_PROMPT_TRANSPORT", "argument").lower()
+        agent_type = get("AGENT_TYPE", "opencode").lower()
+        if agent_type not in {"opencode", "claude-code"}:
+            raise ValueError(f"unsupported agent type: {agent_type}")
+        legacy_opencode_command = get("OPENCODE_COMMAND", "opencode")
+        agent_command = get("AGENT_COMMAND")
+        if not agent_command:
+            agent_command = legacy_opencode_command if agent_type == "opencode" else "claude"
+        agent_debug_value = get("AGENT_DEBUG")
+        if not agent_debug_value and agent_type == "opencode":
+            agent_debug_value = get("OPENCODE_DEBUG", "false")
+        agent_diagnostic_dir = get("AGENT_DIAGNOSTIC_DIR")
+        if not agent_diagnostic_dir and agent_type == "opencode":
+            agent_diagnostic_dir = opencode_diagnostic_dir
         return cls(
             gitlab_base_url=get("GITLAB_BASE_URL"),
             gitlab_token=get("GITLAB_TOKEN"),
@@ -93,8 +110,12 @@ class Config:
             allowed_repos=_split_set(get("ALLOWED_REPOS")),
             work_dir=Path(get("WORK_DIR", str(Path(tempfile.gettempdir()) / "code-review"))),
             state_path=Path(get("STATE_PATH", ".mr-reviewer-state.json")),
-            opencode_command=get("OPENCODE_COMMAND", "opencode"),
-            opencode_debug=_parse_bool(get("OPENCODE_DEBUG", "true")),
+            agent_type=agent_type,
+            agent_command=agent_command,
+            agent_debug=_parse_bool(agent_debug_value or "false"),
+            agent_diagnostic_dir=Path(agent_diagnostic_dir) if agent_diagnostic_dir else None,
+            opencode_command=legacy_opencode_command,
+            opencode_debug=_parse_bool(get("OPENCODE_DEBUG", "false")),
             opencode_diagnostic_dir=Path(opencode_diagnostic_dir) if opencode_diagnostic_dir else None,
             opencode_prompt_transport=opencode_prompt_transport,
             comment_skill=get("COMMENT_SKILL"),

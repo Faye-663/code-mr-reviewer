@@ -26,13 +26,14 @@ class MrUrl(NamedTuple):
 class Config(NamedTuple):
     gitlab_base_url: str
     gitlab_token: str
-    opencode_command: str
+    agent_type: str
+    agent_command: str
     work_dir: Path
     submit_comment: bool
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Review a GitLab MR with opencode and post the report as an MR comment.")
+    parser = argparse.ArgumentParser(description="Review a GitLab MR with a configured agent and post the report as an MR comment.")
     parser.add_argument("mr_url", help="GitLab MR URL, for example https://gitlab.example.com/team/project/merge_requests/7")
     args = parser.parse_args(argv)
 
@@ -61,10 +62,17 @@ def load_config() -> Config:
         raise ValueError("GITLAB_TOKEN is required")
 
     work_dir = Path(os.environ.get("MR_REVIEW_WORK_DIR") or Path(tempfile.gettempdir()) / "gitlab-mr-review")
+    agent_type = os.environ.get("MR_REVIEWER_AGENT_TYPE", "opencode").strip().lower()
+    if agent_type not in {"opencode", "claude-code"}:
+        raise ValueError(f"unsupported agent type: {agent_type}")
+    agent_command = os.environ.get("MR_REVIEWER_AGENT_COMMAND", "").strip()
+    if not agent_command:
+        agent_command = "opencode" if agent_type == "opencode" else "claude"
     return Config(
         gitlab_base_url=normalize_base_url(base_url),
         gitlab_token=token,
-        opencode_command=os.environ.get("OPENCODE_COMMAND", "opencode"),
+        agent_type=agent_type,
+        agent_command=agent_command,
         work_dir=work_dir,
         submit_comment=_parse_bool(os.environ.get("MR_REVIEW_SUBMIT_COMMENT", "true")),
     )
@@ -102,7 +110,7 @@ def review_gitlab_mr(mr_url: str, config: Config) -> dict[str, object]:
             changed_files=changed_files,
             repo_path=repo_path,
         )
-        report = run_opencode_review(config.opencode_command, prompt, repo_path)
+        report = run_agent_review(config.agent_type, config.agent_command, prompt, repo_path)
         report_path.write_text(report, encoding="utf-8")
         comment_submitted = False
         if config.submit_comment:
@@ -244,20 +252,44 @@ def git_output(args: list[str], cwd: Path, env: dict[str, str] | None = None, to
     return result.stdout
 
 
-def run_opencode_review(command: str, prompt: str, repo_path: Path) -> str:
-    args = shlex.split(command, posix=(os.name != "nt")) + ["run", prompt]
-    result = subprocess.run(
-        prepare_command(args),
-        cwd=repo_path,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        capture_output=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"opencode run failed: {result.stderr.strip()}")
-    return result.stdout.strip()
+def run_agent_review(agent_type: str, command: str, prompt: str, repo_path: Path) -> str:
+    args = shlex.split(command, posix=(os.name != "nt"))
+    prompt_file: Path | None = None
+    try:
+        if agent_type == "opencode":
+            with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    prefix="mr-review-agent-prompt-",
+                    suffix=".md",
+                    delete=False,
+                    encoding="utf-8",
+            ) as file:
+                file.write(prompt)
+                prompt_file = Path(file.name)
+            args += ["run", "--file", str(prompt_file), "Read the attached prompt.md and follow it exactly."]
+            input_text = None
+        elif agent_type == "claude-code":
+            args += ["-p", "--output-format", "text"]
+            input_text = prompt
+        else:
+            raise ValueError(f"unsupported agent type: {agent_type}")
+
+        result = subprocess.run(
+            prepare_command(args),
+            cwd=repo_path,
+            input=input_text,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"agent run failed: {result.stderr.strip()}")
+        return result.stdout.strip()
+    finally:
+        if prompt_file:
+            prompt_file.unlink(missing_ok=True)
 
 
 def prepare_command(args: list[str]) -> list[str]:

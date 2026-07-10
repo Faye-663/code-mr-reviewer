@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import mr_reviewer.opencode as agent_module
 from mr_reviewer.config import Config
 from mr_reviewer.cli import _poll_messages, _reply, healthcheck
 from mr_reviewer.git import GitClient
@@ -469,9 +470,12 @@ def test_healthcheck_requires_welink_group_id(monkeypatch, capsys):
 
 def test_opencode_runner_uses_utf8_and_redacts_prompt_in_logs(monkeypatch, tmp_path: Path, caplog):
     calls = []
+    transferred_prompts = []
 
     def fake_run(args, **kwargs):
         calls.append((args, kwargs))
+        prompt_file = Path(args[args.index("--file") + 1])
+        transferred_prompts.append(prompt_file.read_text(encoding="utf-8"))
 
         class Result:
             returncode = 0
@@ -486,13 +490,75 @@ def test_opencode_runner_uses_utf8_and_redacts_prompt_in_logs(monkeypatch, tmp_p
         output = OpenCodeRunner("opencode", debug=True).run_review("请 review 这段 diff", tmp_path, 60)
 
     args, kwargs = calls[0]
-    assert args == ["opencode", "--print-logs", "--log-level", "DEBUG", "run", "请 review 这段 diff"]
+    assert args[:5] == ["opencode", "--print-logs", "--log-level", "DEBUG", "run"]
+    assert args[5] == "--file"
+    assert transferred_prompts == ["请 review 这段 diff"]
+    assert "请 review 这段 diff" not in args
     assert kwargs["encoding"] == "utf-8"
     assert kwargs["errors"] == "replace"
     assert output == "# Review"
     log_text = "\n".join(record.getMessage() for record in caplog.records)
-    assert "opencode --print-logs --log-level DEBUG run <prompt_chars=16>" in log_text
+    assert "opencode --print-logs --log-level DEBUG run --file" in log_text
     assert "请 review" not in log_text
+
+
+def test_claude_code_runner_sends_multiline_prompt_via_stdin(monkeypatch, tmp_path: Path):
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+
+        class Result:
+            returncode = 0
+            stderr = ""
+            stdout = '{"findings":[],"notes":[],"test_gaps":[]}'
+
+        return Result()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    prompt = "MR URL: https://gitlab.example.com/team/project/merge_requests/7\nBase SHA: base123\nHead SHA: head456"
+    runner_class = getattr(agent_module, "ClaudeCodeRunner")
+
+    output = runner_class("claude", debug=False).run_review(prompt, tmp_path, 60)
+
+    args, kwargs = calls[0]
+    assert args == ["claude", "-p", "--output-format", "text"]
+    assert kwargs["input"] == prompt
+    assert prompt not in args
+    assert output.startswith("{")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows batch regression")
+@pytest.mark.parametrize("agent_type", ["opencode", "claude-code"])
+def test_agent_runner_preserves_multiline_prompt_through_windows_batch(tmp_path: Path, agent_type: str):
+    reader = tmp_path / "read_prompt.py"
+    reader.write_text(
+        "import pathlib, sys\n"
+        "if '--file' in sys.argv:\n"
+        "    path = pathlib.Path(sys.argv[sys.argv.index('--file') + 1])\n"
+        "    text = path.read_text(encoding='utf-8')\n"
+        "else:\n"
+        "    text = sys.stdin.buffer.read().decode('utf-8')\n"
+        "sys.stdout.buffer.write(text.encode('utf-8'))\n",
+        encoding="utf-8",
+    )
+    command = tmp_path / "fake-agent.cmd"
+    command.write_text(
+        f'@"{sys.executable}" "{reader}" %*\r\n',
+        encoding="utf-8",
+    )
+    prompt = (
+        "MR URL: https://gitlab.example.com/team/project/merge_requests/7\n"
+        "Base SHA: base123\n"
+        "Head SHA: head456\n"
+        "Changed files:\n"
+        "- src/中文.py\n"
+    )
+    runner = agent_module.build_agent_runner(agent_type, str(command))
+
+    output = runner.run_review(prompt, tmp_path, 60)
+
+    assert output == prompt.strip()
 
 
 def test_opencode_runner_writes_diagnostics(monkeypatch, tmp_path: Path, caplog):
@@ -528,8 +594,8 @@ def test_opencode_runner_writes_diagnostics(monkeypatch, tmp_path: Path, caplog)
     assert diagnostic_path.joinpath("cwd.txt").read_text(encoding="utf-8") == str(tmp_path)
     command_text = diagnostic_path.joinpath("command.txt").read_text(encoding="utf-8")
     assert "opencode --print-logs --log-level DEBUG run" in command_text
-    assert "<prompt_chars=" in command_text
-    assert "sha256=" in command_text
+    assert "--file" in command_text
+    assert "prompt.md" in command_text
     assert "https://gitlab.example.com" not in command_text
     env_summary = json.loads(diagnostic_path.joinpath("env-summary.json").read_text(encoding="utf-8"))
     assert env_summary["debug"] is True
@@ -581,7 +647,7 @@ def test_opencode_runner_can_send_prompt_as_file(monkeypatch, tmp_path: Path):
     assert prompt_file.name == "prompt.md"
     assert prompt_file.read_text(encoding="utf-8") == prompt
     assert "https://gitlab.example.com" not in args
-    assert "请读取附件 prompt.md" in args[7]
+    assert args[7] == "Read the attached prompt.md and follow it exactly."
     assert kwargs["cwd"] == tmp_path
     command_text = prompt_file.parent.joinpath("command.txt").read_text(encoding="utf-8")
     assert "--file" in command_text

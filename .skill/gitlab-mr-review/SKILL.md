@@ -5,7 +5,7 @@ description: "Use when reviewing a GitLab MR URL with OpenCode or Claude Code th
 
 # GitLab MR Review
 
-你负责把一个 GitLab MR URL 交给确定性脚本处理。这个 skill 只做端到端编排：获取 MR 元数据、clone/fetch/checkout、先生成 MR 概要，再把概要作为上下文调用 `code-review skill`。本地 Markdown 报告保留概要与 review；按配置写回现有 MR 的 comment 只包含 review。
+你负责把一个 GitLab MR URL 交给确定性脚本处理。这个 skill 只做端到端编排：获取 MR 元数据、clone/fetch/checkout、先生成 MR 概要，再把概要作为上下文调用 `code-review skill`。本地 Markdown 报告使用“代码检视报告 / Discoveries / 检视意见 / 检视摘要”结构；按配置写回现有 MR 的 comment 只包含 review JSON 正文。
 
 ## 输入
 

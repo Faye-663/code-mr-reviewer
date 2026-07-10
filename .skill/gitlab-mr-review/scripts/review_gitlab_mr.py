@@ -286,26 +286,61 @@ def run_two_step_review(
     return {
         "summary": summary,
         "comment_body": comment_body,
-        "local_report": render_local_report(summary, comment_body),
+        "local_report": render_local_report(summary, comment_body, base_sha, head_sha),
     }
 
 
-def render_local_report(summary: dict[str, object], review: str) -> str:
-    lines = ["# GitLab MR Review Report", "", "## MR Summary", "", str(summary["overview"])]
-    labels = {
-        "change_areas": "Change areas",
-        "behavior_changes": "Behavior changes",
-        "risk_areas": "Risk areas",
-        "test_changes": "Test changes",
-    }
-    for field, label in labels.items():
-        lines.extend(["", f"### {label}", ""])
-        values = summary[field]
-        if values:
-            lines.extend(f"- {value}" for value in values)
-        else:
-            lines.append("- <none>")
-    lines.extend(["", "## Review", "", review])
+def render_local_report(summary: dict[str, object], review: str, base_sha: str, head_sha: str) -> str:
+    """Skill 独立运行时也使用与自动入口一致的本地报告骨架。"""
+    try:
+        structured = json.loads(review)
+    except json.JSONDecodeError:
+        structured = {"findings": [], "good": []}
+    findings = structured.get("findings") if isinstance(structured, dict) else []
+    findings = findings if isinstance(findings, list) else []
+    good = structured.get("good") if isinstance(structured, dict) else []
+    good = good if isinstance(good, list) and all(isinstance(item, str) for item in good) else []
+    notes = structured.get("notes") if isinstance(structured, dict) else []
+    notes = notes if isinstance(notes, list) and all(isinstance(item, str) for item in notes) else []
+    test_gaps = structured.get("test_gaps") if isinstance(structured, dict) else []
+    test_gaps = test_gaps if isinstance(test_gaps, list) and all(isinstance(item, str) for item in test_gaps) else []
+    lines = [
+        "# 代码检视报告", "", "## Discoveries", "",
+        f"- 变更内容概述：{summary['overview']}",
+        f"- 审查范围：Base SHA = {base_sha}，Head SHA = {head_sha}",
+    ]
+    for field, label in (("change_areas", "变更区域"), ("behavior_changes", "行为变化"), ("risk_areas", "风险区域"), ("test_changes", "测试变化")):
+        values = summary.get(field, [])
+        lines.append(f"- {label}：{'；'.join(str(value) for value in values) if values else '无'}")
+    if notes:
+        lines.append(f"- 检视备注：{'；'.join(notes)}")
+    if test_gaps:
+        lines.append(f"- 测试缺口：{'；'.join(test_gaps)}")
+    lines.extend(["", "## 检视意见", ""])
+    if not findings:
+        lines.append("- 未发现可报告的问题。")
+    for finding in findings:
+        if not isinstance(finding, dict):
+            continue
+        path = finding.get("new_path") or finding.get("old_path") or "<unknown>"
+        line = finding.get("new_line") if finding.get("new_line", -1) != -1 else finding.get("old_line", "<unknown>")
+        lines.extend([
+            f"### [{finding.get('severity', 'suggestion')}] {finding.get('title', '<unknown>')}", "",
+            f"**文件**: {path}:{line}", "", f"**证据**: {finding.get('evidence', '')}", "",
+            f"**影响**: {finding.get('impact', '')}", "", "**MR评论状态**：已提交MR comment（仅 skill 模式）", "",
+            f"**建议**: {finding.get('suggestion', '')}", "",
+        ])
+    counts = {severity: sum(1 for item in findings if isinstance(item, dict) and item.get("severity") == severity)
+              for severity in ("fatal", "major", "minjor", "suggestion")}
+    lines.extend(["## 检视摘要", "", "| 严重程度 | 数量 | 状态 |", "|----------|------|------|"])
+    for severity in ("fatal", "major", "minjor", "suggestion"):
+        state = "通过" if not counts[severity] else {"fatal": "阻止", "major": "警告", "minjor": "警告", "suggestion": "备注"}[severity]
+        lines.append(f"| {severity} | {counts[severity]} | {state} |")
+    verdict = "阻止" if counts["fatal"] else "警告" if counts["major"] or counts["minjor"] else "备注" if counts["suggestion"] else "通过"
+    lines.extend(["", f"**裁决**：{verdict}"])
+    if good:
+        lines.extend(["", "## GOOD", ""])
+        lines.extend(f"- {item}" for item in good)
     return "\n".join(lines) + "\n"
 
 

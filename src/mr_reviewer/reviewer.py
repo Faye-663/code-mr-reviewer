@@ -37,6 +37,9 @@ class ReviewReport:
     structured_parse_status: str = ""
     finding_counts: dict[str, int] | None = None
     finding_results: list[dict] | None = None
+    good: list[str] | None = None
+    notes: list[str] | None = None
+    test_gaps: list[str] | None = None
     failure_stage: str = ""
 
 
@@ -209,8 +212,8 @@ class ReviewService:
             "自动检视模式必须只输出 JSON，不要输出 Markdown 或代码围栏。JSON 结构为：\n"
             '{"findings":[{"rule_id":"...","severity":"major","confidence":"HIGH",'
             '"old_path":"src/example.py","new_path":"src/example.py","old_line":-1,'
-            '"new_line":42,"title":"...","evidence":"...","suggestion":"..."}],'
-            '"notes":[],"test_gaps":[]}\n'
+            '"new_line":42,"title":"...","evidence":"...","impact":"...","suggestion":"..."}],'
+            '"notes":[],"test_gaps":[],"good":[]}\n'
             "severity 只能使用 suggestion、minjor、major、fatal；confidence 只能使用 HIGH、MEDIUM、LOW。"
         )
 

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from mr_reviewer.config import Config
 from mr_reviewer.git import GitCheckout, GitClient
 from mr_reviewer.gitlab import GitLabClient, GitLabMrUrl, choose_diff_refs
-from mr_reviewer.opencode import OpenCodeRunner
+from mr_reviewer.opencode import AgentRunner
 
 LOG = logging.getLogger("mr_reviewer")
 DEFAULT_REVIEW_SKILL = "code-review"
@@ -48,7 +48,7 @@ class MergeRequestReviewTarget:
 
 
 class ReviewService:
-    def __init__(self, gitlab: GitLabClient, git: GitClient, opencode: OpenCodeRunner):
+    def __init__(self, gitlab: GitLabClient, git: GitClient, opencode: AgentRunner):
         self.gitlab = gitlab
         self.git = git
         self.opencode = opencode

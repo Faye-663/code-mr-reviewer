@@ -12,7 +12,7 @@ from mr_reviewer.git import GitClient
 from mr_reviewer.gitlab import GitLabClient, GitLabMrUrl, parse_gitlab_mr_url
 from mr_reviewer.im import should_trigger_review
 from mr_reviewer.markdown_report import render_structured_output_as_markdown
-from mr_reviewer.opencode import OpenCodeRunner
+from mr_reviewer.opencode import build_agent_runner
 from mr_reviewer.process import split_command
 from mr_reviewer.reviewer import ReviewService
 from mr_reviewer.state import StateStore
@@ -28,11 +28,11 @@ def build_service(config: Config) -> ReviewService:
             config.gitlab_base_url, config.gitlab_token, config.test_gitlab_responses
         ),
         GitClient(),
-        OpenCodeRunner(
-            config.opencode_command,
-            debug=config.opencode_debug,
-            diagnostic_dir=config.opencode_diagnostic_dir,
-            prompt_transport=config.opencode_prompt_transport,
+        build_agent_runner(
+            config.agent_type,
+            config.agent_command or config.opencode_command,
+            debug=config.agent_debug,
+            diagnostic_dir=config.agent_diagnostic_dir,
         ),
     )
 
@@ -40,7 +40,7 @@ def build_service(config: Config) -> ReviewService:
 def healthcheck(config: Config) -> int:
     checks = {
         "git": shutil.which("git") is not None,
-        "opencode": shutil.which(split_command(config.opencode_command)[0]) is not None,
+        "agent": shutil.which(split_command(config.agent_command or config.opencode_command)[0]) is not None,
         "gitlab_base_url": bool(config.gitlab_base_url),
         "gitlab_token": bool(config.gitlab_token),
         "im_poll_command": bool(config.im_poll_command),

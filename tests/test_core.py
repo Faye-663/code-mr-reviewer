@@ -14,7 +14,7 @@ from mr_reviewer.state import StateStore
 
 
 def _load_gitlab_mr_review_script():
-    path = Path(".opencode/skills/gitlab-mr-review/scripts/review_gitlab_mr.py")
+    path = Path(".skill/gitlab-mr-review/scripts/review_gitlab_mr.py")
     spec = importlib.util.spec_from_file_location("gitlab_mr_review_script", path)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
@@ -23,7 +23,7 @@ def _load_gitlab_mr_review_script():
 
 
 def test_code_review_skill_targets_gitlab_mr_range():
-    skill = Path(".opencode/skills/code-review/SKILL.md").read_text(encoding="utf-8")
+    skill = Path(".skill/code-review/SKILL.md").read_text(encoding="utf-8")
 
     assert 'description: "Use when reviewing GitLab merge requests' in skill
     assert "Output: strict JSON" in skill
@@ -52,8 +52,8 @@ def test_code_review_skill_targets_gitlab_mr_range():
 
 
 def test_gitlab_mr_review_skill_package_exists():
-    skill_path = Path(".opencode/skills/gitlab-mr-review/SKILL.md")
-    script_path = Path(".opencode/skills/gitlab-mr-review/scripts/review_gitlab_mr.py")
+    skill_path = Path(".skill/gitlab-mr-review/SKILL.md")
+    script_path = Path(".skill/gitlab-mr-review/scripts/review_gitlab_mr.py")
 
     skill = skill_path.read_text(encoding="utf-8")
 
@@ -62,8 +62,11 @@ def test_gitlab_mr_review_skill_package_exists():
     assert "review_gitlab_mr.py" in skill
     assert "GITLAB_BASE_URL" in skill
     assert "GITLAB_TOKEN" in skill
+    assert "MR_REVIEWER_AGENT_TYPE" in skill
+    assert "MR_REVIEWER_AGENT_COMMAND" in skill
     assert "code-review skill" in skill
     assert script_path.exists()
+    assert not Path(".opencode").exists()
 
 
 def test_readme_documents_optional_opencode_skill_usage():
@@ -137,6 +140,54 @@ def test_gitlab_mr_review_script_wraps_windows_cmd_opencode(monkeypatch):
     assert prepared[5:] == ["run", "prompt"]
 
 
+def test_gitlab_mr_review_script_sends_opencode_prompt_as_file(monkeypatch, tmp_path: Path):
+    script = _load_gitlab_mr_review_script()
+    transferred = []
+
+    def fake_run(args, **kwargs):
+        prompt_file = Path(args[args.index("--file") + 1])
+        transferred.append(prompt_file.read_text(encoding="utf-8"))
+
+        class Result:
+            returncode = 0
+            stderr = ""
+            stdout = "review"
+
+        return Result()
+
+    monkeypatch.setattr(script.subprocess, "run", fake_run)
+
+    result = script.run_agent_review("opencode", "opencode", "line1\nBase SHA: base", tmp_path)
+
+    assert result == "review"
+    assert transferred == ["line1\nBase SHA: base"]
+
+
+def test_gitlab_mr_review_script_sends_claude_prompt_via_stdin(monkeypatch, tmp_path: Path):
+    script = _load_gitlab_mr_review_script()
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+
+        class Result:
+            returncode = 0
+            stderr = ""
+            stdout = "review"
+
+        return Result()
+
+    monkeypatch.setattr(script.subprocess, "run", fake_run)
+    prompt = "line1\nBase SHA: base\nHead SHA: head"
+
+    result = script.run_agent_review("claude-code", "claude", prompt, tmp_path)
+
+    args, kwargs = calls[0]
+    assert result == "review"
+    assert args == ["claude", "-p", "--output-format", "text"]
+    assert kwargs["input"] == prompt
+
+
 def test_config_treats_empty_dotenv_values_as_defaults(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("MR_REVIEWER_WORK_DIR", raising=False)
     env_file = tmp_path / ".env"
@@ -151,12 +202,19 @@ def test_config_treats_empty_dotenv_values_as_defaults(tmp_path: Path, monkeypat
     assert str(config.work_dir).endswith("code-review")
 
 
-def test_config_enables_opencode_debug_by_default(tmp_path: Path, monkeypatch):
+def test_config_defaults_to_opencode_agent_with_debug_disabled(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("MR_REVIEWER_AGENT_TYPE", raising=False)
+    monkeypatch.delenv("MR_REVIEWER_AGENT_COMMAND", raising=False)
+    monkeypatch.delenv("MR_REVIEWER_AGENT_DEBUG", raising=False)
     monkeypatch.delenv("MR_REVIEWER_OPENCODE_DEBUG", raising=False)
     env_file = tmp_path / ".env"
     env_file.write_text("MR_REVIEWER_GITLAB_BASE_URL=https://gitlab.example.com\n", encoding="utf-8")
 
-    assert Config.from_env(env_file).opencode_debug is True
+    config = Config.from_env(env_file)
+
+    assert config.agent_type == "opencode"
+    assert config.agent_command == "opencode"
+    assert config.agent_debug is False
 
 
 def test_config_can_disable_opencode_debug(tmp_path: Path, monkeypatch):
@@ -169,6 +227,25 @@ def test_config_can_disable_opencode_debug(tmp_path: Path, monkeypatch):
     )
 
     assert Config.from_env(env_file).opencode_debug is False
+
+
+def test_config_uses_claude_code_command_and_ignores_opencode_legacy_command(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("MR_REVIEWER_AGENT_TYPE", raising=False)
+    monkeypatch.delenv("MR_REVIEWER_AGENT_COMMAND", raising=False)
+    monkeypatch.delenv("MR_REVIEWER_OPENCODE_COMMAND", raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "MR_REVIEWER_GITLAB_BASE_URL=https://gitlab.example.com\n"
+        "MR_REVIEWER_AGENT_TYPE=claude-code\n"
+        "MR_REVIEWER_OPENCODE_COMMAND=legacy-opencode\n",
+        encoding="utf-8",
+    )
+
+    config = Config.from_env(env_file)
+
+    assert config.agent_type == "claude-code"
+    assert config.agent_command == "claude"
+    assert config.agent_debug is False
 
 
 def test_config_reads_opencode_diagnostic_dir(tmp_path: Path, monkeypatch):

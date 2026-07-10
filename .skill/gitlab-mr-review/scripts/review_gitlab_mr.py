@@ -386,7 +386,7 @@ def run_agent_review(agent_type: str, command: str, prompt: str, repo_path: Path
             ) as file:
                 file.write(prompt)
                 prompt_file = Path(file.name)
-            args += ["run", "--file", str(prompt_file), "Read the attached prompt.md and follow it exactly."]
+            args += ["run", "Follow the instructions in the attached file.", "--file", str(prompt_file)]
             input_text = None
         elif agent_type == "claude-code":
             args += ["-p", "--output-format", "text"]

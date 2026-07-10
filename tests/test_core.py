@@ -69,10 +69,11 @@ def test_gitlab_mr_review_skill_package_exists():
     assert not Path(".opencode").exists()
 
 
-def test_readme_documents_optional_opencode_skill_usage():
+def test_readme_documents_optional_agent_skill_usage():
     readme = Path("README.md").read_text(encoding="utf-8")
 
-    assert "opencode skill 直接使用" in readme
+    assert "Agent skill 直接使用" in readme
+    assert ".skill/gitlab-mr-review" in readme
     assert "gitlab-mr-review skill" in readme
     assert "不替代现有 WeLink 自动轮询模式" in readme
     assert "MR_REVIEW_SUBMIT_COMMENT=false" in readme

@@ -59,6 +59,17 @@ class RecordingOpenCodeRunner(OpenCodeRunner):
 
     def run_review(self, prompt, cwd, timeout_seconds):
         self.prompts.append((prompt, Path(cwd), timeout_seconds))
+        if prompt.startswith("分析本次 GitLab MR 并生成 MR 概要"):
+            return json.dumps(
+                {
+                    "overview": "修复认证流程",
+                    "change_areas": ["app.py"],
+                    "behavior_changes": ["更新输出"],
+                    "risk_areas": ["兼容性"],
+                    "test_changes": ["未增加测试"],
+                },
+                ensure_ascii=False,
+            )
         return '{"findings":[],"notes":["No high-confidence issues."],"test_gaps":[]}'
 
 
@@ -82,19 +93,27 @@ def test_review_service_requests_structured_output_and_cleans_workdir(tmp_path: 
     )
 
     assert report.markdown.startswith('{"findings"')
-    assert "secret-token" not in opencode.prompts[0][0]
-    assert isinstance(opencode.prompts[0][0], str)
-    assert "code-review skill" in opencode.prompts[0][0]
-    assert "MR URL: https://gitlab.example.com/team/project/merge_requests/7" in opencode.prompts[0][0]
-    assert "Base SHA: base123" in opencode.prompts[0][0]
-    assert "Head SHA: head456" in opencode.prompts[0][0]
-    assert "Changed files:\n- app.py" in opencode.prompts[0][0]
-    assert "代码仓在" in opencode.prompts[0][0]
-    assert "Webhook 模式" not in opencode.prompts[0][0]
-    assert "必须只输出 JSON" in opencode.prompts[0][0]
-    assert '"findings"' in opencode.prompts[0][0]
-    assert "diff --git" not in opencode.prompts[0][0]
-    assert "Diff:" not in opencode.prompts[0][0]
+    assert len(opencode.prompts) == 2
+    summary_prompt = opencode.prompts[0][0]
+    review_prompt = opencode.prompts[1][0]
+    assert "MR 概要" in summary_prompt
+    assert '"risk_areas"' in summary_prompt
+    assert "secret-token" not in summary_prompt
+    assert "secret-token" not in review_prompt
+    assert isinstance(review_prompt, str)
+    assert "code-review skill" in review_prompt
+    assert "MR URL: https://gitlab.example.com/team/project/merge_requests/7" in review_prompt
+    assert "Base SHA: base123" in review_prompt
+    assert "Head SHA: head456" in review_prompt
+    assert "Changed files:\n- app.py" in review_prompt
+    assert "代码仓在" in review_prompt
+    assert "Webhook 模式" not in review_prompt
+    assert "必须只输出 JSON" in review_prompt
+    assert '"findings"' in review_prompt
+    assert '"overview": "修复认证流程"' in review_prompt
+    assert "diff --git" not in review_prompt
+    assert "Diff:" not in review_prompt
+    assert report.summary["overview"] == "修复认证流程"
     checkout, token, work_dir, limits = git.calls[0]
     assert checkout.target_repo_url == "https://gitlab.example.com/team/project.git"
     assert checkout.source_repo_url == "https://gitlab.example.com/team/project.git"
@@ -140,7 +159,7 @@ def test_review_service_prompt_uses_comment_skill_when_configured(tmp_path: Path
         task_id="task-comment-skill",
     )
 
-    prompt = opencode.prompts[0][0]
+    prompt = opencode.prompts[-1][0]
     assert "gitlab-mr-comment skill" in prompt
     assert "MR URL: https://gitlab.example.com/team/project/merge_requests/7" in prompt
     assert "Base SHA: base123" in prompt
@@ -148,6 +167,67 @@ def test_review_service_prompt_uses_comment_skill_when_configured(tmp_path: Path
     assert "Changed files:\n- app.py" in prompt
     assert "代码仓在" in prompt
     assert "必须只输出 JSON" in prompt
+
+
+def test_review_service_stops_when_summary_output_is_invalid(tmp_path: Path):
+    class InvalidSummaryRunner:
+        def __init__(self):
+            self.calls = 0
+
+        def run_review(self, prompt, cwd, timeout_seconds):
+            self.calls += 1
+            return "not json"
+
+    runner = InvalidSummaryRunner()
+    service = ReviewService(FakeGitLabClient(), RecordingGitClient(), runner)
+    error_class = getattr(__import__("mr_reviewer.reviewer", fromlist=["ReviewStageError"]), "ReviewStageError")
+
+    with pytest.raises(error_class) as exc_info:
+        service.review(
+            GitLabMrUrl("https://gitlab.example.com", "team/project", 7),
+            Config(gitlab_base_url="https://gitlab.example.com", work_dir=tmp_path),
+            task_id="task-invalid-summary",
+        )
+
+    assert exc_info.value.stage == "summary"
+    assert runner.calls == 1
+
+
+def test_review_service_preserves_summary_when_review_stage_fails(tmp_path: Path):
+    class ReviewFailureRunner(RecordingOpenCodeRunner):
+        def run_review(self, prompt, cwd, timeout_seconds):
+            if prompt.startswith("分析本次 GitLab MR 并生成 MR 概要"):
+                return super().run_review(prompt, cwd, timeout_seconds)
+            raise RuntimeError("review unavailable")
+
+    runner = ReviewFailureRunner()
+    service = ReviewService(FakeGitLabClient(), RecordingGitClient(), runner)
+    error_class = getattr(__import__("mr_reviewer.reviewer", fromlist=["ReviewStageError"]), "ReviewStageError")
+
+    with pytest.raises(error_class) as exc_info:
+        service.review(
+            GitLabMrUrl("https://gitlab.example.com", "team/project", 7),
+            Config(gitlab_base_url="https://gitlab.example.com", work_dir=tmp_path),
+            task_id="task-review-failure",
+        )
+
+    assert exc_info.value.stage == "review"
+    assert exc_info.value.summary["overview"] == "修复认证流程"
+
+
+def test_review_service_shares_timeout_budget_between_both_agent_calls(tmp_path: Path, monkeypatch):
+    timestamps = iter([100.0, 101.0, 104.0])
+    monkeypatch.setattr("mr_reviewer.reviewer.time.monotonic", lambda: next(timestamps))
+    runner = RecordingOpenCodeRunner()
+    service = ReviewService(FakeGitLabClient(), RecordingGitClient(), runner)
+
+    service.review(
+        GitLabMrUrl("https://gitlab.example.com", "team/project", 7),
+        Config(gitlab_base_url="https://gitlab.example.com", work_dir=tmp_path, task_timeout_seconds=10),
+        task_id="task-timeout-budget",
+    )
+
+    assert [call[2] for call in runner.prompts] == [9, 6]
 
 
 def test_review_service_logs_major_stages(tmp_path: Path, caplog):
@@ -205,7 +285,12 @@ def test_poll_once_runs_review_and_replies(tmp_path: Path):
         encoding="utf-8",
     )
     opencode_script.write_text(
-        "print('{\"findings\":[],\"notes\":[\"No high-confidence issues.\"],\"test_gaps\":[]}')\n",
+        "import json, pathlib, sys\n"
+        "prompt = pathlib.Path(sys.argv[sys.argv.index('--file') + 1]).read_text(encoding='utf-8')\n"
+        "if prompt.startswith('分析本次 GitLab MR 并生成 MR 概要'):\n"
+        "    print(json.dumps({'overview':'summary','change_areas':['app.py'],'behavior_changes':['output'],'risk_areas':[],'test_changes':[]}))\n"
+        "else:\n"
+        "    print(json.dumps({'findings':[],'notes':['No high-confidence issues.'],'test_gaps':[]}))\n",
         encoding="utf-8",
     )
     gitlab_file.write_text(

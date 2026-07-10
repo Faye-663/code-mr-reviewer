@@ -7,7 +7,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 from mr_reviewer.config import Config
-from mr_reviewer.reviewer import ReviewReport
+from mr_reviewer.reviewer import ReviewReport, ReviewStageError
 from mr_reviewer.webhook import (
     WebhookReviewEvent,
     WebhookReviewQueue,
@@ -247,6 +247,13 @@ def test_write_webhook_monitor_report_redacts_sensitive_values(tmp_path: Path):
     )
     report = ReviewReport(
         markdown="# Review\n\nLooks good.",
+        summary={
+            "overview": "修复认证流程",
+            "change_areas": ["auth"],
+            "behavior_changes": ["刷新token"],
+            "risk_areas": ["并发刷新"],
+            "test_changes": ["新增测试"],
+        },
         base_sha="base-sha",
         head_sha="head-sha",
         changed_files=["app.py"],
@@ -275,6 +282,10 @@ def test_write_webhook_monitor_report_redacts_sensitive_values(tmp_path: Path):
     assert data["submission_owner"] == "skill"
     assert data["submission_status"] == "unknown"
     assert data["markdown_preview"] == "# Review\n\nLooks good."
+    assert data["summary"]["overview"] == "修复认证流程"
+    markdown = Path(data["markdown_report_path"]).read_text(encoding="utf-8")
+    assert "## MR Summary" in markdown
+    assert "修复认证流程" in markdown
 
 
 def test_webhook_worker_posts_inline_discussion_from_python(tmp_path: Path):
@@ -321,6 +332,9 @@ def test_webhook_worker_posts_inline_discussion_from_python(tmp_path: Path):
     assert "posted" in markdown_report
     assert "discussion-1" in markdown_report
     assert "123" in markdown_report
+    assert report["summary"]["overview"] == "修复认证流程"
+    assert "## MR Summary" in markdown_report
+    assert "修复认证流程" not in posted["body"]
 
 
 def test_webhook_worker_can_skip_python_comment(tmp_path: Path):
@@ -409,6 +423,46 @@ def test_webhook_worker_does_not_publish_when_structured_output_is_invalid(tmp_p
     assert "not json" in markdown_report
 
 
+def test_webhook_worker_records_review_stage_failure_with_completed_summary(tmp_path: Path):
+    event = parse_gitlab_merge_request_event(
+        _merge_request_payload(),
+        Config(gitlab_base_url="https://gitlab.example.com"),
+    )
+    assert event is not None
+
+    class FailingReviewService:
+        def review_target(self, target, config, task_id, structured_output=False):
+            raise ReviewStageError(
+                "review",
+                RuntimeError("agent unavailable"),
+                {
+                    "overview": "修复认证流程",
+                    "change_areas": ["auth"],
+                    "behavior_changes": ["刷新token"],
+                    "risk_areas": ["并发刷新"],
+                    "test_changes": [],
+                },
+            )
+
+    queue = WebhookReviewQueue(
+        FailingReviewService(),
+        _RecordingGitLabClient(),
+        Config(gitlab_base_url="https://gitlab.example.com", report_dir=tmp_path),
+    )
+    queue.start()
+
+    queue.enqueue(event)
+    queue._queue.join()
+
+    report = json.loads(next(tmp_path.glob("*.json")).read_text(encoding="utf-8"))
+    assert report["status"] == "failed"
+    assert report["failure_stage"] == "review"
+    assert report["summary"]["overview"] == "修复认证流程"
+    markdown = Path(report["markdown_report_path"]).read_text(encoding="utf-8")
+    assert "修复认证流程" in markdown
+    assert "Failure stage: review" in markdown
+
+
 class _RecordingReviewService:
     def __init__(self, markdown: str | None = None):
         self.targets = []
@@ -440,6 +494,13 @@ class _RecordingReviewService:
         self.structured_output_flags.append(structured_output)
         return ReviewReport(
             markdown=self.markdown,
+            summary={
+                "overview": "修复认证流程",
+                "change_areas": ["src/example.py"],
+                "behavior_changes": ["新增查询"],
+                "risk_areas": ["查询规模"],
+                "test_changes": [],
+            },
             base_sha="base-sha",
             head_sha=target.head_sha,
             changed_files=["app.py"],

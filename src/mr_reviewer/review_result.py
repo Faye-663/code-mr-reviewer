@@ -5,9 +5,14 @@ from dataclasses import dataclass
 
 ALLOWED_SEVERITIES = {"suggestion", "minjor", "major", "fatal"}
 ALLOWED_CONFIDENCES = {"HIGH", "MEDIUM", "LOW"}
+SUMMARY_LIST_FIELDS = ("change_areas", "behavior_changes", "risk_areas", "test_changes")
 
 
 class StructuredReviewParseError(ValueError):
+    pass
+
+
+class ReviewSummaryParseError(ValueError):
     pass
 
 
@@ -30,6 +35,31 @@ class StructuredReviewResult:
     findings: list[ReviewFinding]
     notes: list[str]
     test_gaps: list[str]
+
+
+def parse_review_summary(raw_output: str) -> dict[str, object]:
+    try:
+        payload = json.loads(raw_output)
+    except json.JSONDecodeError as exc:
+        raise ReviewSummaryParseError(f"summary output must be valid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ReviewSummaryParseError("summary output must be a JSON object")
+    expected_fields = {"overview", *SUMMARY_LIST_FIELDS}
+    unexpected_fields = set(payload) - expected_fields
+    if unexpected_fields:
+        raise ReviewSummaryParseError(f"summary output contains unexpected fields: {sorted(unexpected_fields)}")
+
+    overview = payload.get("overview")
+    if not isinstance(overview, str) or not overview.strip():
+        raise ReviewSummaryParseError("overview must be a non-empty string")
+
+    summary: dict[str, object] = {"overview": overview}
+    for field in SUMMARY_LIST_FIELDS:
+        value = payload.get(field)
+        if not isinstance(value, list) or not all(isinstance(item, str) and item.strip() for item in value):
+            raise ReviewSummaryParseError(f"{field} must be a list of non-empty strings")
+        summary[field] = value
+    return summary
 
 
 def parse_structured_review_result(raw_output: str) -> StructuredReviewResult:

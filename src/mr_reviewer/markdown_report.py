@@ -38,8 +38,12 @@ def render_markdown_review_report(
     ]
     if report.finding_counts:
         lines.append(f"- Finding counts: {_format_counts(report.finding_counts)}")
+    if report.failure_stage:
+        lines.append(f"- Failure stage: {report.failure_stage}")
     if error:
         lines.append(f"- Error: {error}")
+
+    lines.extend(_summary_lines(report.summary))
 
     lines.extend(["", "## Findings", ""])
     if report.finding_results:
@@ -125,8 +129,12 @@ def _render_local_markdown_report(
     ]
     if report.finding_counts:
         lines.append(f"- Finding counts: {_format_counts(report.finding_counts)}")
+    if report.failure_stage:
+        lines.append(f"- Failure stage: {report.failure_stage}")
     if error:
         lines.append(f"- Error: {error}")
+
+    lines.extend(_summary_lines(report.summary))
 
     lines.extend(["", "## Findings", ""])
     if report.finding_results:
@@ -162,6 +170,28 @@ def _finding_lines(index: int, finding: dict) -> list[str]:
     if finding.get("suggestion"):
         lines.append(f"- Suggestion: {finding['suggestion']}")
     return lines + [""]
+
+
+def _summary_lines(summary: dict[str, object] | None) -> list[str]:
+    lines = ["", "## MR Summary", ""]
+    if not summary:
+        return lines + ["- <none>"]
+
+    lines.append(str(summary["overview"]))
+    labels = {
+        "change_areas": "Change areas",
+        "behavior_changes": "Behavior changes",
+        "risk_areas": "Risk areas",
+        "test_changes": "Test changes",
+    }
+    for field, label in labels.items():
+        values = summary.get(field, [])
+        lines.extend(["", f"### {label}", ""])
+        if values:
+            lines.extend(f"- {value}" for value in values)
+        else:
+            lines.append("- <none>")
+    return lines
 
 
 def _format_counts(counts: dict[str, int]) -> str:

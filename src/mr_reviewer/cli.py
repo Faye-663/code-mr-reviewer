@@ -25,7 +25,7 @@ LOG = logging.getLogger("mr_reviewer")
 def build_service(config: Config) -> ReviewService:
     return ReviewService(
         GitLabClient(
-            config.gitlab_base_url, config.gitlab_token, config.test_gitlab_responses
+            config.gitlab_api_base_url, config.gitlab_token, config.test_gitlab_responses
         ),
         GitClient(),
         build_agent_runner(
@@ -42,6 +42,7 @@ def healthcheck(config: Config) -> int:
         "git": shutil.which("git") is not None,
         "agent": shutil.which(split_command(config.agent_command or config.opencode_command)[0]) is not None,
         "gitlab_base_url": bool(config.gitlab_base_url),
+        "gitlab_api_base_url": bool(config.gitlab_api_base_url),
         "gitlab_token": bool(config.gitlab_token),
         "im_poll_command": bool(config.im_poll_command),
         "im_reply_command": bool(config.im_reply_command),

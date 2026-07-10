@@ -211,7 +211,7 @@ def test_poll_once_runs_review_and_replies(tmp_path: Path):
     gitlab_file.write_text(
         json.dumps(
             {
-                "/api/v4/projects/team%2Fproject/merge_requests/7": {
+                "/projects/team%2Fproject/merge_requests/7": {
                     "web_url": "https://gitlab.example.com/team/project/merge_requests/7",
                     "title": "MR",
                     "source_branch": "feature",
@@ -220,7 +220,7 @@ def test_poll_once_runs_review_and_replies(tmp_path: Path):
                     "target_project_id": 1,
                     "diff_refs": {"base_sha": base, "head_sha": head},
                 },
-                "/api/v4/projects/1": {"http_url_to_repo": str(repo)},
+                "/projects/1": {"http_url_to_repo": str(repo)},
             }
         ),
         encoding="utf-8",
@@ -248,6 +248,7 @@ def test_poll_once_runs_review_and_replies(tmp_path: Path):
         "MR_REVIEWER_STATE_PATH": str(tmp_path / "state.json"),
         "MR_REVIEWER_OPENCODE_COMMAND": f"{sys.executable} {opencode_script}",
         "MR_REVIEWER_TEST_GITLAB_RESPONSES": str(gitlab_file),
+        "PYTHONPATH": str(Path("src").resolve()),
         "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
     })
 

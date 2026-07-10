@@ -35,6 +35,7 @@ def load_dotenv(path: Path) -> dict[str, str]:
 @dataclass(slots=True)
 class Config:
     gitlab_base_url: str
+    gitlab_api_base_url: str = ""
     gitlab_token: str = ""
     im_poll_command: str = ""
     im_reply_command: str = ""
@@ -70,6 +71,13 @@ class Config:
     poll_interval_seconds: int = 15
     test_gitlab_responses: Path | None = None
 
+    def __post_init__(self) -> None:
+        self.gitlab_base_url = self.gitlab_base_url.rstrip("/")
+        if self.gitlab_api_base_url:
+            self.gitlab_api_base_url = self.gitlab_api_base_url.rstrip("/")
+        elif self.gitlab_base_url:
+            self.gitlab_api_base_url = f"{self.gitlab_base_url}/api/v4"
+
     @classmethod
     def from_env(cls, dotenv_path: Path | None = None) -> "Config":
         dotenv_values = load_dotenv(dotenv_path or Path(".env"))
@@ -97,6 +105,7 @@ class Config:
             agent_diagnostic_dir = opencode_diagnostic_dir
         return cls(
             gitlab_base_url=get("GITLAB_BASE_URL"),
+            gitlab_api_base_url=get("GITLAB_API_BASE_URL"),
             gitlab_token=get("GITLAB_TOKEN"),
             im_poll_command=get("IM_POLL_COMMAND"),
             im_reply_command=get("IM_REPLY_COMMAND"),

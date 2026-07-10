@@ -12,7 +12,7 @@ def test_gitlab_client_reads_mr_detail_diff_refs(tmp_path: Path):
     fixture.write_text(
         json.dumps(
             {
-                "/api/v4/projects/team%2Fproject/isource/merge_requests/7": {
+                "/projects/team%2Fproject/merge_requests/7": {
                     "diff_refs": {
                         "base_sha": "base-sha",
                         "start_sha": "start-sha",
@@ -23,7 +23,7 @@ def test_gitlab_client_reads_mr_detail_diff_refs(tmp_path: Path):
         ),
         encoding="utf-8",
     )
-    client = GitLabClient("https://gitlab.example.com", "secret-token", fixture)
+    client = GitLabClient("https://gitlab.example.com/api/v4", "secret-token", fixture)
 
     detail = client.get_mr_detail_for_discussion_position(_target())
 

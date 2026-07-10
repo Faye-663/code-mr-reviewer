@@ -58,10 +58,10 @@ Phase1 当时已经完成 GitLab MR 自动 review 的基础闭环：系统可以
 - `MR_REVIEWER_MAX_DIFF_LINES` 限制 diff 行数，默认 `2000`。
 - `MR_REVIEWER_TASK_TIMEOUT_SECONDS` 限制 opencode 单任务超时，默认 `900` 秒。
 
-### opencode Skills
+### 共享 Skills
 
-- `.opencode/skills/code-review`：面向已 checkout 临时 repo 的 GitLab MR review skill，要求只审查 Base SHA 到 Head SHA 的 MR range，不按本地未提交变更审查。
-- `.opencode/skills/gitlab-mr-review`：面向人工在 opencode 中直接输入 MR URL 的端到端编排 skill，负责 clone/fetch/checkout、调用 `code-review`，并可按配置提交 MR comment。
+- `.skill/code-review`：面向已 checkout 临时 repo 的 GitLab MR review skill，要求只审查 Base SHA 到 Head SHA 的 MR range，不按本地未提交变更审查。
+- `.skill/gitlab-mr-review`：面向人工直接输入 MR URL 的端到端编排 skill，负责 clone/fetch/checkout、调用 `code-review`，并可按配置提交 MR comment。
 
 ## 架构边界
 

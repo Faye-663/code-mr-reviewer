@@ -60,6 +60,7 @@ class Config:
     state_path: Path = Path(".mr-reviewer-state.json")
     agent_type: str = "opencode"
     agent_command: str = ""
+    agent_model_name: str = ""
     agent_debug: bool = False
     agent_diagnostic_dir: Path | None = None
     log_level: str = "OFF"
@@ -143,6 +144,7 @@ class Config:
             state_path=Path(get("STATE_PATH", ".mr-reviewer-state.json")),
             agent_type=agent_type,
             agent_command=agent_command,
+            agent_model_name=get("AGENT_MODEL_NAME"),
             agent_debug=log_level == "DEBUG",
             agent_diagnostic_dir=Path(debug_dir_value),
             log_level=log_level,

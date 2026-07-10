@@ -216,9 +216,6 @@ class WebhookReviewQueue:
                 self._queue.task_done()
 
     def _submit_comment(self, event: WebhookReviewEvent, report: ReviewReport) -> ReviewReport:
-        if not self.config.webhook_post_comment:
-            return replace(report, submission_owner="python", submission_status="disabled")
-
         try:
             structured = parse_structured_review_result(report.markdown)
         except StructuredReviewParseError:
@@ -231,11 +228,39 @@ class WebhookReviewQueue:
                 finding_results=[],
             )
 
+        if not self.config.webhook_post_comment:
+            results = [_unpublished_finding_result(finding, "disabled", "webhook_post_comment_disabled") for finding in structured.findings]
+            return replace(
+                report,
+                submission_owner="python",
+                submission_status="disabled",
+                structured_parse_status="success",
+                finding_counts=_finding_counts(results),
+                finding_results=results,
+                good=structured.good,
+                notes=structured.notes,
+                test_gaps=structured.test_gaps,
+            )
+
+        if not self.config.agent_model_name:
+            results = [_unpublished_finding_result(finding, "model_not_configured", "agent_model_name_missing") for finding in structured.findings]
+            return replace(
+                report,
+                submission_owner="python",
+                submission_status="model_not_configured",
+                structured_parse_status="success",
+                finding_counts=_finding_counts(results),
+                finding_results=results,
+                good=structured.good,
+                notes=structured.notes,
+                test_gaps=structured.test_gaps,
+            )
+
         detail = self.gitlab.get_mr_detail_for_discussion_position(event.target)
         refs = _diff_refs_from_detail(detail)
         position_map = DiffPositionMap.from_unified_diff(report.diff, refs)
         decisions = validate_review_findings(structured, position_map)
-        publish_results = DiscussionPublisher(self.gitlab).publish(event.target, decisions)
+        publish_results = DiscussionPublisher(self.gitlab, self.config.agent_model_name).publish(event.target, decisions)
         status = "failed" if any(item["status"] == "failed" for item in publish_results) else "posted"
         return replace(
             report,
@@ -244,12 +269,16 @@ class WebhookReviewQueue:
             structured_parse_status="success",
             finding_counts=_finding_counts(publish_results),
             finding_results=publish_results,
+            good=structured.good,
+            notes=structured.notes,
+            test_gaps=structured.test_gaps,
         )
 
 
 class DiscussionPublisher:
-    def __init__(self, gitlab: GitLabClient):
+    def __init__(self, gitlab: GitLabClient, model_name: str):
         self.gitlab = gitlab
+        self.model_name = model_name
 
     def publish(self, target: MergeRequestReviewTarget, decisions: list[FindingValidationDecision]) -> list[dict]:
         existing_markers = _extract_existing_markers(self.gitlab.list_mr_discussions(target))
@@ -267,7 +296,7 @@ class DiscussionPublisher:
             try:
                 response = self.gitlab.post_mr_discussion(
                     target,
-                    _discussion_body(decision, marker),
+                    _discussion_body(decision, marker, self.model_name),
                     decision.finding.severity,
                     decision.position.to_gitlab_position(),
                 )
@@ -339,6 +368,9 @@ def write_webhook_monitor_report(
         "comment_url": None,
         "markdown_preview": report.markdown[:4000],
         "summary": report.summary,
+        "good": report.good or [],
+        "notes": report.notes or [],
+        "test_gaps": report.test_gaps or [],
     }
     if report.structured_parse_status:
         data["structured_parse_status"] = report.structured_parse_status
@@ -492,12 +524,12 @@ def _finding_marker(target: MergeRequestReviewTarget, decision: FindingValidatio
     )
 
 
-def _discussion_body(decision: FindingValidationDecision, marker: str) -> str:
+def _discussion_body(decision: FindingValidationDecision, marker: str, model_name: str) -> str:
     finding = decision.finding
     return (
-        f"**[{finding.severity}][{finding.confidence}][{finding.rule_id}] {finding.title}**\n\n"
-        f"证据：{finding.evidence}\n\n"
-        f"建议：{finding.suggestion}\n\n"
+        f"【🤖AI Review-{model_name}】[{finding.severity}]{finding.title}\n"
+        f"- **影响**: {finding.impact}\n"
+        f"- **建议**: {finding.suggestion}\n\n"
         f"{marker}"
     )
 
@@ -519,6 +551,7 @@ def _finding_result(
         "new_line": finding.new_line,
         "title": finding.title,
         "evidence": finding.evidence,
+        "impact": finding.impact,
         "suggestion": finding.suggestion,
         "status": status,
         "reason": reason,
@@ -540,6 +573,25 @@ def _finding_counts(results: list[dict]) -> dict[str, int]:
         if status in counts:
             counts[status] += 1
     return counts
+
+
+def _unpublished_finding_result(finding, status: str, reason: str) -> dict:
+    return {
+        "rule_id": finding.rule_id,
+        "severity": finding.severity,
+        "confidence": finding.confidence,
+        "old_path": finding.old_path,
+        "new_path": finding.new_path,
+        "old_line": finding.old_line,
+        "new_line": finding.new_line,
+        "title": finding.title,
+        "evidence": finding.evidence,
+        "impact": finding.impact,
+        "suggestion": finding.suggestion,
+        "status": status,
+        "reason": reason,
+        "marker": "",
+    }
 
 
 def _redact(text: str, config: Config) -> str:

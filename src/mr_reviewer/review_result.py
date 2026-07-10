@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 ALLOWED_SEVERITIES = {"suggestion", "minjor", "major", "fatal"}
 ALLOWED_CONFIDENCES = {"HIGH", "MEDIUM", "LOW"}
@@ -27,6 +27,7 @@ class ReviewFinding:
     new_line: int
     title: str
     evidence: str
+    impact: str
     suggestion: str
 
 
@@ -35,6 +36,7 @@ class StructuredReviewResult:
     findings: list[ReviewFinding]
     notes: list[str]
     test_gaps: list[str]
+    good: list[str] = field(default_factory=list)
 
 
 def parse_review_summary(raw_output: str) -> dict[str, object]:
@@ -70,12 +72,16 @@ def parse_structured_review_result(raw_output: str) -> StructuredReviewResult:
 
     if not isinstance(payload, dict):
         raise StructuredReviewParseError("review output must be a JSON object")
+    unexpected_fields = set(payload) - {"findings", "notes", "test_gaps", "good"}
+    if unexpected_fields:
+        raise StructuredReviewParseError(f"review output contains unexpected fields: {sorted(unexpected_fields)}")
 
     findings = _require_list(payload, "findings")
     return StructuredReviewResult(
         findings=[_parse_finding(item, index) for index, item in enumerate(findings)],
         notes=_optional_text_list(payload, "notes"),
         test_gaps=_optional_text_list(payload, "test_gaps"),
+        good=_optional_text_list(payload, "good"),
     )
 
 
@@ -105,6 +111,7 @@ def _parse_finding(value: object, index: int) -> ReviewFinding:
         new_line=_require_int(value, "new_line", index),
         title=_require_text(value, "title", index),
         evidence=_require_text(value, "evidence", index),
+        impact=_require_text(value, "impact", index),
         suggestion=_require_text(value, "suggestion", index),
     )
 

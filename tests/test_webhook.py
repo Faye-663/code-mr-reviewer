@@ -284,7 +284,7 @@ def test_write_webhook_monitor_report_redacts_sensitive_values(tmp_path: Path):
     assert data["markdown_preview"] == "# Review\n\nLooks good."
     assert data["summary"]["overview"] == "修复认证流程"
     markdown = Path(data["markdown_report_path"]).read_text(encoding="utf-8")
-    assert "## MR Summary" in markdown
+    assert "## Discoveries" in markdown
     assert "修复认证流程" in markdown
 
 
@@ -301,6 +301,7 @@ def test_webhook_worker_posts_inline_discussion_from_python(tmp_path: Path):
         gitlab_token="secret-token",
         report_dir=tmp_path,
         webhook_post_comment=True,
+        agent_model_name="GLM5",
     )
     queue = WebhookReviewQueue(service, gitlab, config)
     queue.start()
@@ -317,7 +318,8 @@ def test_webhook_worker_posts_inline_discussion_from_python(tmp_path: Path):
     assert posted["severity"] == "major"
     assert posted["position"]["old_line"] == -1
     assert posted["position"]["new_line"] == 2
-    assert "**[major][HIGH][SQL_PERFORMANCE] 批量查询缺少数量限制**" in posted["body"]
+    assert "【🤖AI Review-GLM5】[major]批量查询缺少数量限制" in posted["body"]
+    assert "- **影响**: 大请求可能导致数据库资源耗尽。" in posted["body"]
     assert "<!-- ai-cr:finding:team/project:7:head-sha:SQL_PERFORMANCE:src/example.py:src/example.py:-1:2 -->" in posted["body"]
     report = json.loads(next(tmp_path.glob("*.json")).read_text(encoding="utf-8"))
     assert report["submission_owner"] == "python"
@@ -327,13 +329,11 @@ def test_webhook_worker_posts_inline_discussion_from_python(tmp_path: Path):
     markdown_report_path = Path(report["markdown_report_path"])
     assert markdown_report_path.exists()
     markdown_report = markdown_report_path.read_text(encoding="utf-8")
-    assert "# GitLab MR Review Report" in markdown_report
+    assert "# 代码检视报告" in markdown_report
     assert "team/project!7" in markdown_report
-    assert "posted" in markdown_report
-    assert "discussion-1" in markdown_report
-    assert "123" in markdown_report
+    assert "已提交MR评论" in markdown_report
     assert report["summary"]["overview"] == "修复认证流程"
-    assert "## MR Summary" in markdown_report
+    assert "## Discoveries" in markdown_report
     assert "修复认证流程" not in posted["body"]
 
 
@@ -363,6 +363,33 @@ def test_webhook_worker_can_skip_python_comment(tmp_path: Path):
     assert report["submission_status"] == "disabled"
 
 
+def test_webhook_worker_keeps_findings_local_when_model_name_is_missing(tmp_path: Path):
+    event = parse_gitlab_merge_request_event(
+        _merge_request_payload(), Config(gitlab_base_url="https://gitlab.example.com")
+    )
+    assert event is not None
+    gitlab = _RecordingGitLabClient()
+    queue = WebhookReviewQueue(
+        _RecordingReviewService(),
+        gitlab,
+        Config(
+            gitlab_base_url="https://gitlab.example.com",
+            gitlab_token="secret-token",
+            report_dir=tmp_path,
+            webhook_post_comment=True,
+        ),
+    )
+    queue.start()
+
+    queue.enqueue(event)
+    queue._queue.join()
+
+    assert gitlab.discussions == []
+    report = json.loads(next(tmp_path.glob("*.json")).read_text(encoding="utf-8"))
+    assert report["submission_status"] == "model_not_configured"
+    assert report["finding_results"][0]["status"] == "model_not_configured"
+
+
 def test_webhook_worker_skips_duplicate_inline_discussion(tmp_path: Path):
     event = parse_gitlab_merge_request_event(
         _merge_request_payload(),
@@ -378,6 +405,7 @@ def test_webhook_worker_skips_duplicate_inline_discussion(tmp_path: Path):
         gitlab_token="secret-token",
         report_dir=tmp_path,
         webhook_post_comment=True,
+        agent_model_name="GLM5",
     )
     queue = WebhookReviewQueue(service, gitlab, config)
     queue.start()
@@ -419,8 +447,7 @@ def test_webhook_worker_does_not_publish_when_structured_output_is_invalid(tmp_p
     markdown_report_path = Path(report["markdown_report_path"])
     assert markdown_report_path.exists()
     markdown_report = markdown_report_path.read_text(encoding="utf-8")
-    assert "parse_failed" in markdown_report
-    assert "not json" in markdown_report
+    assert "## 检视摘要" in markdown_report
 
 
 def test_webhook_worker_records_review_stage_failure_with_completed_summary(tmp_path: Path):
@@ -460,7 +487,7 @@ def test_webhook_worker_records_review_stage_failure_with_completed_summary(tmp_
     assert report["summary"]["overview"] == "修复认证流程"
     markdown = Path(report["markdown_report_path"]).read_text(encoding="utf-8")
     assert "修复认证流程" in markdown
-    assert "Failure stage: review" in markdown
+    assert "失败阶段：review" in markdown
 
 
 class _RecordingReviewService:
@@ -480,6 +507,7 @@ class _RecordingReviewService:
                         "new_line": 2,
                         "title": "批量查询缺少数量限制",
                         "evidence": "本次变更新增 IN 查询，但未限制集合大小。",
+                        "impact": "大请求可能导致数据库资源耗尽。",
                         "suggestion": "限制集合大小或拆批查询。",
                     }
                 ],

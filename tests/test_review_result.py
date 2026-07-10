@@ -62,6 +62,7 @@ def test_parse_structured_review_result_accepts_valid_findings():
               "new_line": 42,
               "title": "批量查询缺少数量限制",
               "evidence": "本次变更新增 IN 查询，但未限制集合大小。",
+              "impact": "大请求可能导致数据库资源耗尽。",
               "suggestion": "限制集合大小或拆批查询。"
             }
           ],
@@ -115,6 +116,18 @@ def test_parse_structured_review_result_requires_finding_fields():
         )
 
 
+def test_parse_structured_review_result_requires_impact_and_accepts_good():
+    with pytest.raises(StructuredReviewParseError, match="impact"):
+        parse_structured_review_result(_structured_payload().replace(',\n          "impact": "缺陷会导致业务失败"', ""))
+
+    result = parse_structured_review_result(
+        _structured_payload(extra=', "good": ["事务边界下沉到领域服务"]', impact="令牌会进入 HTTP 响应")
+    )
+
+    assert result.findings[0].impact == "令牌会进入 HTTP 响应"
+    assert result.good == ["事务边界下沉到领域服务"]
+
+
 @pytest.mark.parametrize("severity", ["BLOCKER", "minor", ""])
 def test_parse_structured_review_result_rejects_unknown_severity(severity):
     payload = _structured_payload(severity=severity)
@@ -155,15 +168,17 @@ def test_render_structured_output_as_markdown_uses_python_renderer():
     assert rendered.structured_parse_status == "success"
     assert rendered.finding_counts["total"] == 1
     assert rendered.finding_counts["monitor_only"] == 1
-    assert rendered.markdown.startswith("# GitLab MR Review Report")
+    assert rendered.markdown.startswith("# 代码检视报告")
     assert "team/project!7" in rendered.markdown
-    assert "SQL_PERFORMANCE" in rendered.markdown
-    assert "monitor_only" in rendered.markdown
-    assert "## MR Summary" in rendered.markdown
+    assert "批量查询缺少数量限制" in rendered.markdown
+    assert "仅写入本地报告" in rendered.markdown
+    assert "## Discoveries" in rendered.markdown
     assert "修复认证流程" in rendered.markdown
 
 
-def _structured_payload(severity: str = "major", confidence: str = "HIGH") -> str:
+def _structured_payload(
+        severity: str = "major", confidence: str = "HIGH", impact: str = "缺陷会导致业务失败", extra: str = ""
+) -> str:
     return f"""
     {{
       "findings": [
@@ -177,10 +192,11 @@ def _structured_payload(severity: str = "major", confidence: str = "HIGH") -> st
           "new_line": 42,
           "title": "批量查询缺少数量限制",
           "evidence": "证据",
+          "impact": "{impact}",
           "suggestion": "建议"
         }}
       ],
       "notes": [],
-      "test_gaps": []
+      "test_gaps": []{extra}
     }}
     """

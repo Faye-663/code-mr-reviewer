@@ -113,11 +113,13 @@ git diff <base_sha>...<head_sha>
       "new_line": 42,
       "title": "新增列表查询缺少分页限制",
       "evidence": "新增 findUsers 查询会在未传分页条件时全量扫描用户表。",
+      "impact": "大数据量场景会耗尽数据库连接，导致正常请求超时。",
       "suggestion": "复用现有分页参数校验，并在 Mapper 查询中强制 limit。"
     }
   ],
   "notes": [],
-  "test_gaps": []
+  "test_gaps": [],
+  "good": []
 }
 ```
 
@@ -128,9 +130,11 @@ git diff <base_sha>...<head_sha>
 - 新增行使用 `old_line: -1`，删除行使用 `new_line: -1`。
 - `old_path` 和 `new_path` 使用 GitLab diff 中的路径；重命名时分别填旧路径和新路径。
 - `evidence` 只写可追溯到本次 MR 差异的证据，不要复述完整 diff。
+- `impact` 必须说明该缺陷对安全、正确性、可用性或维护性的实际影响，不能为空。
 - `suggestion` 写可执行修复方向；只有修复方向明确时才包含代码片段文本。
-- 当可能且合适时，在 `suggestion` 中补充 1-3 行 Java 对比例子，标明“错误做法”和“正确做法”。
+- 当可能且合适时，在 `suggestion` 中补充 1-5 行对比例子，标明“错误做法”和“正确做法”；修复方向不明确时不要编造示例。
 - `notes` 用于非阻断说明；`test_gaps` 用于缺失测试的简短说明。
+- `good` 可选，默认 `[]`。仅当本次 MR 存在真实且显著的良好修改，并且置信度高于 90% 时才写入；不要为了凑格式输出。
 - 没有高置信问题时输出 `{"findings":[],"notes":["未发现高置信问题"],"test_gaps":[]}`。
 
 ## 批准标准

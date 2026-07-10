@@ -111,6 +111,7 @@ def _finding(severity: str, confidence: str, new_line: int) -> ReviewFinding:
         new_line=new_line,
         title="批量查询缺少数量限制",
         evidence="本次变更新增 IN 查询，但未限制集合大小。",
+        impact="大请求可能导致数据库资源耗尽。",
         suggestion="限制集合大小或拆批查询。",
     )
 

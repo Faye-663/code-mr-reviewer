@@ -49,6 +49,15 @@ class Config(NamedTuple):
     submit_comment: bool
 
 
+class ReviewRoutingDecision(NamedTuple):
+    review_mode: str
+    routing_reason: str
+    routing_marker: str
+
+
+DEEP_REVIEW_MARKER = "【Deep-Review】"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Review a GitLab MR with a configured agent and post the report as an MR comment.")
     parser.add_argument("mr_url", help="GitLab MR URL, for example https://gitlab.example.com/team/project/merge_requests/7")
@@ -123,7 +132,8 @@ def review_gitlab_mr(mr_url: str, config: Config) -> dict[str, object]:
             token=config.gitlab_token,
         )
         changed_files = git_output(["git", "diff", "--name-only", f"{base_sha}...{head_sha}"], repo_path).splitlines()
-        two_step = run_two_step_review(
+        routing = resolve_review_routing(metadata.get("title"))
+        review_result = run_review(
             config.agent_type,
             config.agent_command,
             mr_url=f"{mr.base_url}/{mr.project_path}/merge_requests/{mr.mr_iid}",
@@ -131,11 +141,13 @@ def review_gitlab_mr(mr_url: str, config: Config) -> dict[str, object]:
             head_sha=head_sha,
             changed_files=changed_files,
             repo_path=repo_path,
+            title=str(metadata.get("title") or ""),
+            routing=routing,
         )
-        report_path.write_text(str(two_step["local_report"]), encoding="utf-8")
+        report_path.write_text(str(review_result["local_report"]), encoding="utf-8")
         comment_submitted = False
         if config.submit_comment:
-            client.post_form(mr_note_api_path(mr.project_path, mr.mr_iid), {"body": str(two_step["comment_body"])})
+            client.post_form(mr_note_api_path(mr.project_path, mr.mr_iid), {"body": str(review_result["comment_body"])})
             comment_submitted = True
         return {
             "report_path": str(report_path),
@@ -143,6 +155,10 @@ def review_gitlab_mr(mr_url: str, config: Config) -> dict[str, object]:
             "head_sha": head_sha,
             "changed_files_count": len(changed_files),
             "comment_submitted": comment_submitted,
+            "review_mode": routing.review_mode,
+            "routing_reason": routing.routing_reason,
+            "routing_marker": routing.routing_marker,
+            "agent_call_count": review_result["agent_call_count"],
         }
     except Exception as exc:
         raise RuntimeError(redact(str(exc), config.gitlab_token)) from exc
@@ -167,6 +183,13 @@ def parse_mr_url(url: str, base_url: str) -> MrUrl:
 
 def normalize_base_url(base_url: str) -> str:
     return base_url.rstrip("/")
+
+
+def resolve_review_routing(title: object) -> ReviewRoutingDecision:
+    normalized = title if isinstance(title, str) else ""
+    if normalized.lstrip().casefold().startswith(DEEP_REVIEW_MARKER.casefold()):
+        return ReviewRoutingDecision("two-step", "title_prefix", DEEP_REVIEW_MARKER)
+    return ReviewRoutingDecision("one-step", "default", "")
 
 
 def mr_api_path(project_path: str, mr_iid: int) -> str:
@@ -198,20 +221,19 @@ def build_review_prompt(
     repo_path: Path,
     summary: dict[str, object] | None = None,
 ) -> str:
-    if summary is None:
-        raise ValueError("review prompt requires the first-stage summary")
-    return _render_prompt(
-        "review",
-        {
-            "skill_name": "code-review",
-            "mr_url": mr_url,
-            "base_sha": base_sha,
-            "head_sha": head_sha,
-            "changed_files": _changed_files(changed_files),
-            "repo_path": str(repo_path),
-            "summary_json": json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True),
-        },
-    )
+    values = {
+        "skill_name": "code-review",
+        "mr_url": mr_url,
+        "base_sha": base_sha,
+        "head_sha": head_sha,
+        "changed_files": _changed_files(changed_files),
+        "repo_path": str(repo_path),
+    }
+    template_id = "review"
+    if summary is not None:
+        template_id = "deep-review"
+        values["summary_json"] = json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True)
+    return _render_prompt(template_id, values)
 
 
 def build_summary_prompt(
@@ -314,11 +336,60 @@ def run_two_step_review(
     return {
         "summary": summary,
         "comment_body": comment_body,
+        "agent_call_count": 2,
         "local_report": render_local_report(summary, comment_body, base_sha, head_sha),
     }
 
 
-def render_local_report(summary: dict[str, object], review: str, base_sha: str, head_sha: str) -> str:
+def run_review(
+    agent_type: str,
+    command: str,
+    mr_url: str,
+    base_sha: str,
+    head_sha: str,
+    changed_files: list[str],
+    repo_path: Path,
+    title: str,
+    routing: ReviewRoutingDecision,
+) -> dict[str, object]:
+    if routing.review_mode == "two-step":
+        result = run_two_step_review(agent_type, command, mr_url, base_sha, head_sha, changed_files, repo_path)
+    else:
+        comment_body = run_agent_review(
+            agent_type,
+            command,
+            build_review_prompt(
+                mr_url=mr_url,
+                base_sha=base_sha,
+                head_sha=head_sha,
+                changed_files=changed_files,
+                repo_path=repo_path,
+            ),
+            repo_path,
+        )
+        result = {"summary": None, "comment_body": comment_body, "agent_call_count": 1}
+    result["local_report"] = render_local_report(
+        result["summary"],
+        str(result["comment_body"]),
+        base_sha,
+        head_sha,
+        title=title,
+        routing=routing,
+        changed_files=changed_files,
+    )
+    return result
+
+
+def render_local_report(
+    summary: dict[str, object] | None,
+    review: str,
+    base_sha: str,
+    head_sha: str,
+    *,
+    title: str = "",
+    routing: ReviewRoutingDecision | None = None,
+    changed_files: list[str] | None = None,
+) -> str:
     """Skill 独立运行时也使用与自动入口一致的本地报告骨架。"""
     try:
         structured = json.loads(review)
@@ -332,14 +403,21 @@ def render_local_report(summary: dict[str, object], review: str, base_sha: str, 
     notes = notes if isinstance(notes, list) and all(isinstance(item, str) for item in notes) else []
     test_gaps = structured.get("test_gaps") if isinstance(structured, dict) else []
     test_gaps = test_gaps if isinstance(test_gaps, list) and all(isinstance(item, str) for item in test_gaps) else []
+    routing = routing or ReviewRoutingDecision("two-step", "title_prefix", DEEP_REVIEW_MARKER)
+    changed_files = changed_files or []
     lines = [
         "# 代码检视报告", "", "## Discoveries", "",
-        f"- 变更内容概述：{summary['overview']}",
+        f"- MR title：{title or '<empty>'}",
+        f"- 审查模式：{routing.review_mode}（{routing.routing_reason}）",
         f"- 审查范围：Base SHA = {base_sha}，Head SHA = {head_sha}",
+        f"- 变更文件数：{len(changed_files)}",
     ]
-    for field, label in (("change_areas", "变更区域"), ("behavior_changes", "行为变化"), ("risk_areas", "风险区域"), ("test_changes", "测试变化")):
-        values = summary.get(field, [])
-        lines.append(f"- {label}：{'；'.join(str(value) for value in values) if values else '无'}")
+    lines.extend(f"  - {path}" for path in changed_files)
+    if summary is not None:
+        lines.append(f"- 变更内容概述：{summary['overview']}")
+        for field, label in (("change_areas", "变更区域"), ("behavior_changes", "行为变化"), ("risk_areas", "风险区域"), ("test_changes", "测试变化")):
+            values = summary.get(field, [])
+            lines.append(f"- {label}：{'；'.join(str(value) for value in values) if values else '无'}")
     if notes:
         lines.append(f"- 检视备注：{'；'.join(notes)}")
     if test_gaps:

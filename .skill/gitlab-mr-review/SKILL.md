@@ -1,11 +1,11 @@
 ---
 name: gitlab-mr-review
-description: "Use when reviewing a GitLab MR URL with OpenCode or Claude Code through the bundled two-step script. Not for reviewing uncommitted local changes or modifying the target repository. Output: a local summary-plus-review report and, when enabled, an MR comment containing only the review."
+description: "Use when reviewing a GitLab MR URL with OpenCode or Claude Code through the bundled title-routed script. Not for reviewing uncommitted local changes or modifying the target repository. Output: a local review report and, when enabled, an MR comment containing only the review."
 ---
 
 # GitLab MR Review
 
-你负责把一个 GitLab MR URL 交给确定性脚本处理。这个 skill 只做端到端编排：获取 MR 元数据、clone/fetch/checkout、先生成 MR 概要，再把概要作为上下文调用 `code-review skill`。本地 Markdown 报告使用“代码检视报告 / Discoveries / 检视意见 / 检视摘要”结构；按配置写回现有 MR 的 comment 只包含 review JSON 正文。
+你负责把一个 GitLab MR URL 交给确定性脚本处理。这个 skill 只做端到端编排：获取 MR 元数据、clone/fetch/checkout，并按 title 选择 one-step 或 Deep Review。普通 MR 直接调用 `code-review skill`；title 去除前导空白后以 `【Deep-Review】` 开头时（忽略大小写）先生成 MR 概要，再把概要作为 review 上下文。本地 Markdown 报告使用“代码检视报告 / Discoveries / 检视意见 / 检视摘要”结构；按配置写回现有 MR 的 comment 只包含 review JSON 正文。
 
 ## 输入
 
@@ -45,9 +45,9 @@ python <复制后的skill目录>/gitlab-mr-review/scripts/review_gitlab_mr.py "<
 2. 调 GitLab API 获取 MR 元数据和 target/source project 的 HTTPS clone URL。
 3. clone target repo 到临时目录，显式 fetch target/source 分支。
 4. checkout `diff_refs.head_sha`，读取 `Base SHA`、`Head SHA` 和 `Changed files`。
-5. 第一次调用已配置的 OpenCode 或 Claude Code，只生成严格结构化的 MR 概要。
-6. 第二次调用同一 Agent，把概要作为上下文，要求使用现有 `code-review skill` 审查本地 repo 的 MR range。
-7. 写出包含概要与 review 的本地 Markdown 报告；当 `MR_REVIEW_SUBMIT_COMMENT` 不是 `false` 时，只把 review 正文提交到现有 MR comment。
+5. 按最新 MR title 路由：普通 title 执行一次 review；`【Deep-Review】` 前缀执行两次调用，先生成概要再 review。
+6. 要求同一 Agent 使用现有 `code-review skill` 审查本地 repo 的 MR range。
+7. 写出本地 Markdown 报告；Deep Review 报告额外包含概要。当 `MR_REVIEW_SUBMIT_COMMENT` 不是 `false` 时，只把 review 正文提交到现有 MR comment。
 
 ## 边界
 

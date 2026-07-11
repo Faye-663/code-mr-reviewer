@@ -118,6 +118,9 @@ def test_prompt_templates_are_portable_and_render_identically(tmp_path: Path):
     assert Path("src/mr_reviewer/prompt_templates/review.md").read_bytes() == (
         Path(".skill/gitlab-mr-review/prompt_templates/review.md").read_bytes()
     )
+    assert Path("src/mr_reviewer/prompt_templates/deep-review.md").read_bytes() == (
+        Path(".skill/gitlab-mr-review/prompt_templates/deep-review.md").read_bytes()
+    )
     parse_review_summary(main_summary.split("JSON 结构为：\n", 1)[1])
     parse_structured_review_result(main_review.split("JSON 结构为：\n", 1)[1].split("\nseverity", 1)[0])
 
@@ -189,6 +192,42 @@ def test_gitlab_mr_review_script_builds_gitlab_api_paths():
 
     assert script.mr_api_path("team/project", 7) == "/projects/team%2Fproject/merge_requests/7"
     assert script.mr_note_api_path("team/project", 7) == "/projects/team%2Fproject/merge_requests/7/notes"
+
+
+@pytest.mark.parametrize(
+    ("title", "expected_mode"),
+    [
+        ("Fix auth", "one-step"),
+        ("prefix 【Deep-Review】 change", "one-step"),
+        ("  【dEeP-rEvIeW】 change", "two-step"),
+    ],
+)
+def test_gitlab_mr_review_skill_uses_shared_title_routing(title: str, expected_mode: str):
+    script = _load_gitlab_mr_review_script()
+
+    assert script.resolve_review_routing(title).review_mode == expected_mode
+
+
+def test_gitlab_mr_review_skill_runs_one_step_without_summary(monkeypatch, tmp_path: Path):
+    script = _load_gitlab_mr_review_script()
+    prompts = []
+
+    def fake_run(agent_type, command, prompt, repo_path):
+        prompts.append(prompt)
+        return '{"findings":[],"notes":[],"test_gaps":[]}'
+
+    monkeypatch.setattr(script, "run_agent_review", fake_run)
+    routing = script.resolve_review_routing("Fix auth")
+
+    result = script.run_review(
+        "opencode", "opencode", "https://gitlab.example.com/team/project/merge_requests/7",
+        "base", "head", ["auth.py"], tmp_path, "Fix auth", routing,
+    )
+
+    assert len(prompts) == 1
+    assert result["summary"] is None
+    assert result["agent_call_count"] == 1
+    assert "one-step（default）" in result["local_report"]
 
 
 def test_gitlab_mr_review_script_reads_independent_api_base_url(monkeypatch):

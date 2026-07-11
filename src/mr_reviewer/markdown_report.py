@@ -62,7 +62,7 @@ def _render_report(
     mr_url = event.target.mr_url if event else report.mr_url
     head_sha = report.head_sha or (event.target.head_sha if event else "")
     lines = ["# 代码检视报告", "", "## Discoveries", ""]
-    lines.extend(_discoveries(report.summary, repo, mr_iid, mr_url, report.base_sha, head_sha))
+    lines.extend(_discoveries(report, repo, mr_iid, mr_url, report.base_sha, head_sha))
     if report.notes:
         lines.append(f"- 检视备注：{'；'.join(report.notes)}")
     if report.test_gaps:
@@ -94,15 +94,22 @@ def _render_report(
 
 
 def _discoveries(
-        summary: dict[str, object] | None, repo: str, mr_iid: int | None, mr_url: str, base_sha: str, head_sha: str
+        report: ReviewReport, repo: str, mr_iid: int | None, mr_url: str, base_sha: str, head_sha: str
 ) -> list[str]:
+    changed_files = report.changed_files or []
     lines = [
         f"- MR：{repo}!{mr_iid}" if mr_iid is not None else "- MR：<unknown>",
+        f"- 标题：{report.title or '<unknown>'}",
         f"- URL：{mr_url or '<unknown>'}",
         f"- 审查范围：Base SHA = {base_sha or '<unknown>'}，Head SHA = {head_sha or '<unknown>'}",
+        f"- 审查模式：{report.review_mode or '<unknown>'}（{report.routing_reason or 'unknown'}）",
+        f"- 变更文件：{len(changed_files)} 个",
     ]
+    if changed_files:
+        lines.append(f"- 文件列表：{'；'.join(changed_files)}")
+    summary = report.summary
     if not summary:
-        return lines + ["- 变更内容概述：<未生成>"]
+        return lines
     lines.append(f"- 变更内容概述：{summary.get('overview', '<未生成>')}")
     for field, label in (("change_areas", "变更区域"), ("behavior_changes", "行为变化"), ("risk_areas", "风险区域"), ("test_changes", "测试变化")):
         values = summary.get(field, [])

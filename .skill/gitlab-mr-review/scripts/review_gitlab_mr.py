@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 import shlex
@@ -14,7 +15,22 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from string import Template
 from typing import NamedTuple
+
+
+class RenderedPrompt(str):
+    """独立 skill 保持字符串兼容，同时暴露模板审计元数据。"""
+
+    def __new__(cls, content: str, template_id: str, template_version: str):
+        value = super().__new__(cls, content)
+        value.template_id = template_id
+        value.template_version = template_version
+        return value
+
+    @property
+    def content(self) -> str:
+        return str(self)
 
 
 class MrUrl(NamedTuple):
@@ -182,23 +198,19 @@ def build_review_prompt(
     repo_path: Path,
     summary: dict[str, object] | None = None,
 ) -> str:
-    files = "\n".join(f"- {path}" for path in changed_files) or "- <none>"
-    prompt = (
-        "使用 code-review skill 检视 GitLab MR。\n"
-        f"MR URL: {mr_url}\n"
-        f"Base SHA: {base_sha}\n"
-        f"Head SHA: {head_sha}\n"
-        "Changed files:\n"
-        f"{files}\n"
-        f"代码仓在 {repo_path} 目录。\n"
-        "只审查 Base SHA 到 Head SHA 的 MR range，不要按本地未提交变更审查。"
-    )
     if summary is None:
-        return prompt
-    return (
-        f"{prompt}\n\n"
-        "以下是第一阶段生成的 MR 概要，作为本次代码审查的上下文：\n"
-        f"{json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True)}"
+        raise ValueError("review prompt requires the first-stage summary")
+    return _render_prompt(
+        "review",
+        {
+            "skill_name": "code-review",
+            "mr_url": mr_url,
+            "base_sha": base_sha,
+            "head_sha": head_sha,
+            "changed_files": _changed_files(changed_files),
+            "repo_path": str(repo_path),
+            "summary_json": json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True),
+        },
     )
 
 
@@ -210,19 +222,35 @@ def build_summary_prompt(
     changed_files: list[str],
     repo_path: Path,
 ) -> str:
-    files = "\n".join(f"- {path}" for path in changed_files) or "- <none>"
-    return (
-        "分析本次 GitLab MR 并生成 MR 概要，不执行代码审查，不要输出 finding。\n"
-        f"MR URL: {mr_url}\n"
-        f"Base SHA: {base_sha}\n"
-        f"Head SHA: {head_sha}\n"
-        "Changed files:\n"
-        f"{files}\n"
-        f"代码仓在 {repo_path} 目录。\n"
-        "只输出 JSON："
-        '{"overview":"...","change_areas":["..."],"behavior_changes":["..."],'
-        '"risk_areas":["..."],"test_changes":["..."]}'
+    return _render_prompt(
+        "summary",
+        {
+            "mr_url": mr_url,
+            "base_sha": base_sha,
+            "head_sha": head_sha,
+            "changed_files": _changed_files(changed_files),
+            "repo_path": str(repo_path),
+        },
     )
+
+
+def _render_prompt(template_id: str, values: dict[str, str]) -> RenderedPrompt:
+    path = Path(__file__).resolve().parents[1] / "prompt_templates" / f"{template_id}.md"
+    if not path.is_file():
+        raise ValueError(f"prompt template not found: {template_id}")
+    content = path.read_text(encoding="utf-8")
+    missing = sorted(name for name, value in values.items() if not value)
+    if missing:
+        raise ValueError(f"missing template values: {', '.join(missing)}")
+    try:
+        rendered = Template(content).substitute(values)
+    except (KeyError, ValueError) as exc:
+        raise ValueError(f"invalid {template_id} prompt template: {exc}") from exc
+    return RenderedPrompt(rendered, template_id, hashlib.sha256(content.encode("utf-8")).hexdigest()[:12])
+
+
+def _changed_files(changed_files: list[str]) -> str:
+    return "\n".join(f"- {path}" for path in changed_files) or "- <none>"
 
 
 def parse_review_summary(raw_output: str) -> dict[str, object]:

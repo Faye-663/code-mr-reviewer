@@ -260,6 +260,10 @@ def test_write_webhook_monitor_report_redacts_sensitive_values(tmp_path: Path):
         opencode_returncode=0,
         submission_owner="skill",
         submission_status="unknown",
+        prompt_templates={
+            "summary": {"id": "summary", "version": "abc123def456"},
+            "review": {"id": "review", "version": "789abc456def"},
+        },
     )
 
     basic_token = base64.b64encode(b"oauth2:secret-token").decode("ascii")
@@ -283,6 +287,7 @@ def test_write_webhook_monitor_report_redacts_sensitive_values(tmp_path: Path):
     assert data["submission_status"] == "unknown"
     assert data["markdown_preview"] == "# Review\n\nLooks good."
     assert data["summary"]["overview"] == "修复认证流程"
+    assert data["prompt_templates"]["review"]["version"] == "789abc456def"
     markdown = Path(data["markdown_report_path"]).read_text(encoding="utf-8")
     assert "## Discoveries" in markdown
     assert "修复认证流程" in markdown

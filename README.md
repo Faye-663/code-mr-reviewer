@@ -2,10 +2,10 @@
 
 GitLab MR Review 助手。项目支持两种触发入口：
 
-- **WeLink IM poll**：轮询 WeLink 群历史消息，识别 `@Bot + GitLab MR URL` 后调用已配置的 Agent 先生成 MR 概要、再生成结构化 review JSON，由 Python 渲染包含概要与 review 的 Markdown 报告，并把报告文件上传到 WeLink OneBox 后通知群聊。
+- **WeLink IM poll**：轮询 WeLink 群历史消息，识别 `@Bot + GitLab MR URL` 后按 MR title 选择审查模式，由 Python 渲染 Markdown 报告，并把报告文件上传到 WeLink OneBox 后通知群聊。
 - **GitLab webhook**：接收 GitLab Merge Request Hook，后台执行 review，把 JSON 监视报告和 Markdown review 报告写入 `MR_REVIEWER_REPORT_DIR`，并可由 Python 侧发布 GitLab inline discussion。只使用 webhook 的用户可直接阅读 [Webhook 快速开始](docs/WEBHOOK_QUICKSTART.md)。
 
-两种入口共用同一条 two-step review 流程：clone GitLab target 仓库到临时目录，拉取 target/source 分支，checkout MR head；第一次调用 OpenCode 或 Claude Code 输出结构化 MR 概要，第二次把该概要作为上下文生成结构化 review JSON，再由 Python 校验、发布或渲染 Markdown。概要只写入本地报告，不作为线上 comment/discussion 发布。
+两种入口共用同一条 title 路由规则：普通 MR 默认 one-step，Agent 直接生成结构化 review JSON；title 去除前导空白后以 `【Deep-Review】` 开头时（忽略大小写）执行 two-step，先生成本地概要，再携带概要执行 review。两种模式都先 clone GitLab target 仓库并 checkout MR head；完整 diff 不写入 prompt。仅修改 title 不会触发 webhook review。
 
 ## 项目优势
 

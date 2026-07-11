@@ -20,6 +20,7 @@ from mr_reviewer.inline_review import DiffPositionMap, DiffRefs, FindingValidati
 from mr_reviewer.markdown_report import render_markdown_review_report
 from mr_reviewer.observability import task_context
 from mr_reviewer.review_result import StructuredReviewParseError, parse_structured_review_result
+from mr_reviewer.review_routing import resolve_review_routing
 from mr_reviewer.reviewer import MergeRequestReviewTarget, ReviewReport, ReviewService, ReviewStageError
 
 LOG = logging.getLogger("mr_reviewer")
@@ -75,6 +76,7 @@ def parse_gitlab_merge_request_event(payload: dict, config: Config) -> WebhookRe
     mr_iid = _require_int(attrs, "iid")
     source_branch = _require_text(attrs, "source_branch")
     target_branch = _require_text(attrs, "target_branch")
+    title = _require_text(attrs, "title")
     last_commit = _require_dict(attrs, "last_commit")
     head_sha = _require_text(last_commit, "id")
     target_repo_url = _first_text(
@@ -105,6 +107,7 @@ def parse_gitlab_merge_request_event(payload: dict, config: Config) -> WebhookRe
         source_branch=source_branch,
         base_sha=None,
         head_sha=head_sha,
+        title=title,
     )
     return WebhookReviewEvent(
         event_id=f"{project_path}!{mr_iid}:{head_sha}",
@@ -195,6 +198,7 @@ class WebhookReviewQueue:
                 LOG.error("task=%s stage=webhook_review status=failed error=%s", task_id, _redact(str(exc), self.config))
                 summary = exc.summary if isinstance(exc, ReviewStageError) else None
                 failure_stage = exc.stage if isinstance(exc, ReviewStageError) else ""
+                routing = resolve_review_routing(event.target.title)
                 failure_report = ReviewReport(
                     markdown="",
                     summary=summary,
@@ -203,6 +207,10 @@ class WebhookReviewQueue:
                     submission_owner="python",
                     submission_status="failed",
                     failure_stage=failure_stage,
+                    title=event.target.title,
+                    review_mode=routing.review_mode,
+                    routing_reason=routing.routing_reason,
+                    routing_marker=routing.routing_marker,
                 )
                 try:
                     write_webhook_monitor_report(event, failure_report, self.config, task_id, "failed", str(exc))
@@ -368,10 +376,15 @@ def write_webhook_monitor_report(
         "comment_url": None,
         "markdown_preview": report.markdown[:4000],
         "summary": report.summary,
+        "review_plan": report.review_plan,
         "good": report.good or [],
         "notes": report.notes or [],
         "test_gaps": report.test_gaps or [],
         "prompt_templates": report.prompt_templates or {},
+        "review_mode": report.review_mode,
+        "routing_reason": report.routing_reason,
+        "routing_marker": report.routing_marker,
+        "agent_call_count": report.agent_call_count,
     }
     if report.structured_parse_status:
         data["structured_parse_status"] = report.structured_parse_status

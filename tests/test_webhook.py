@@ -28,6 +28,7 @@ def _merge_request_payload(action: str = "update", update_reason: str = "source 
         },
         "object_attributes": {
             "iid": 7,
+            "title": "Fix auth",
             "url": "https://gitlab.example.com/team/project/merge_requests/7",
             "source_branch": "feature/auth",
             "target_branch": "main",
@@ -373,6 +374,7 @@ def test_webhook_worker_keeps_findings_local_when_model_name_is_missing(tmp_path
         _merge_request_payload(), Config(gitlab_base_url="https://gitlab.example.com")
     )
     assert event is not None
+    assert event.target.title == "Fix auth"
     gitlab = _RecordingGitLabClient()
     queue = WebhookReviewQueue(
         _RecordingReviewService(),

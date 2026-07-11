@@ -5,7 +5,7 @@
 ## 适用场景
 
 - GitLab 在 MR 打开、重新打开或 source branch 更新时主动回调本机服务。
-- 服务收到 webhook 后在后台执行 two-step review：先生成 MR 概要，再把概要作为第二步 code review 上下文，并把两步结果写入 `MR_REVIEWER_REPORT_DIR`。
+- 服务收到 webhook 后按 MR title 路由：普通 MR 默认执行 one-step review；title 去除前导空白后以 `【Deep-Review】` 开头时（忽略大小写）执行 two-step，并把结果写入 `MR_REVIEWER_REPORT_DIR`。仅修改 title 不触发 review。
 - Python 侧会把高置信、可定位的 finding 发布为 GitLab inline discussion；也可以关闭自动发布，只保留本地报告。
 
 ## 最小配置
@@ -47,9 +47,9 @@ MR_REVIEWER_REPORT_DIR=log/webhook-reports
 - `MR_REVIEWER_WEBHOOK_POST_COMMENT=false` 时不会发布 inline discussion，只写本地 JSON 监视报告和 Markdown review 报告。
 - `MR_REVIEWER_COMMENT_SKILL` 仍可选用于指定 review prompt skill；该 skill 必须只输出结构化 JSON，不要配置会自行提交评论的 skill。
 - `MR_REVIEWER_AGENT_MODEL_NAME` 是 webhook inline discussion 的展示模型名。它为空时，worker 只写本地报告并标记 `model_not_configured`，不会提交 GitLab discussion；不会从 Agent 输出推断模型名。
-- MR 概要只保存在本地 JSON/Markdown 报告中，不会发布到 GitLab；线上仅发布第二步产生且满足条件的 review finding。
+- Deep Review 的 MR 概要只保存在本地 JSON/Markdown 报告中，不会发布到 GitLab；one-step 不生成概要。线上仅发布满足条件的 review finding。
 - `MR_REVIEWER_LOG_LEVEL` 默认 `OFF`，不会输出项目日志或创建 debug 文件。设为 `INFO` 时只记录 API、Agent 调用元数据；设为 `DEBUG` 时会把脱敏后的请求、响应、prompt 和 Agent 输出写到 `MR_REVIEWER_DEBUG_DIR/YYYYMMDD/<task_id>/`。常规 webhook 审计仍使用 `MR_REVIEWER_REPORT_DIR`，它不受日志级别影响。
-- summary/review prompt 只使用本项目随 Git 发布的包内模板，不支持部署侧覆盖。webhook JSON 审计报告会在 `prompt_templates` 中记录两个阶段的模板 ID 与内容哈希版本；DEBUG 的 Agent `request.json` 也会记录对应版本。
+- review/summary/deep-review prompt 只使用本项目随 Git 发布的包内模板，不支持部署侧覆盖。webhook JSON 审计报告会记录实际使用阶段的模板 ID 与内容哈希版本；DEBUG 的 Agent `request.json` 也会记录对应版本。
 
 ## 启动服务
 
@@ -94,7 +94,7 @@ Invoke-WebRequest `
   -Body '{"object_kind":"push"}'
 ```
 
-如果使用最小 MR payload 自测，可处理事件会返回 `202 accepted`，随后后台任务会尝试 clone、diff、Agent 概要生成和 Agent review，并在 `MR_REVIEWER_REPORT_DIR` 写入同 stem 的 `.json` 监视报告和 `.md` review 报告；当 `MR_REVIEWER_WEBHOOK_POST_COMMENT=true` 时还会发布可定位 finding 的 inline discussion。
+如果使用最小 MR payload 自测，可处理事件会返回 `202 accepted`，随后后台任务会尝试 clone、diff 和按 title 路由后的 Agent review，并在 `MR_REVIEWER_REPORT_DIR` 写入同 stem 的 `.json` 监视报告和 `.md` review 报告；当 `MR_REVIEWER_WEBHOOK_POST_COMMENT=true` 时还会发布可定位 finding 的 inline discussion。
 
 ## 常见问题
 

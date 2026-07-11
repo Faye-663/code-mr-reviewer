@@ -1,6 +1,6 @@
 # 设计方案图
 
-本项目有两类触发入口：WeLink IM poll 和 GitLab webhook。入口负责接收事件、过滤不可处理请求，然后把 GitLab MR 信息交给共用的 review core。review core 负责 clone/fetch/checkout、生成 diff，并按同一总超时预算执行 two-step Agent 调用：先生成结构化 MR 概要，再把概要作为上下文生成结构化 review 结果；Python 侧再负责校验、inline 发布或 Markdown 渲染。
+本项目有两类触发入口：WeLink IM poll 和 GitLab webhook。入口负责接收事件、过滤不可处理请求，然后把 GitLab MR 信息交给共用的 review core。review core 负责 clone/fetch/checkout、生成 diff，并根据最新 MR title 路由：普通 MR 执行 one-step review；`【Deep-Review】` 前缀执行 two-step。Python 侧再负责校验、inline 发布或 Markdown 渲染。
 
 ## 总体结构
 
@@ -12,9 +12,12 @@ flowchart TD
     B --> F["ReviewService"]
     E --> F
     F --> G["GitClient: clone / fetch / checkout / diff"]
-    G --> H["AgentRunner: 生成结构化 MR 概要"]
-    H --> I["AgentRunner: 携带概要执行 code review"]
+    G --> H{"title 以 Deep-Review marker 开头"}
+    H -- "否" --> I["AgentRunner: 直接执行 code review"]
+    H -- "是" --> H2["AgentRunner: 生成结构化 MR 概要"]
+    H2 --> I2["AgentRunner: 携带概要执行 code review"]
     I --> J["Python parser / validator"]
+    I2 --> J
     J --> K["IM 入口: 渲染 Markdown 上传 OneBox 并通知群聊"]
     J --> L["webhook 入口: 发布 GitLab inline discussion"]
     J --> M["写入本地 JSON / Markdown 报告"]

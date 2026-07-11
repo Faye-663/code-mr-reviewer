@@ -12,6 +12,7 @@ from mr_reviewer.gitlab import GitLabClient, GitLabMrUrl, choose_diff_refs
 from mr_reviewer.observability import task_stage
 from mr_reviewer.opencode import AgentRunner
 from mr_reviewer.prompting import build_review_prompt, build_summary_prompt
+from mr_reviewer.review_routing import resolve_review_routing
 from mr_reviewer.review_result import parse_review_summary
 
 LOG = logging.getLogger("mr_reviewer")
@@ -22,6 +23,7 @@ DEFAULT_REVIEW_SKILL = "code-review"
 class ReviewReport:
     markdown: str
     summary: dict[str, object] | None = None
+    review_plan: dict[str, object] | None = None
     repo: str = ""
     mr_iid: int | None = None
     mr_url: str = ""
@@ -41,6 +43,11 @@ class ReviewReport:
     notes: list[str] | None = None
     test_gaps: list[str] | None = None
     prompt_templates: dict[str, dict[str, str]] | None = None
+    title: str = ""
+    review_mode: str = ""
+    routing_reason: str = ""
+    routing_marker: str = ""
+    agent_call_count: int = 0
     failure_stage: str = ""
 
 
@@ -63,6 +70,7 @@ class MergeRequestReviewTarget:
     source_branch: str
     base_sha: str | None
     head_sha: str
+    title: str = ""
 
 
 class ReviewService:
@@ -88,6 +96,7 @@ class ReviewService:
             source_branch=mr_data["source_branch"],
             base_sha=base_sha,
             head_sha=head_sha,
+            title=str(mr_data.get("title") or ""),
         )
         return self.review_target(target, config, task_id, structured_output=True)
 
@@ -128,20 +137,37 @@ class ReviewService:
                 len(diff_info["changed_files"]),
                 len(diff_info["diff"].splitlines()),
             )
-            summary_prompt = self._build_summary_prompt(target, diff_info)
-            LOG.info("task=%s stage=summary repo=%s status=started", task_id, target.project_path)
-            try:
-                with task_stage("summary"):
-                    summary_raw = self.opencode.run_review(
-                        summary_prompt,
-                        diff_info["repo_path"],
-                        _remaining_timeout(deadline),
-                        summary_prompt.metadata,
-                    )
-                summary = parse_review_summary(summary_raw)
-            except Exception as exc:  # noqa: BLE001 - 对外保留明确的执行阶段。
-                raise ReviewStageError("summary", exc) from exc
-            LOG.info("task=%s stage=summary repo=%s status=ready", task_id, target.project_path)
+            routing = resolve_review_routing(target.title)
+            LOG.info(
+                "task=%s stage=review_routing review_mode=%s routing_reason=%s routing_marker=%s",
+                task_id,
+                routing.review_mode,
+                routing.routing_reason,
+                routing.routing_marker,
+            )
+            summary = None
+            prompt_templates = {}
+            agent_call_count = 0
+            if routing.review_mode == "two-step":
+                summary_prompt = self._build_summary_prompt(target, diff_info)
+                LOG.info("task=%s stage=summary repo=%s status=started", task_id, target.project_path)
+                try:
+                    agent_call_count += 1
+                    with task_stage("summary"):
+                        summary_raw = self.opencode.run_review(
+                            summary_prompt,
+                            diff_info["repo_path"],
+                            _remaining_timeout(deadline),
+                            summary_prompt.metadata,
+                        )
+                    summary = parse_review_summary(summary_raw)
+                except Exception as exc:  # noqa: BLE001 - 对外保留明确的执行阶段。
+                    raise ReviewStageError("summary", exc) from exc
+                prompt_templates["summary"] = {
+                    "id": summary_prompt.template_id,
+                    "version": summary_prompt.template_version,
+                }
+                LOG.info("task=%s stage=summary repo=%s status=ready", task_id, target.project_path)
 
             # Agent 已在本地 checkout 后的仓库中运行，prompt 只传定位信息，避免把大 diff 塞进模型上下文。
             prompt = self._build_prompt(
@@ -154,6 +180,7 @@ class ReviewService:
             LOG.info("task=%s stage=opencode_review repo=%s timeout_seconds=%s", task_id, target.project_path,
                      config.task_timeout_seconds)
             try:
+                agent_call_count += 1
                 with task_stage("review"):
                     markdown = self.opencode.run_review(
                         prompt,
@@ -167,6 +194,7 @@ class ReviewService:
             return ReviewReport(
                 markdown=markdown,
                 summary=summary,
+                review_plan=None,
                 repo=target.project_path,
                 mr_iid=target.mr_iid,
                 mr_url=target.mr_url,
@@ -180,15 +208,14 @@ class ReviewService:
                 submission_owner="skill" if config.comment_skill else "none",
                 submission_status="unknown" if config.comment_skill else "not_configured",
                 prompt_templates={
-                    "summary": {
-                        "id": summary_prompt.template_id,
-                        "version": summary_prompt.template_version,
-                    },
-                    "review": {
-                        "id": prompt.template_id,
-                        "version": prompt.template_version,
-                    },
+                    **prompt_templates,
+                    "review": {"id": prompt.template_id, "version": prompt.template_version},
                 },
+                title=target.title,
+                review_mode=routing.review_mode,
+                routing_reason=routing.routing_reason,
+                routing_marker=routing.routing_marker,
+                agent_call_count=agent_call_count,
             )
         finally:
             # 任务目录含 clone 仓库和临时鉴权脚本，任何结果路径都必须清理。
@@ -212,7 +239,7 @@ class ReviewService:
             head_sha=str(diff_info["head_sha"]),
             changed_files=list(diff_info["changed_files"]),
             repo_path=diff_info["repo_path"],
-            summary=summary or {},
+            summary=summary,
         )
 
     def _build_summary_prompt(self, target: MergeRequestReviewTarget, diff_info: dict) -> str:

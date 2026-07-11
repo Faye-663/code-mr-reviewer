@@ -62,20 +62,20 @@ def build_review_prompt(
         head_sha: str,
         changed_files: list[str],
         repo_path: Path | None,
-        summary: dict[str, object],
+        summary: dict[str, object] | None = None,
 ) -> RenderedPrompt:
-    return _render(
-        "review",
-        {
-            "skill_name": skill_name,
-            "mr_url": mr_url,
-            "base_sha": base_sha,
-            "head_sha": head_sha,
-            "changed_files": _changed_files(changed_files),
-            "repo_path": str(repo_path) if repo_path is not None else None,
-            "summary_json": json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True),
-        },
-    )
+    values = {
+        "skill_name": skill_name,
+        "mr_url": mr_url,
+        "base_sha": base_sha,
+        "head_sha": head_sha,
+        "changed_files": _changed_files(changed_files),
+        "repo_path": str(repo_path) if repo_path is not None else None,
+    }
+    if summary is None:
+        return _render("review", values)
+    values["summary_json"] = json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True)
+    return _render("deep-review", values)
 
 
 def _render(template_id: str, values: dict[str, str | None]) -> RenderedPrompt:

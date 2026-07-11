@@ -94,12 +94,8 @@ def test_review_service_requests_structured_output_and_cleans_workdir(tmp_path: 
     )
 
     assert report.markdown.startswith('{"findings"')
-    assert len(opencode.prompts) == 2
-    summary_prompt = opencode.prompts[0][0]
-    review_prompt = opencode.prompts[1][0]
-    assert "MR 概要" in summary_prompt
-    assert '"risk_areas"' in summary_prompt
-    assert "secret-token" not in summary_prompt
+    assert len(opencode.prompts) == 1
+    review_prompt = opencode.prompts[0][0]
     assert "secret-token" not in review_prompt
     assert isinstance(review_prompt, str)
     assert "code-review skill" in review_prompt
@@ -111,13 +107,15 @@ def test_review_service_requests_structured_output_and_cleans_workdir(tmp_path: 
     assert "Webhook 模式" not in review_prompt
     assert "必须只输出 JSON" in review_prompt
     assert '"findings"' in review_prompt
-    assert '"overview": "修复认证流程"' in review_prompt
+    assert '"overview"' not in review_prompt
     assert "diff --git" not in review_prompt
     assert "Diff:" not in review_prompt
-    assert opencode.prompts[0][3].template_id == "summary"
-    assert opencode.prompts[1][3].template_id == "review"
-    assert report.prompt_templates["review"]["version"] == opencode.prompts[1][3].template_version
-    assert report.summary["overview"] == "修复认证流程"
+    assert opencode.prompts[0][3].template_id == "review"
+    assert report.prompt_templates["review"]["version"] == opencode.prompts[0][3].template_version
+    assert report.summary is None
+    assert report.review_mode == "one-step"
+    assert report.routing_reason == "default"
+    assert report.agent_call_count == 1
     checkout, token, work_dir, limits = git.calls[0]
     assert checkout.target_repo_url == "https://gitlab.example.com/team/project.git"
     assert checkout.source_repo_url == "https://gitlab.example.com/team/project.git"
@@ -125,6 +123,27 @@ def test_review_service_requests_structured_output_and_cleans_workdir(tmp_path: 
     assert checkout.source_branch == "feature/auth"
     assert (token, work_dir, limits) == ("secret-token", tmp_path / "task-1", {"max_files": 50, "max_diff_lines": 2000})
     assert not (tmp_path / "task-1").exists()
+
+
+def test_review_service_uses_two_steps_for_deep_review_title(tmp_path: Path):
+    class DeepReviewGitLabClient(FakeGitLabClient):
+        def get_merge_request(self, mr: GitLabMrUrl):
+            data = super().get_merge_request(mr)
+            data["title"] = "  【deep-review】 Fix auth"
+            return data
+
+    runner = RecordingOpenCodeRunner()
+    report = ReviewService(DeepReviewGitLabClient(), RecordingGitClient(), runner).review(
+        GitLabMrUrl("https://gitlab.example.com", "team/project", 7),
+        Config(gitlab_base_url="https://gitlab.example.com", work_dir=tmp_path),
+        task_id="task-deep-review",
+    )
+
+    assert len(runner.prompts) == 2
+    assert report.review_mode == "two-step"
+    assert report.routing_reason == "title_prefix"
+    assert report.routing_marker == "【Deep-Review】"
+    assert report.agent_call_count == 2
 
 
 def test_review_service_uses_source_project_repo_for_fork_mr(tmp_path: Path):
@@ -174,6 +193,12 @@ def test_review_service_prompt_uses_comment_skill_when_configured(tmp_path: Path
 
 
 def test_review_service_stops_when_summary_output_is_invalid(tmp_path: Path):
+    class DeepReviewGitLabClient(FakeGitLabClient):
+        def get_merge_request(self, mr: GitLabMrUrl):
+            data = super().get_merge_request(mr)
+            data["title"] = "【Deep-Review】 invalid summary"
+            return data
+
     class InvalidSummaryRunner:
         def __init__(self):
             self.calls = 0
@@ -183,7 +208,7 @@ def test_review_service_stops_when_summary_output_is_invalid(tmp_path: Path):
             return "not json"
 
     runner = InvalidSummaryRunner()
-    service = ReviewService(FakeGitLabClient(), RecordingGitClient(), runner)
+    service = ReviewService(DeepReviewGitLabClient(), RecordingGitClient(), runner)
     error_class = getattr(__import__("mr_reviewer.reviewer", fromlist=["ReviewStageError"]), "ReviewStageError")
 
     with pytest.raises(error_class) as exc_info:
@@ -198,6 +223,12 @@ def test_review_service_stops_when_summary_output_is_invalid(tmp_path: Path):
 
 
 def test_review_service_preserves_summary_when_review_stage_fails(tmp_path: Path):
+    class DeepReviewGitLabClient(FakeGitLabClient):
+        def get_merge_request(self, mr: GitLabMrUrl):
+            data = super().get_merge_request(mr)
+            data["title"] = "【Deep-Review】 review failure"
+            return data
+
     class ReviewFailureRunner(RecordingOpenCodeRunner):
         def run_review(self, prompt, cwd, timeout_seconds, prompt_metadata=None):
             if prompt.startswith("分析本次 GitLab MR 并生成 MR 概要"):
@@ -205,7 +236,7 @@ def test_review_service_preserves_summary_when_review_stage_fails(tmp_path: Path
             raise RuntimeError("review unavailable")
 
     runner = ReviewFailureRunner()
-    service = ReviewService(FakeGitLabClient(), RecordingGitClient(), runner)
+    service = ReviewService(DeepReviewGitLabClient(), RecordingGitClient(), runner)
     error_class = getattr(__import__("mr_reviewer.reviewer", fromlist=["ReviewStageError"]), "ReviewStageError")
 
     with pytest.raises(error_class) as exc_info:
@@ -220,10 +251,16 @@ def test_review_service_preserves_summary_when_review_stage_fails(tmp_path: Path
 
 
 def test_review_service_shares_timeout_budget_between_both_agent_calls(tmp_path: Path, monkeypatch):
+    class DeepReviewGitLabClient(FakeGitLabClient):
+        def get_merge_request(self, mr: GitLabMrUrl):
+            data = super().get_merge_request(mr)
+            data["title"] = "【Deep-Review】 timeout"
+            return data
+
     timestamps = iter([100.0, 101.0, 104.0])
     monkeypatch.setattr("mr_reviewer.reviewer.time.monotonic", lambda: next(timestamps))
     runner = RecordingOpenCodeRunner()
-    service = ReviewService(FakeGitLabClient(), RecordingGitClient(), runner)
+    service = ReviewService(DeepReviewGitLabClient(), RecordingGitClient(), runner)
 
     service.review(
         GitLabMrUrl("https://gitlab.example.com", "team/project", 7),

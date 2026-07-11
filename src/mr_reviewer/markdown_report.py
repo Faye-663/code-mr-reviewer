@@ -107,14 +107,18 @@ def _discoveries(
     ]
     if changed_files:
         lines.append(f"- 文件列表：{'；'.join(changed_files)}")
-    summary = report.summary
-    if not summary:
+    plan = report.review_plan
+    if not plan:
         return lines
-    lines.append(f"- 变更内容概述：{summary.get('overview', '<未生成>')}")
-    for field, label in (("change_areas", "变更区域"), ("behavior_changes", "行为变化"), ("risk_areas", "风险区域"), ("test_changes", "测试变化")):
-        values = summary.get(field, [])
+    lines.append("- 审查计划：")
+    for field, label in (("change_intent", "变更意图"), ("external_contracts", "外部契约"), ("state_invariants", "状态不变量"), ("transaction_async_boundaries", "事务/异步边界"), ("test_risks", "测试风险"), ("open_questions", "待确认问题")):
+        values = plan.get(field, [])
         text = "；".join(str(value) for value in values) if values else "无"
-        lines.append(f"- {label}：{text}")
+        lines.append(f"  - {label}：{text}")
+    for path in plan.get("critical_paths", []):
+        lines.append(
+            f"  - 关键路径：{path['path']} — {path['reason']}；验证：{'；'.join(path['verify'])}"
+        )
     return lines
 
 

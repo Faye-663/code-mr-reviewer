@@ -196,12 +196,14 @@ class WebhookReviewQueue:
                     LOG.info("task=%s stage=webhook_report path=%s status=success", task_id, path)
             except Exception as exc:  # noqa: BLE001 - webhook 后台任务必须记录失败并继续处理队列。
                 LOG.error("task=%s stage=webhook_review status=failed error=%s", task_id, _redact(str(exc), self.config))
-                summary = exc.summary if isinstance(exc, ReviewStageError) else None
+                review_plan = exc.review_plan if isinstance(exc, ReviewStageError) else None
                 failure_stage = exc.stage if isinstance(exc, ReviewStageError) else ""
+                agent_call_count = exc.agent_call_count if isinstance(exc, ReviewStageError) else 0
                 routing = resolve_review_routing(event.target.title)
                 failure_report = ReviewReport(
                     markdown="",
-                    summary=summary,
+                    summary=None,
+                    review_plan=review_plan,
                     head_sha=event.target.head_sha,
                     changed_files=[],
                     submission_owner="python",
@@ -211,6 +213,7 @@ class WebhookReviewQueue:
                     review_mode=routing.review_mode,
                     routing_reason=routing.routing_reason,
                     routing_marker=routing.routing_marker,
+                    agent_call_count=agent_call_count,
                 )
                 try:
                     write_webhook_monitor_report(event, failure_report, self.config, task_id, "failed", str(exc))

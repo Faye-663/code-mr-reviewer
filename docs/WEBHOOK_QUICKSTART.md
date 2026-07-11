@@ -47,9 +47,9 @@ MR_REVIEWER_REPORT_DIR=log/webhook-reports
 - `MR_REVIEWER_WEBHOOK_POST_COMMENT=false` 时不会发布 inline discussion，只写本地 JSON 监视报告和 Markdown review 报告。
 - `MR_REVIEWER_COMMENT_SKILL` 仍可选用于指定 review prompt skill；该 skill 必须只输出结构化 JSON，不要配置会自行提交评论的 skill。
 - `MR_REVIEWER_AGENT_MODEL_NAME` 是 webhook inline discussion 的展示模型名。它为空时，worker 只写本地报告并标记 `model_not_configured`，不会提交 GitLab discussion；不会从 Agent 输出推断模型名。
-- Deep Review 的 MR 概要只保存在本地 JSON/Markdown 报告中，不会发布到 GitLab；one-step 不生成概要。线上仅发布满足条件的 review finding。
+- Deep Review 的审查计划只保存在本地 JSON/Markdown 报告中，不会发布到 GitLab；one-step 不生成计划。线上仅发布满足条件的 review finding。
 - `MR_REVIEWER_LOG_LEVEL` 默认 `OFF`，不会输出项目日志或创建 debug 文件。设为 `INFO` 时只记录 API、Agent 调用元数据；设为 `DEBUG` 时会把脱敏后的请求、响应、prompt 和 Agent 输出写到 `MR_REVIEWER_DEBUG_DIR/YYYYMMDD/<task_id>/`。常规 webhook 审计仍使用 `MR_REVIEWER_REPORT_DIR`，它不受日志级别影响。
-- review/summary/deep-review prompt 只使用本项目随 Git 发布的包内模板，不支持部署侧覆盖。webhook JSON 审计报告会记录实际使用阶段的模板 ID 与内容哈希版本；DEBUG 的 Agent `request.json` 也会记录对应版本。
+- review/review-plan/deep-review prompt 只使用本项目随 Git 发布的包内模板，不支持部署侧覆盖。webhook JSON 审计报告会记录实际使用阶段的模板 ID 与内容哈希版本；DEBUG 的 Agent `request.json` 也会记录对应版本。
 
 ## 启动服务
 
@@ -104,4 +104,4 @@ Invoke-WebRequest `
 - 返回 `403 WEBHOOK_TOKEN_INVALID`：GitLab Secret token 和 `MR_REVIEWER_WEBHOOK_SECRET` 不一致。
 - 返回 `200 skipped`：请求已到达服务，但事件不是可处理的 MR open、reopen 或 source update 事件。
 - review 成功但 MR 没有 inline discussion：检查 `MR_REVIEWER_WEBHOOK_POST_COMMENT` 是否为 `true`，`MR_REVIEWER_GITLAB_TOKEN` 是否有读取 MR diff 与提交 discussion 的权限，并查看本地 `.json`/`.md` 报告中的 finding 是否被过滤、无法定位或判定为重复。
-- 本地报告失败：查看 JSON/Markdown 中的 `failure_stage`。`summary` 表示第一步概要失败且未进入 review；`review` 表示第二步失败，报告仍会保留已生成的概要。
+- 本地报告失败：查看 JSON/Markdown 中的 `failure_stage`。`review_plan` 表示 Deep Review 计划生成或校验失败且未进入 review；`review` 表示 review 阶段失败，Deep Review 报告仍会保留已生成的计划。

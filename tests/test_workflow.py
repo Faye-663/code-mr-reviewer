@@ -60,14 +60,16 @@ class RecordingOpenCodeRunner(OpenCodeRunner):
 
     def run_review(self, prompt, cwd, timeout_seconds, prompt_metadata=None):
         self.prompts.append((prompt, Path(cwd), timeout_seconds, prompt_metadata))
-        if prompt.startswith("分析本次 GitLab MR 并生成 MR 概要"):
+        if prompt.startswith("分析本次 GitLab MR 并生成严格的审查计划"):
             return json.dumps(
                 {
-                    "overview": "修复认证流程",
-                    "change_areas": ["app.py"],
-                    "behavior_changes": ["更新输出"],
-                    "risk_areas": ["兼容性"],
-                    "test_changes": ["未增加测试"],
+                    "change_intent": ["修复认证流程"],
+                    "critical_paths": [{"path": "app.py", "reason": "认证入口", "verify": ["兼容性"]}],
+                    "external_contracts": [],
+                    "state_invariants": [],
+                    "transaction_async_boundaries": [],
+                    "test_risks": ["未增加测试"],
+                    "open_questions": [],
                 },
                 ensure_ascii=False,
             )
@@ -192,7 +194,7 @@ def test_review_service_prompt_uses_comment_skill_when_configured(tmp_path: Path
     assert "必须只输出 JSON" in prompt
 
 
-def test_review_service_stops_when_summary_output_is_invalid(tmp_path: Path):
+def test_review_service_stops_when_review_plan_output_is_invalid(tmp_path: Path):
     class DeepReviewGitLabClient(FakeGitLabClient):
         def get_merge_request(self, mr: GitLabMrUrl):
             data = super().get_merge_request(mr)
@@ -218,11 +220,11 @@ def test_review_service_stops_when_summary_output_is_invalid(tmp_path: Path):
             task_id="task-invalid-summary",
         )
 
-    assert exc_info.value.stage == "summary"
+    assert exc_info.value.stage == "review_plan"
     assert runner.calls == 1
 
 
-def test_review_service_preserves_summary_when_review_stage_fails(tmp_path: Path):
+def test_review_service_preserves_review_plan_when_review_stage_fails(tmp_path: Path):
     class DeepReviewGitLabClient(FakeGitLabClient):
         def get_merge_request(self, mr: GitLabMrUrl):
             data = super().get_merge_request(mr)
@@ -231,7 +233,7 @@ def test_review_service_preserves_summary_when_review_stage_fails(tmp_path: Path
 
     class ReviewFailureRunner(RecordingOpenCodeRunner):
         def run_review(self, prompt, cwd, timeout_seconds, prompt_metadata=None):
-            if prompt.startswith("分析本次 GitLab MR 并生成 MR 概要"):
+            if prompt.startswith("分析本次 GitLab MR 并生成严格的审查计划"):
                 return super().run_review(prompt, cwd, timeout_seconds, prompt_metadata)
             raise RuntimeError("review unavailable")
 
@@ -247,7 +249,7 @@ def test_review_service_preserves_summary_when_review_stage_fails(tmp_path: Path
         )
 
     assert exc_info.value.stage == "review"
-    assert exc_info.value.summary["overview"] == "修复认证流程"
+    assert exc_info.value.review_plan["change_intent"] == ["修复认证流程"]
 
 
 def test_review_service_shares_timeout_budget_between_both_agent_calls(tmp_path: Path, monkeypatch):
@@ -328,8 +330,8 @@ def test_poll_once_runs_review_and_replies(tmp_path: Path):
     opencode_script.write_text(
         "import json, pathlib, sys\n"
         "prompt = pathlib.Path(sys.argv[sys.argv.index('--file') + 1]).read_text(encoding='utf-8')\n"
-        "if prompt.startswith('分析本次 GitLab MR 并生成 MR 概要'):\n"
-        "    print(json.dumps({'overview':'summary','change_areas':['app.py'],'behavior_changes':['output'],'risk_areas':[],'test_changes':[]}))\n"
+        "if prompt.startswith('分析本次 GitLab MR 并生成严格的审查计划'):\n"
+        "    print(json.dumps({'change_intent':['summary'],'critical_paths':[{'path':'app.py','reason':'output','verify':['behavior']}],'external_contracts':[],'state_invariants':[],'transaction_async_boundaries':[],'test_risks':[],'open_questions':[]}))\n"
         "else:\n"
         "    print(json.dumps({'findings':[],'notes':['No high-confidence issues.'],'test_gaps':[]}))\n",
         encoding="utf-8",

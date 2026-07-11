@@ -39,11 +39,11 @@ class RenderedPrompt(str):
         return PromptMetadata(self.template_id, self.template_version)
 
 
-def build_summary_prompt(
+def build_review_plan_prompt(
         *, mr_url: str, base_sha: str, head_sha: str, changed_files: list[str], repo_path: Path | None
 ) -> RenderedPrompt:
     return _render(
-        "summary",
+        "review-plan",
         {
             "mr_url": mr_url,
             "base_sha": base_sha,
@@ -62,7 +62,7 @@ def build_review_prompt(
         head_sha: str,
         changed_files: list[str],
         repo_path: Path | None,
-        summary: dict[str, object] | None = None,
+        review_plan: dict[str, object] | None = None,
 ) -> RenderedPrompt:
     values = {
         "skill_name": skill_name,
@@ -72,9 +72,9 @@ def build_review_prompt(
         "changed_files": _changed_files(changed_files),
         "repo_path": str(repo_path) if repo_path is not None else None,
     }
-    if summary is None:
+    if review_plan is None:
         return _render("review", values)
-    values["summary_json"] = json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True)
+    values["review_plan_json"] = json.dumps(review_plan, ensure_ascii=False, indent=2, sort_keys=True)
     return _render("deep-review", values)
 
 

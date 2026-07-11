@@ -6,45 +6,36 @@ from mr_reviewer.review_result import StructuredReviewParseError, parse_structur
 from mr_reviewer.reviewer import ReviewReport
 
 
-def test_parse_review_summary_accepts_strict_summary_contract():
-    parser = getattr(review_result_module, "parse_review_summary")
-
-    summary = parser(
-        '{"overview":"修复认证流程","change_areas":["auth"],"behavior_changes":["刷新token"],'
-        '"risk_areas":["并发刷新"],"test_changes":["新增过期token测试"]}'
+def _valid_review_plan() -> str:
+    return (
+        '{"change_intent":["support $HOME token refresh"],'
+        '"critical_paths":[{"path":"auth/service.py","reason":"token lifecycle",'
+        '"verify":["refresh remains atomic"]}],"external_contracts":["HTTP response"],'
+        '"state_invariants":["one active token"],"transaction_async_boundaries":["DB commit before event"],'
+        '"test_risks":["concurrent refresh"],"open_questions":[]}'
     )
 
-    assert summary == {
-        "overview": "修复认证流程",
-        "change_areas": ["auth"],
-        "behavior_changes": ["刷新token"],
-        "risk_areas": ["并发刷新"],
-        "test_changes": ["新增过期token测试"],
-    }
+
+def test_parse_review_plan_accepts_strict_contract_and_dollar_text():
+    plan = review_result_module.parse_review_plan(_valid_review_plan())
+
+    assert plan["change_intent"] == ["support $HOME token refresh"]
+    assert plan["critical_paths"][0]["verify"] == ["refresh remains atomic"]
 
 
-def test_parse_review_summary_rejects_missing_or_wrong_typed_fields():
-    parser = getattr(review_result_module, "parse_review_summary")
-    error_class = getattr(review_result_module, "ReviewSummaryParseError")
-
-    with pytest.raises(error_class, match="risk_areas"):
-        parser('{"overview":"x","change_areas":[],"behavior_changes":[],"test_changes":[]}')
-    with pytest.raises(error_class, match="change_areas"):
-        parser(
-            '{"overview":"x","change_areas":"auth","behavior_changes":[],'
-            '"risk_areas":[],"test_changes":[]}'
-        )
-
-
-def test_parse_review_summary_rejects_unknown_fields():
-    parser = getattr(review_result_module, "parse_review_summary")
-    error_class = getattr(review_result_module, "ReviewSummaryParseError")
-
-    with pytest.raises(error_class, match="unexpected fields"):
-        parser(
-            '{"overview":"x","change_areas":[],"behavior_changes":[],'
-            '"risk_areas":[],"test_changes":[],"findings":[]}'
-        )
+@pytest.mark.parametrize(
+    ("raw", "message"),
+    [
+        ('{"change_intent":[]}', "external_contracts"),
+        (_valid_review_plan()[:-1] + ',"unknown":[]} ', "unexpected fields"),
+        (_valid_review_plan().replace('"test_risks":["concurrent refresh"]', '"test_risks":"x"'), "test_risks"),
+        (_valid_review_plan().replace('"verify":["refresh remains atomic"]', '"verify":[]'), "verify must not be empty"),
+        (_valid_review_plan().replace('"path":"auth/service.py"', '"path":""'), "path must be a non-empty string"),
+    ],
+)
+def test_parse_review_plan_rejects_invalid_contract(raw: str, message: str):
+    with pytest.raises(review_result_module.ReviewPlanParseError, match=message):
+        review_result_module.parse_review_plan(raw)
 
 
 def test_parse_structured_review_result_accepts_valid_findings():
@@ -147,12 +138,14 @@ def test_parse_structured_review_result_rejects_unknown_confidence(confidence):
 def test_render_structured_output_as_markdown_uses_python_renderer():
     report = ReviewReport(
         markdown=_structured_payload(),
-        summary={
-            "overview": "修复认证流程",
-            "change_areas": ["auth"],
-            "behavior_changes": ["刷新token"],
-            "risk_areas": ["并发刷新"],
-            "test_changes": [],
+        review_plan={
+            "change_intent": ["修复认证流程"],
+            "critical_paths": [{"path": "auth", "reason": "刷新token", "verify": ["并发刷新"]}],
+            "external_contracts": [],
+            "state_invariants": [],
+            "transaction_async_boundaries": [],
+            "test_risks": [],
+            "open_questions": [],
         },
         repo="team/project",
         mr_iid=7,

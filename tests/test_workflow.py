@@ -14,6 +14,7 @@ from mr_reviewer.git import GitClient
 from mr_reviewer.gitlab import GitLabMrUrl
 from mr_reviewer.im import ImMessage
 from mr_reviewer.opencode import OpenCodeRunner
+from mr_reviewer.prompting import PromptMetadata
 from mr_reviewer.reviewer import ReviewService
 
 
@@ -57,8 +58,8 @@ class RecordingOpenCodeRunner(OpenCodeRunner):
     def __init__(self):
         self.prompts = []
 
-    def run_review(self, prompt, cwd, timeout_seconds):
-        self.prompts.append((prompt, Path(cwd), timeout_seconds))
+    def run_review(self, prompt, cwd, timeout_seconds, prompt_metadata=None):
+        self.prompts.append((prompt, Path(cwd), timeout_seconds, prompt_metadata))
         if prompt.startswith("分析本次 GitLab MR 并生成 MR 概要"):
             return json.dumps(
                 {
@@ -113,6 +114,9 @@ def test_review_service_requests_structured_output_and_cleans_workdir(tmp_path: 
     assert '"overview": "修复认证流程"' in review_prompt
     assert "diff --git" not in review_prompt
     assert "Diff:" not in review_prompt
+    assert opencode.prompts[0][3].template_id == "summary"
+    assert opencode.prompts[1][3].template_id == "review"
+    assert report.prompt_templates["review"]["version"] == opencode.prompts[1][3].template_version
     assert report.summary["overview"] == "修复认证流程"
     checkout, token, work_dir, limits = git.calls[0]
     assert checkout.target_repo_url == "https://gitlab.example.com/team/project.git"
@@ -174,7 +178,7 @@ def test_review_service_stops_when_summary_output_is_invalid(tmp_path: Path):
         def __init__(self):
             self.calls = 0
 
-        def run_review(self, prompt, cwd, timeout_seconds):
+        def run_review(self, prompt, cwd, timeout_seconds, prompt_metadata=None):
             self.calls += 1
             return "not json"
 
@@ -195,9 +199,9 @@ def test_review_service_stops_when_summary_output_is_invalid(tmp_path: Path):
 
 def test_review_service_preserves_summary_when_review_stage_fails(tmp_path: Path):
     class ReviewFailureRunner(RecordingOpenCodeRunner):
-        def run_review(self, prompt, cwd, timeout_seconds):
+        def run_review(self, prompt, cwd, timeout_seconds, prompt_metadata=None):
             if prompt.startswith("分析本次 GitLab MR 并生成 MR 概要"):
-                return super().run_review(prompt, cwd, timeout_seconds)
+                return super().run_review(prompt, cwd, timeout_seconds, prompt_metadata)
             raise RuntimeError("review unavailable")
 
     runner = ReviewFailureRunner()
@@ -674,6 +678,7 @@ def test_opencode_runner_writes_diagnostics(monkeypatch, tmp_path: Path, caplog)
             prompt,
             tmp_path,
             60,
+            PromptMetadata("review", "abc123def456"),
         )
 
     assert output == "# Review"
@@ -681,6 +686,7 @@ def test_opencode_runner_writes_diagnostics(monkeypatch, tmp_path: Path, caplog)
     assert diagnostic_path.joinpath("prompt.md").read_text(encoding="utf-8") == prompt
     request = json.loads(diagnostic_path.joinpath("request.json").read_text(encoding="utf-8"))
     assert request["cwd"] == str(tmp_path)
+    assert request["prompt_template"] == {"id": "review", "version": "abc123def456"}
     command_text = request["command"]
     assert "opencode --print-logs --log-level DEBUG run" in command_text
     assert "--file" in command_text
@@ -697,6 +703,7 @@ def test_opencode_runner_writes_diagnostics(monkeypatch, tmp_path: Path, caplog)
     assert "mr_url_present=True" in log_text
     assert "prompt_sha256=" in log_text
     assert "diagnostic_path=" in log_text
+    assert "template_id=review" in log_text
     assert "https://gitlab.example.com" not in log_text
 
 

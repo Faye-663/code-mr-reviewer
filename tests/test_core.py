@@ -10,7 +10,9 @@ from mr_reviewer.git import GitCheckout, GitClient, ResourceLimitError
 from mr_reviewer.gitlab import GitLabClient, GitLabMrUrl, choose_diff_refs, parse_gitlab_mr_url
 from mr_reviewer.im import ImMessage, build_welink_reply_args, parse_poll_output, should_trigger_review
 from mr_reviewer.observability import task_context
+from mr_reviewer.prompting import PromptTemplateError, build_review_prompt, build_summary_prompt
 from mr_reviewer.process import prepare_command
+from mr_reviewer.review_result import parse_review_summary, parse_structured_review_result
 from mr_reviewer.state import StateStore
 
 
@@ -71,6 +73,93 @@ def test_gitlab_mr_review_skill_package_exists():
     assert not Path(".opencode").exists()
 
 
+def test_prompt_templates_are_portable_and_render_identically(tmp_path: Path):
+    script = _load_gitlab_mr_review_script()
+    main_summary = build_summary_prompt(
+        mr_url="https://gitlab.example.com/team/project/merge_requests/7",
+        base_sha="base123",
+        head_sha="head456",
+        changed_files=["src/App.java"],
+        repo_path=tmp_path,
+    )
+    skill_summary = script.build_summary_prompt(
+        mr_url="https://gitlab.example.com/team/project/merge_requests/7",
+        base_sha="base123",
+        head_sha="head456",
+        changed_files=["src/App.java"],
+        repo_path=tmp_path,
+    )
+    main_review = build_review_prompt(
+        skill_name="code-review",
+        mr_url="https://gitlab.example.com/team/project/merge_requests/7",
+        base_sha="base123",
+        head_sha="head456",
+        changed_files=["src/App.java"],
+        repo_path=tmp_path,
+        summary={"overview": "概要 $HOME", "change_areas": [], "behavior_changes": [], "risk_areas": [], "test_changes": []},
+    )
+    skill_review = script.build_review_prompt(
+        mr_url="https://gitlab.example.com/team/project/merge_requests/7",
+        base_sha="base123",
+        head_sha="head456",
+        changed_files=["src/App.java"],
+        repo_path=tmp_path,
+        summary={"overview": "概要 $HOME", "change_areas": [], "behavior_changes": [], "risk_areas": [], "test_changes": []},
+    )
+
+    assert main_summary.content == skill_summary.content
+    assert main_summary.template_version == skill_summary.template_version
+    assert main_review.content == skill_review.content
+    assert main_review.template_version == skill_review.template_version
+    assert len(main_review.template_version) == 12
+    assert Path("src/mr_reviewer/prompt_templates/summary.md").read_bytes() == (
+        Path(".skill/gitlab-mr-review/prompt_templates/summary.md").read_bytes()
+    )
+    assert Path("src/mr_reviewer/prompt_templates/review.md").read_bytes() == (
+        Path(".skill/gitlab-mr-review/prompt_templates/review.md").read_bytes()
+    )
+    parse_review_summary(main_summary.split("JSON 结构为：\n", 1)[1])
+    parse_structured_review_result(main_review.split("JSON 结构为：\n", 1)[1].split("\nseverity", 1)[0])
+
+
+def test_prompt_renderer_rejects_missing_or_unresolved_template_values():
+    with pytest.raises(PromptTemplateError, match="missing template values"):
+        build_summary_prompt(
+            mr_url="https://gitlab.example.com/team/project/merge_requests/7",
+            base_sha="base123",
+            head_sha="head456",
+            changed_files=[],
+            repo_path=None,
+        )
+
+
+def test_prompt_renderer_rejects_missing_template(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr("mr_reviewer.prompting.files", lambda _: tmp_path)
+
+    with pytest.raises(PromptTemplateError, match="prompt template not found"):
+        build_summary_prompt(
+            mr_url="https://gitlab.example.com/team/project/merge_requests/7",
+            base_sha="base123",
+            head_sha="head456",
+            changed_files=[],
+            repo_path=tmp_path,
+        )
+
+
+def test_review_prompt_allows_dollar_signs_in_first_stage_summary(tmp_path: Path):
+    prompt = build_review_prompt(
+        skill_name="code-review",
+        mr_url="https://gitlab.example.com/team/project/merge_requests/7",
+        base_sha="base123",
+        head_sha="head456",
+        changed_files=[],
+        repo_path=tmp_path,
+        summary={"overview": "shell variable $HOME", "change_areas": [], "behavior_changes": [], "risk_areas": [], "test_changes": []},
+    )
+
+    assert "shell variable $HOME" in prompt
+
+
 def test_readme_documents_optional_agent_skill_usage():
     readme = Path("README.md").read_text(encoding="utf-8")
 
@@ -123,6 +212,7 @@ def test_gitlab_mr_review_script_builds_scoped_opencode_prompt(tmp_path: Path):
         head_sha="head456",
         changed_files=["src/App.java", "src/AppTest.java"],
         repo_path=tmp_path,
+        summary={"overview": "概要", "change_areas": [], "behavior_changes": [], "risk_areas": [], "test_changes": []},
     )
 
     assert "code-review skill" in prompt

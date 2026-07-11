@@ -371,6 +371,7 @@ def write_webhook_monitor_report(
         "good": report.good or [],
         "notes": report.notes or [],
         "test_gaps": report.test_gaps or [],
+        "prompt_templates": report.prompt_templates or {},
     }
     if report.structured_parse_status:
         data["structured_parse_status"] = report.structured_parse_status

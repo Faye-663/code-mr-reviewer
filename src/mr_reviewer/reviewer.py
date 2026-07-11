@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import math
 import shutil
@@ -12,6 +11,7 @@ from mr_reviewer.git import GitCheckout, GitClient
 from mr_reviewer.gitlab import GitLabClient, GitLabMrUrl, choose_diff_refs
 from mr_reviewer.observability import task_stage
 from mr_reviewer.opencode import AgentRunner
+from mr_reviewer.prompting import build_review_prompt, build_summary_prompt
 from mr_reviewer.review_result import parse_review_summary
 
 LOG = logging.getLogger("mr_reviewer")
@@ -40,6 +40,7 @@ class ReviewReport:
     good: list[str] | None = None
     notes: list[str] | None = None
     test_gaps: list[str] | None = None
+    prompt_templates: dict[str, dict[str, str]] | None = None
     failure_stage: str = ""
 
 
@@ -135,6 +136,7 @@ class ReviewService:
                         summary_prompt,
                         diff_info["repo_path"],
                         _remaining_timeout(deadline),
+                        summary_prompt.metadata,
                     )
                 summary = parse_review_summary(summary_raw)
             except Exception as exc:  # noqa: BLE001 - 对外保留明确的执行阶段。
@@ -157,6 +159,7 @@ class ReviewService:
                         prompt,
                         diff_info["repo_path"],
                         _remaining_timeout(deadline),
+                        prompt.metadata,
                     )
             except Exception as exc:  # noqa: BLE001 - 对外保留概要和失败阶段。
                 raise ReviewStageError("review", exc, summary) from exc
@@ -176,6 +179,16 @@ class ReviewService:
                 opencode_returncode=0,
                 submission_owner="skill" if config.comment_skill else "none",
                 submission_status="unknown" if config.comment_skill else "not_configured",
+                prompt_templates={
+                    "summary": {
+                        "id": summary_prompt.template_id,
+                        "version": summary_prompt.template_version,
+                    },
+                    "review": {
+                        "id": prompt.template_id,
+                        "version": prompt.template_version,
+                    },
+                },
             )
         finally:
             # 任务目录含 clone 仓库和临时鉴权脚本，任何结果路径都必须清理。
@@ -190,47 +203,25 @@ class ReviewService:
             structured_output: bool = False,
             summary: dict[str, object] | None = None,
     ) -> str:
-        changed_files = "\n".join(f"- {path}" for path in diff_info["changed_files"]) or "- <none>"
-        prompt = (
-            f"使用 {skill_name} skill 检视 GitLab MR。\n"
-            f"MR URL: {target.mr_url}\n"
-            f"Base SHA: {diff_info['base_sha']}\n"
-            f"Head SHA: {diff_info['head_sha']}\n"
-            "Changed files:\n"
-            f"{changed_files}\n"
-            f"代码仓在 {diff_info['repo_path']} 目录。\n"
-            "只审查 Base SHA 到 Head SHA 的 MR range，不要按本地未提交变更审查。"
-        )
         if not structured_output:
-            return prompt
-
-        summary_json = json.dumps(summary or {}, ensure_ascii=False, indent=2, sort_keys=True)
-        return (
-            f"{prompt}\n\n"
-            "以下是第一阶段生成的 MR 概要，作为本次代码审查的上下文：\n"
-            f"{summary_json}\n\n"
-            "自动检视模式必须只输出 JSON，不要输出 Markdown 或代码围栏。JSON 结构为：\n"
-            '{"findings":[{"rule_id":"...","severity":"major","confidence":"HIGH",'
-            '"old_path":"src/example.py","new_path":"src/example.py","old_line":-1,'
-            '"new_line":42,"title":"...","evidence":"...","impact":"...","suggestion":"..."}],'
-            '"notes":[],"test_gaps":[],"good":[]}\n'
-            "severity 只能使用 suggestion、minjor、major、fatal；confidence 只能使用 HIGH、MEDIUM、LOW。"
+            raise ValueError("automatic review prompt must use the structured template")
+        return build_review_prompt(
+            skill_name=skill_name,
+            mr_url=target.mr_url,
+            base_sha=str(diff_info["base_sha"]),
+            head_sha=str(diff_info["head_sha"]),
+            changed_files=list(diff_info["changed_files"]),
+            repo_path=diff_info["repo_path"],
+            summary=summary or {},
         )
 
     def _build_summary_prompt(self, target: MergeRequestReviewTarget, diff_info: dict) -> str:
-        changed_files = "\n".join(f"- {path}" for path in diff_info["changed_files"]) or "- <none>"
-        return (
-            "分析本次 GitLab MR 并生成 MR 概要。只总结变更目标、范围、行为、风险和测试变化，不执行代码审查，"
-            "不要输出 finding。\n"
-            f"MR URL: {target.mr_url}\n"
-            f"Base SHA: {diff_info['base_sha']}\n"
-            f"Head SHA: {diff_info['head_sha']}\n"
-            "Changed files:\n"
-            f"{changed_files}\n"
-            f"代码仓在 {diff_info['repo_path']} 目录。\n"
-            "MR 概要必须只输出 JSON，不要输出 Markdown 或代码围栏。JSON 结构为：\n"
-            '{"overview":"...","change_areas":["..."],"behavior_changes":["..."],'
-            '"risk_areas":["..."],"test_changes":["..."]}'
+        return build_summary_prompt(
+            mr_url=target.mr_url,
+            base_sha=str(diff_info["base_sha"]),
+            head_sha=str(diff_info["head_sha"]),
+            changed_files=list(diff_info["changed_files"]),
+            repo_path=diff_info["repo_path"],
         )
 
 

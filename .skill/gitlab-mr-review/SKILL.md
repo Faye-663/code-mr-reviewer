@@ -31,6 +31,8 @@ https://gitlab.example.com/team/project/merge_requests/7
 
 ## 执行方式
 
+复制 skill 时必须保留 `prompt_templates/` 目录；它保存 two-step 的固定 prompt，不能通过环境变量覆盖。模板版本由内容 SHA-256 前 12 位确定，供脚本与自动入口定位问题。
+
 从当前 skill 目录运行脚本：
 
 ```powershell

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Protocol
 
 from mr_reviewer.observability import current_task_context, redact_text
+from mr_reviewer.prompting import PromptMetadata
 from mr_reviewer.process import format_command, prepare_command
 
 LOG = logging.getLogger("mr_reviewer")
@@ -21,7 +22,9 @@ PROMPT_TRANSPORTS = {"argument", "file"}
 
 
 class AgentRunner(Protocol):
-    def run_review(self, prompt: str, cwd: Path, timeout_seconds: int) -> str:
+    def run_review(
+            self, prompt: str, cwd: Path, timeout_seconds: int, prompt_metadata: PromptMetadata | None = None
+    ) -> str:
         ...
 
 
@@ -43,7 +46,9 @@ class OpenCodeRunner:
         # argument 仅作为旧配置兼容输入；实际传输始终使用安全的文件附件。
         self.prompt_transport = "file"
 
-    def run_review(self, prompt: str, cwd: Path, timeout_seconds: int) -> str:
+    def run_review(
+            self, prompt: str, cwd: Path, timeout_seconds: int, prompt_metadata: PromptMetadata | None = None
+    ) -> str:
         args = shlex.split(self.command, posix=(os.name != "nt"))
         if self.debug:
             args += ["--print-logs", "--log-level", "DEBUG"]
@@ -57,17 +62,19 @@ class OpenCodeRunner:
         args += ["run", PROMPT_FILE_MESSAGE, "--file", str(prompt_file)]
         LOG.info(
             "stage=opencode command=%s cwd=%s prompt_transport=%s prompt_chars=%s prompt_sha256=%s "
-            "mr_url_present=%s diagnostic_path=%s",
+            "mr_url_present=%s template_id=%s template_version=%s diagnostic_path=%s",
             _command_for_log(args, redact_prompt=False),
             cwd,
             self.prompt_transport,
             len(prompt),
             prompt_sha256,
             _has_mr_url(prompt),
+            prompt_metadata.template_id if prompt_metadata else "",
+            prompt_metadata.template_version if prompt_metadata else "",
             diagnostic_path or "",
         )
         if diagnostic_path:
-            self._write_diagnostic_inputs(diagnostic_path, args, prompt, cwd, prompt_sha256)
+            self._write_diagnostic_inputs(diagnostic_path, args, prompt, cwd, prompt_sha256, prompt_metadata)
         try:
             result = subprocess.run(
                 prepare_command(args),
@@ -120,8 +127,15 @@ class OpenCodeRunner:
             file.write(prompt)
             return Path(file.name), True
 
-    def _write_diagnostic_inputs(self, diagnostic_path: Path, args: list[str], prompt: str, cwd: Path,
-                                 prompt_sha256: str) -> None:
+    def _write_diagnostic_inputs(
+            self,
+            diagnostic_path: Path,
+            args: list[str],
+            prompt: str,
+            cwd: Path,
+            prompt_sha256: str,
+            prompt_metadata: PromptMetadata | None,
+    ) -> None:
         diagnostic_path.joinpath("request.json").write_text(
             json.dumps(
                 {
@@ -129,6 +143,10 @@ class OpenCodeRunner:
                     "command": _command_for_log(args, prompt_sha256, redact_prompt=False),
                     "prompt_sha256": prompt_sha256,
                     "prompt_chars": len(prompt),
+                    "prompt_template": {
+                        "id": prompt_metadata.template_id if prompt_metadata else "",
+                        "version": prompt_metadata.template_version if prompt_metadata else "",
+                    },
                     "environment": _env_summary(args[0], self.debug),
                 },
                 ensure_ascii=False,
@@ -153,7 +171,9 @@ class OpenCodeRunner:
 
 
 class ClaudeCodeRunner(OpenCodeRunner):
-    def run_review(self, prompt: str, cwd: Path, timeout_seconds: int) -> str:
+    def run_review(
+            self, prompt: str, cwd: Path, timeout_seconds: int, prompt_metadata: PromptMetadata | None = None
+    ) -> str:
         args = shlex.split(self.command, posix=(os.name != "nt"))
         if self.debug:
             args += ["--debug"]
@@ -162,16 +182,18 @@ class ClaudeCodeRunner(OpenCodeRunner):
         diagnostic_path = self._create_diagnostic_path(prompt_sha256) if self.debug and self.diagnostic_dir else None
         LOG.info(
             "stage=claude_code command=%s cwd=%s prompt_transport=stdin prompt_chars=%s prompt_sha256=%s "
-            "mr_url_present=%s diagnostic_path=%s",
+            "mr_url_present=%s template_id=%s template_version=%s diagnostic_path=%s",
             format_command(prepare_command(args)),
             cwd,
             len(prompt),
             prompt_sha256,
             _has_mr_url(prompt),
+            prompt_metadata.template_id if prompt_metadata else "",
+            prompt_metadata.template_version if prompt_metadata else "",
             diagnostic_path or "",
         )
         if diagnostic_path:
-            self._write_diagnostic_inputs(diagnostic_path, args, prompt, cwd, prompt_sha256)
+            self._write_diagnostic_inputs(diagnostic_path, args, prompt, cwd, prompt_sha256, prompt_metadata)
         result = subprocess.run(
             prepare_command(args),
             cwd=cwd,

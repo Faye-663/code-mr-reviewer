@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted（已决策，尚未实施）
+Accepted（已实施）
 
 ## Date
 

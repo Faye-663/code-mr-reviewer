@@ -11,9 +11,9 @@ from mr_reviewer.git import GitCheckout, GitClient
 from mr_reviewer.gitlab import GitLabClient, GitLabMrUrl, choose_diff_refs
 from mr_reviewer.observability import task_stage
 from mr_reviewer.opencode import AgentRunner
-from mr_reviewer.prompting import build_review_prompt, build_summary_prompt
+from mr_reviewer.prompting import build_review_plan_prompt, build_review_prompt
 from mr_reviewer.review_routing import resolve_review_routing
-from mr_reviewer.review_result import parse_review_summary
+from mr_reviewer.review_result import parse_review_plan
 
 LOG = logging.getLogger("mr_reviewer")
 DEFAULT_REVIEW_SKILL = "code-review"
@@ -52,10 +52,14 @@ class ReviewReport:
 
 
 class ReviewStageError(RuntimeError):
-    def __init__(self, stage: str, cause: Exception, summary: dict[str, object] | None = None):
+    def __init__(
+            self, stage: str, cause: Exception, review_plan: dict[str, object] | None = None, agent_call_count: int = 0
+    ):
         super().__init__(f"{stage} stage failed: {cause}")
         self.stage = stage
-        self.summary = summary
+        self.review_plan = review_plan
+        self.summary = None
+        self.agent_call_count = agent_call_count
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,29 +149,29 @@ class ReviewService:
                 routing.routing_reason,
                 routing.routing_marker,
             )
-            summary = None
+            review_plan = None
             prompt_templates = {}
             agent_call_count = 0
             if routing.review_mode == "two-step":
-                summary_prompt = self._build_summary_prompt(target, diff_info)
-                LOG.info("task=%s stage=summary repo=%s status=started", task_id, target.project_path)
+                plan_prompt = self._build_review_plan_prompt(target, diff_info)
+                LOG.info("task=%s stage=review_plan repo=%s status=started", task_id, target.project_path)
                 try:
                     agent_call_count += 1
-                    with task_stage("summary"):
-                        summary_raw = self.opencode.run_review(
-                            summary_prompt,
+                    with task_stage("review_plan"):
+                        plan_raw = self.opencode.run_review(
+                            plan_prompt,
                             diff_info["repo_path"],
                             _remaining_timeout(deadline),
-                            summary_prompt.metadata,
+                            plan_prompt.metadata,
                         )
-                    summary = parse_review_summary(summary_raw)
+                    review_plan = parse_review_plan(plan_raw)
                 except Exception as exc:  # noqa: BLE001 - 对外保留明确的执行阶段。
-                    raise ReviewStageError("summary", exc) from exc
-                prompt_templates["summary"] = {
-                    "id": summary_prompt.template_id,
-                    "version": summary_prompt.template_version,
+                    raise ReviewStageError("review_plan", exc, agent_call_count=agent_call_count) from exc
+                prompt_templates["review_plan"] = {
+                    "id": plan_prompt.template_id,
+                    "version": plan_prompt.template_version,
                 }
-                LOG.info("task=%s stage=summary repo=%s status=ready", task_id, target.project_path)
+                LOG.info("task=%s stage=review_plan repo=%s status=ready", task_id, target.project_path)
 
             # Agent 已在本地 checkout 后的仓库中运行，prompt 只传定位信息，避免把大 diff 塞进模型上下文。
             prompt = self._build_prompt(
@@ -175,7 +179,7 @@ class ReviewService:
                 diff_info,
                 config.comment_skill or DEFAULT_REVIEW_SKILL,
                 structured_output,
-                summary,
+                review_plan,
             )
             LOG.info("task=%s stage=opencode_review repo=%s timeout_seconds=%s", task_id, target.project_path,
                      config.task_timeout_seconds)
@@ -189,12 +193,12 @@ class ReviewService:
                         prompt.metadata,
                     )
             except Exception as exc:  # noqa: BLE001 - 对外保留概要和失败阶段。
-                raise ReviewStageError("review", exc, summary) from exc
+                raise ReviewStageError("review", exc, review_plan, agent_call_count) from exc
             LOG.info("task=%s stage=report_ready repo=%s report_chars=%s", task_id, target.project_path, len(markdown))
             return ReviewReport(
                 markdown=markdown,
-                summary=summary,
-                review_plan=None,
+                summary=None,
+                review_plan=review_plan,
                 repo=target.project_path,
                 mr_iid=target.mr_iid,
                 mr_url=target.mr_url,
@@ -228,7 +232,7 @@ class ReviewService:
             diff_info: dict,
             skill_name: str,
             structured_output: bool = False,
-            summary: dict[str, object] | None = None,
+            review_plan: dict[str, object] | None = None,
     ) -> str:
         if not structured_output:
             raise ValueError("automatic review prompt must use the structured template")
@@ -239,11 +243,11 @@ class ReviewService:
             head_sha=str(diff_info["head_sha"]),
             changed_files=list(diff_info["changed_files"]),
             repo_path=diff_info["repo_path"],
-            summary=summary,
+            review_plan=review_plan,
         )
 
-    def _build_summary_prompt(self, target: MergeRequestReviewTarget, diff_info: dict) -> str:
-        return build_summary_prompt(
+    def _build_review_plan_prompt(self, target: MergeRequestReviewTarget, diff_info: dict) -> str:
+        return build_review_plan_prompt(
             mr_url=target.mr_url,
             base_sha=str(diff_info["base_sha"]),
             head_sha=str(diff_info["head_sha"]),

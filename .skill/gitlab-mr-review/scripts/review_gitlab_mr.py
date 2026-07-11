@@ -75,6 +75,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"base_sha={result['base_sha']}")
     print(f"head_sha={result['head_sha']}")
     print(f"changed_files={result['changed_files_count']}")
+    print(f"review_mode={result['review_mode']}")
+    print(f"agent_call_count={result['agent_call_count']}")
     print(f"comment_submitted={str(result['comment_submitted']).lower()}")
     return 0
 
@@ -219,7 +221,7 @@ def build_review_prompt(
     head_sha: str,
     changed_files: list[str],
     repo_path: Path,
-    summary: dict[str, object] | None = None,
+    review_plan: dict[str, object] | None = None,
 ) -> str:
     values = {
         "skill_name": "code-review",
@@ -230,13 +232,13 @@ def build_review_prompt(
         "repo_path": str(repo_path),
     }
     template_id = "review"
-    if summary is not None:
+    if review_plan is not None:
         template_id = "deep-review"
-        values["summary_json"] = json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True)
+        values["review_plan_json"] = json.dumps(review_plan, ensure_ascii=False, indent=2, sort_keys=True)
     return _render_prompt(template_id, values)
 
 
-def build_summary_prompt(
+def build_review_plan_prompt(
     *,
     mr_url: str,
     base_sha: str,
@@ -245,7 +247,7 @@ def build_summary_prompt(
     repo_path: Path,
 ) -> str:
     return _render_prompt(
-        "summary",
+        "review-plan",
         {
             "mr_url": mr_url,
             "base_sha": base_sha,
@@ -275,26 +277,40 @@ def _changed_files(changed_files: list[str]) -> str:
     return "\n".join(f"- {path}" for path in changed_files) or "- <none>"
 
 
-def parse_review_summary(raw_output: str) -> dict[str, object]:
+def parse_review_plan(raw_output: str) -> dict[str, object]:
     try:
         payload = json.loads(raw_output)
     except json.JSONDecodeError as exc:
-        raise ValueError(f"summary output must be valid JSON: {exc}") from exc
+        raise ValueError(f"review plan output must be valid JSON: {exc}") from exc
     if not isinstance(payload, dict):
-        raise ValueError("summary output must be a JSON object")
-    expected_fields = {"overview", "change_areas", "behavior_changes", "risk_areas", "test_changes"}
+        raise ValueError("review plan output must be a JSON object")
+    list_fields = ("change_intent", "external_contracts", "state_invariants", "transaction_async_boundaries", "test_risks", "open_questions")
+    expected_fields = {*list_fields, "critical_paths"}
     unexpected_fields = set(payload) - expected_fields
     if unexpected_fields:
-        raise ValueError(f"summary output contains unexpected fields: {sorted(unexpected_fields)}")
-    overview = payload.get("overview")
-    if not isinstance(overview, str) or not overview.strip():
-        raise ValueError("overview must be a non-empty string")
-    result: dict[str, object] = {"overview": overview}
-    for field in ("change_areas", "behavior_changes", "risk_areas", "test_changes"):
+        raise ValueError(f"review plan output contains unexpected fields: {sorted(unexpected_fields)}")
+    result: dict[str, object] = {}
+    for field in list_fields:
         value = payload.get(field)
         if not isinstance(value, list) or not all(isinstance(item, str) and item.strip() for item in value):
             raise ValueError(f"{field} must be a list of non-empty strings")
         result[field] = value
+    paths = payload.get("critical_paths")
+    if not isinstance(paths, list):
+        raise ValueError("critical_paths must be a list")
+    parsed_paths = []
+    for index, item in enumerate(paths):
+        if not isinstance(item, dict) or set(item) != {"path", "reason", "verify"}:
+            raise ValueError(f"critical_paths[{index}] must contain only path, reason and verify")
+        if not isinstance(item["path"], str) or not item["path"].strip():
+            raise ValueError(f"critical_paths[{index}].path must be a non-empty string")
+        if not isinstance(item["reason"], str) or not item["reason"].strip():
+            raise ValueError(f"critical_paths[{index}].reason must be a non-empty string")
+        verify = item["verify"]
+        if not isinstance(verify, list) or not verify or not all(isinstance(value, str) and value.strip() for value in verify):
+            raise ValueError(f"critical_paths[{index}].verify must be a non-empty list of strings")
+        parsed_paths.append(item)
+    result["critical_paths"] = parsed_paths
     return result
 
 
@@ -307,10 +323,10 @@ def run_two_step_review(
     changed_files: list[str],
     repo_path: Path,
 ) -> dict[str, object]:
-    summary_raw = run_agent_review(
+    plan_raw = run_agent_review(
         agent_type,
         command,
-        build_summary_prompt(
+        build_review_plan_prompt(
             mr_url=mr_url,
             base_sha=base_sha,
             head_sha=head_sha,
@@ -319,7 +335,7 @@ def run_two_step_review(
         ),
         repo_path,
     )
-    summary = parse_review_summary(summary_raw)
+    review_plan = parse_review_plan(plan_raw)
     comment_body = run_agent_review(
         agent_type,
         command,
@@ -329,15 +345,16 @@ def run_two_step_review(
             head_sha=head_sha,
             changed_files=changed_files,
             repo_path=repo_path,
-            summary=summary,
+            review_plan=review_plan,
         ),
         repo_path,
     )
     return {
-        "summary": summary,
+        "summary": None,
+        "review_plan": review_plan,
         "comment_body": comment_body,
         "agent_call_count": 2,
-        "local_report": render_local_report(summary, comment_body, base_sha, head_sha),
+        "local_report": render_local_report(review_plan, comment_body, base_sha, head_sha),
     }
 
 
@@ -367,9 +384,9 @@ def run_review(
             ),
             repo_path,
         )
-        result = {"summary": None, "comment_body": comment_body, "agent_call_count": 1}
+        result = {"summary": None, "review_plan": None, "comment_body": comment_body, "agent_call_count": 1}
     result["local_report"] = render_local_report(
-        result["summary"],
+        result.get("review_plan"),
         str(result["comment_body"]),
         base_sha,
         head_sha,
@@ -381,7 +398,7 @@ def run_review(
 
 
 def render_local_report(
-    summary: dict[str, object] | None,
+    review_plan: dict[str, object] | None,
     review: str,
     base_sha: str,
     head_sha: str,
@@ -413,11 +430,13 @@ def render_local_report(
         f"- 变更文件数：{len(changed_files)}",
     ]
     lines.extend(f"  - {path}" for path in changed_files)
-    if summary is not None:
-        lines.append(f"- 变更内容概述：{summary['overview']}")
-        for field, label in (("change_areas", "变更区域"), ("behavior_changes", "行为变化"), ("risk_areas", "风险区域"), ("test_changes", "测试变化")):
-            values = summary.get(field, [])
-            lines.append(f"- {label}：{'；'.join(str(value) for value in values) if values else '无'}")
+    if review_plan is not None:
+        lines.append("- 审查计划：")
+        for field in ("change_intent", "external_contracts", "state_invariants", "transaction_async_boundaries", "test_risks", "open_questions"):
+            values = review_plan.get(field, [])
+            lines.append(f"  - {field}：{'；'.join(str(value) for value in values) if values else '无'}")
+        for path in review_plan.get("critical_paths", []):
+            lines.append(f"  - critical_path：{path['path']} — {path['reason']}；验证：{'；'.join(path['verify'])}")
     if notes:
         lines.append(f"- 检视备注：{'；'.join(notes)}")
     if test_gaps:

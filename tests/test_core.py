@@ -10,9 +10,9 @@ from mr_reviewer.git import GitCheckout, GitClient, ResourceLimitError
 from mr_reviewer.gitlab import GitLabClient, GitLabMrUrl, choose_diff_refs, parse_gitlab_mr_url
 from mr_reviewer.im import ImMessage, build_welink_reply_args, parse_poll_output, should_trigger_review
 from mr_reviewer.observability import task_context
-from mr_reviewer.prompting import PromptTemplateError, build_review_prompt, build_summary_prompt
+from mr_reviewer.prompting import PromptTemplateError, build_review_plan_prompt, build_review_prompt
 from mr_reviewer.process import prepare_command
-from mr_reviewer.review_result import parse_review_summary, parse_structured_review_result
+from mr_reviewer.review_result import parse_review_plan, parse_structured_review_result
 from mr_reviewer.state import StateStore
 
 
@@ -75,14 +75,14 @@ def test_gitlab_mr_review_skill_package_exists():
 
 def test_prompt_templates_are_portable_and_render_identically(tmp_path: Path):
     script = _load_gitlab_mr_review_script()
-    main_summary = build_summary_prompt(
+    main_summary = build_review_plan_prompt(
         mr_url="https://gitlab.example.com/team/project/merge_requests/7",
         base_sha="base123",
         head_sha="head456",
         changed_files=["src/App.java"],
         repo_path=tmp_path,
     )
-    skill_summary = script.build_summary_prompt(
+    skill_summary = script.build_review_plan_prompt(
         mr_url="https://gitlab.example.com/team/project/merge_requests/7",
         base_sha="base123",
         head_sha="head456",
@@ -96,7 +96,7 @@ def test_prompt_templates_are_portable_and_render_identically(tmp_path: Path):
         head_sha="head456",
         changed_files=["src/App.java"],
         repo_path=tmp_path,
-        summary={"overview": "概要 $HOME", "change_areas": [], "behavior_changes": [], "risk_areas": [], "test_changes": []},
+        review_plan={"change_intent": ["$HOME"], "critical_paths": [], "external_contracts": [], "state_invariants": [], "transaction_async_boundaries": [], "test_risks": [], "open_questions": []},
     )
     skill_review = script.build_review_prompt(
         mr_url="https://gitlab.example.com/team/project/merge_requests/7",
@@ -104,16 +104,29 @@ def test_prompt_templates_are_portable_and_render_identically(tmp_path: Path):
         head_sha="head456",
         changed_files=["src/App.java"],
         repo_path=tmp_path,
-        summary={"overview": "概要 $HOME", "change_areas": [], "behavior_changes": [], "risk_areas": [], "test_changes": []},
+        review_plan={"change_intent": ["$HOME"], "critical_paths": [], "external_contracts": [], "state_invariants": [], "transaction_async_boundaries": [], "test_risks": [], "open_questions": []},
+    )
+    main_one_step = build_review_prompt(
+        skill_name="code-review", mr_url="https://gitlab.example.com/team/project/merge_requests/7",
+        base_sha="base123", head_sha="head456", changed_files=["src/App.java"], repo_path=tmp_path,
+    )
+    skill_one_step = script.build_review_prompt(
+        mr_url="https://gitlab.example.com/team/project/merge_requests/7", base_sha="base123",
+        head_sha="head456", changed_files=["src/App.java"], repo_path=tmp_path,
     )
 
     assert main_summary.content == skill_summary.content
     assert main_summary.template_version == skill_summary.template_version
     assert main_review.content == skill_review.content
     assert main_review.template_version == skill_review.template_version
+    assert main_one_step.content == skill_one_step.content
+    assert main_one_step.template_version == skill_one_step.template_version
+    assert "待验证线索" in main_review
+    assert "允许推翻" in main_review
+    assert "覆盖计划未列出的" in main_review
     assert len(main_review.template_version) == 12
-    assert Path("src/mr_reviewer/prompt_templates/summary.md").read_bytes() == (
-        Path(".skill/gitlab-mr-review/prompt_templates/summary.md").read_bytes()
+    assert Path("src/mr_reviewer/prompt_templates/review-plan.md").read_bytes() == (
+        Path(".skill/gitlab-mr-review/prompt_templates/review-plan.md").read_bytes()
     )
     assert Path("src/mr_reviewer/prompt_templates/review.md").read_bytes() == (
         Path(".skill/gitlab-mr-review/prompt_templates/review.md").read_bytes()
@@ -121,13 +134,13 @@ def test_prompt_templates_are_portable_and_render_identically(tmp_path: Path):
     assert Path("src/mr_reviewer/prompt_templates/deep-review.md").read_bytes() == (
         Path(".skill/gitlab-mr-review/prompt_templates/deep-review.md").read_bytes()
     )
-    parse_review_summary(main_summary.split("JSON 结构为：\n", 1)[1])
+    parse_review_plan(main_summary.split("JSON 结构为：\n", 1)[1].split("\ncritical_paths", 1)[0])
     parse_structured_review_result(main_review.split("JSON 结构为：\n", 1)[1].split("\nseverity", 1)[0])
 
 
 def test_prompt_renderer_rejects_missing_or_unresolved_template_values():
     with pytest.raises(PromptTemplateError, match="missing template values"):
-        build_summary_prompt(
+        build_review_plan_prompt(
             mr_url="https://gitlab.example.com/team/project/merge_requests/7",
             base_sha="base123",
             head_sha="head456",
@@ -140,7 +153,7 @@ def test_prompt_renderer_rejects_missing_template(monkeypatch, tmp_path: Path):
     monkeypatch.setattr("mr_reviewer.prompting.files", lambda _: tmp_path)
 
     with pytest.raises(PromptTemplateError, match="prompt template not found"):
-        build_summary_prompt(
+        build_review_plan_prompt(
             mr_url="https://gitlab.example.com/team/project/merge_requests/7",
             base_sha="base123",
             head_sha="head456",
@@ -157,7 +170,7 @@ def test_review_prompt_allows_dollar_signs_in_first_stage_summary(tmp_path: Path
         head_sha="head456",
         changed_files=[],
         repo_path=tmp_path,
-        summary={"overview": "shell variable $HOME", "change_areas": [], "behavior_changes": [], "risk_areas": [], "test_changes": []},
+        review_plan={"change_intent": ["shell variable $HOME"], "critical_paths": [], "external_contracts": [], "state_invariants": [], "transaction_async_boundaries": [], "test_risks": [], "open_questions": []},
     )
 
     assert "shell variable $HOME" in prompt
@@ -251,7 +264,7 @@ def test_gitlab_mr_review_script_builds_scoped_opencode_prompt(tmp_path: Path):
         head_sha="head456",
         changed_files=["src/App.java", "src/AppTest.java"],
         repo_path=tmp_path,
-        summary={"overview": "概要", "change_areas": [], "behavior_changes": [], "risk_areas": [], "test_changes": []},
+        review_plan={"change_intent": ["概要"], "critical_paths": [], "external_contracts": [], "state_invariants": [], "transaction_async_boundaries": [], "test_risks": [], "open_questions": []},
     )
 
     assert "code-review skill" in prompt
@@ -341,18 +354,20 @@ def test_gitlab_mr_review_script_sends_claude_prompt_via_stdin(monkeypatch, tmp_
     assert kwargs["input"] == prompt
 
 
-def test_gitlab_mr_review_script_runs_summary_before_review_and_keeps_summary_local(monkeypatch, tmp_path: Path):
+def test_gitlab_mr_review_script_runs_plan_before_review_and_keeps_plan_local(monkeypatch, tmp_path: Path):
     script = _load_gitlab_mr_review_script()
     prompts = []
     responses = iter(
         [
             json.dumps(
                 {
-                    "overview": "修复认证流程",
-                    "change_areas": ["auth"],
-                    "behavior_changes": ["刷新token"],
-                    "risk_areas": ["并发刷新"],
-                    "test_changes": ["新增测试"],
+                    "change_intent": ["修复认证流程"],
+                    "critical_paths": [{"path": "auth", "reason": "刷新token", "verify": ["并发刷新"]}],
+                    "external_contracts": [],
+                    "state_invariants": [],
+                    "transaction_async_boundaries": [],
+                    "test_risks": ["新增测试"],
+                    "open_questions": [],
                 },
                 ensure_ascii=False,
             ),
@@ -377,8 +392,8 @@ def test_gitlab_mr_review_script_runs_summary_before_review_and_keeps_summary_lo
     )
 
     assert len(prompts) == 2
-    assert "生成 MR 概要" in prompts[0]
-    assert '"overview": "修复认证流程"' in prompts[1]
+    assert "生成严格的审查计划" in prompts[0]
+    assert '"change_intent": [' in prompts[1]
     assert "修复认证流程" in result["local_report"]
     assert result["comment_body"] == "# Review\n\nOnly review findings."
     assert "修复认证流程" not in result["comment_body"]

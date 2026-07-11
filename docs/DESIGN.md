@@ -14,8 +14,8 @@ flowchart TD
     F --> G["GitClient: clone / fetch / checkout / diff"]
     G --> H{"title 以 Deep-Review marker 开头"}
     H -- "否" --> I["AgentRunner: 直接执行 code review"]
-    H -- "是" --> H2["AgentRunner: 生成结构化 MR 概要"]
-    H2 --> I2["AgentRunner: 携带概要执行 code review"]
+    H -- "是" --> H2["AgentRunner: 生成严格审查计划"]
+    H2 --> I2["AgentRunner: 验证计划并执行 Deep Review"]
     I --> J["Python parser / validator"]
     I2 --> J
     J --> K["IM 入口: 渲染 Markdown 上传 OneBox 并通知群聊"]
@@ -33,9 +33,9 @@ flowchart TD
     D -- "未 @Bot / 不在白名单 / 无 MR URL" --> E["跳过消息"]
     D -- "命中 GitLab MR URL" --> F["GitLabClient: 获取 MR 元数据"]
     F --> G["ReviewService.review"]
-    G --> H["生成结构化 MR 概要"]
-    H --> H2["携带概要生成结构化 JSON review 结果"]
-    H2 --> I["Python 渲染概要与 review Markdown 报告"]
+    G --> H["按 title 路由审查模式"]
+    H --> H2["one-step 或计划驱动的 Deep Review"]
+    H2 --> I["Python 渲染 Discoveries 与 review Markdown 报告"]
     I --> J["WeLink OneBox 文件上传"]
     J --> K["WeLink 群通知报告文件名"]
     K --> L["StateStore: 标记消息已处理"]
@@ -52,8 +52,8 @@ flowchart TD
     D -- "是" --> F["WebhookReviewQueue.enqueue"]
     F --> G["ReviewService.review_target"]
     G --> H["clone / fetch / checkout / diff"]
-    H --> I["AgentRunner: 生成并校验 MR 概要"]
-    I --> I2["AgentRunner: 携带概要生成 review"]
+    H --> I["按 title 路由审查模式"]
+    I --> I2["one-step 或计划驱动的 Deep Review"]
     I2 --> J["parse JSON / validate finding position"]
     J --> K{"MR_REVIEWER_WEBHOOK_POST_COMMENT"}
     K -- "true" --> L["GitLabClient.post_mr_discussion"]
@@ -64,7 +64,7 @@ flowchart TD
 
 ## 结构化 Review 契约
 
-自动入口的两步都要求 Agent 只输出 JSON，不输出 Markdown 或代码围栏。第一步概要严格包含 `overview`、`change_areas`、`behavior_changes`、`risk_areas`、`test_changes`；第二步把该概要作为只读上下文，生成下面的结构化 finding。概要进入本地 JSON/Markdown 报告，但不进入 GitLab comment/discussion；webhook 只发布可定位 finding 的 inline discussion，`run-once` 和 WeLink poll 渲染包含两步结果的 Markdown 报告。
+自动入口要求 Agent 只输出 JSON，不输出 Markdown 或代码围栏。普通 MR 直接生成下面的结构化 finding。Deep Review 第一阶段严格生成 `change_intent`、`critical_paths`、`external_contracts`、`state_invariants`、`transaction_async_boundaries`、`test_risks`、`open_questions`；第二阶段把计划视为待验证线索，必须重新验证、允许推翻并覆盖计划遗漏。计划进入本地 JSON/Markdown 报告，但不进入 GitLab comment/discussion。
 
 顶层结构：
 
@@ -122,8 +122,8 @@ log/webhook-reports/20260709T120000Z-team_project-mr-7-webhook-abc123.md
 
 失败策略：
 
-- 概要生成或校验失败：停止第二步，写 `failure_stage=summary` 的失败态报告。
-- 第二次 Agent 调用失败：保留已完成概要，写 `failure_stage=review` 的失败态报告。
+- 审查计划生成或校验失败：停止第二步，写 `failure_stage=review_plan` 的失败态报告。
+- Deep Review 第二次 Agent 调用失败：保留已完成计划，写 `failure_stage=review` 的失败态报告。
 - JSON parse failed：不发布 inline discussion，写 `parse_failed` 报告，并在 Markdown 中保留脱敏后的原始输出。
 - finding 全部被过滤：不发布 inline discussion，写成功态本地报告。
 - 读取远端 discussions 失败：不发布新 discussion，避免失去幂等后刷屏。
@@ -141,6 +141,6 @@ MR Web URL 与 REST API root 是两个独立边界：`MR_REVIEWER_GITLAB_BASE_UR
 - `gitlab.py`：GitLab MR URL 解析、MR 元数据、MR 详情 diff_refs、项目 clone URL 查询、discussions 读取与 inline discussion 发布。
 - `git.py`：临时 clone、fork remote 处理、分支 fetch、checkout、diff 与资源限制。
 - `reviewer.py`：共用 review core，串联 GitLab、Git 和 two-step Agent 调用，并管理两步共享的任务超时预算。
-- `review_result.py` / `inline_review.py` / `markdown_report.py`：概要与 review JSON 解析、finding 行定位校验、GitLab inline 发布结果整理和本地 Markdown 报告渲染。
+- `review_result.py` / `inline_review.py` / `markdown_report.py`：审查计划与 review JSON 解析、finding 行定位校验、GitLab inline 发布结果整理和本地 Markdown 报告渲染。
 - `opencode.py`：AgentRunner protocol、OpenCode/Claude Code adapter、debug 参数和 prompt 日志脱敏。
 - `state.py`：IM poll 的本地去重状态文件，避免重复处理同一条 IM 消息。

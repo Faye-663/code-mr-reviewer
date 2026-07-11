@@ -42,6 +42,18 @@ def _merge_request_payload(action: str = "update", update_reason: str = "source 
     }
 
 
+def _review_plan() -> dict[str, object]:
+    return {
+        "change_intent": ["修复认证流程"],
+        "critical_paths": [{"path": "auth", "reason": "刷新token", "verify": ["并发刷新"]}],
+        "external_contracts": [],
+        "state_invariants": [],
+        "transaction_async_boundaries": [],
+        "test_risks": ["新增测试"],
+        "open_questions": [],
+    }
+
+
 def test_parse_gitlab_webhook_builds_review_target_from_payload():
     config = Config(
         gitlab_base_url="https://gitlab.example.com",
@@ -248,13 +260,7 @@ def test_write_webhook_monitor_report_redacts_sensitive_values(tmp_path: Path):
     )
     report = ReviewReport(
         markdown="# Review\n\nLooks good.",
-        summary={
-            "overview": "修复认证流程",
-            "change_areas": ["auth"],
-            "behavior_changes": ["刷新token"],
-            "risk_areas": ["并发刷新"],
-            "test_changes": ["新增测试"],
-        },
+        review_plan=_review_plan(),
         base_sha="base-sha",
         head_sha="head-sha",
         changed_files=["app.py"],
@@ -262,7 +268,7 @@ def test_write_webhook_monitor_report_redacts_sensitive_values(tmp_path: Path):
         submission_owner="skill",
         submission_status="unknown",
         prompt_templates={
-            "summary": {"id": "summary", "version": "abc123def456"},
+            "review_plan": {"id": "review-plan", "version": "abc123def456"},
             "review": {"id": "review", "version": "789abc456def"},
         },
     )
@@ -287,7 +293,8 @@ def test_write_webhook_monitor_report_redacts_sensitive_values(tmp_path: Path):
     assert data["submission_owner"] == "skill"
     assert data["submission_status"] == "unknown"
     assert data["markdown_preview"] == "# Review\n\nLooks good."
-    assert data["summary"]["overview"] == "修复认证流程"
+    assert data["summary"] is None
+    assert data["review_plan"]["change_intent"] == ["修复认证流程"]
     assert data["prompt_templates"]["review"]["version"] == "789abc456def"
     markdown = Path(data["markdown_report_path"]).read_text(encoding="utf-8")
     assert "## Discoveries" in markdown
@@ -338,7 +345,8 @@ def test_webhook_worker_posts_inline_discussion_from_python(tmp_path: Path):
     assert "# 代码检视报告" in markdown_report
     assert "team/project!7" in markdown_report
     assert "已提交MR评论" in markdown_report
-    assert report["summary"]["overview"] == "修复认证流程"
+    assert report["summary"] is None
+    assert report["review_plan"]["change_intent"] == ["修复认证流程"]
     assert "## Discoveries" in markdown_report
     assert "修复认证流程" not in posted["body"]
 
@@ -457,7 +465,7 @@ def test_webhook_worker_does_not_publish_when_structured_output_is_invalid(tmp_p
     assert "## 检视摘要" in markdown_report
 
 
-def test_webhook_worker_records_review_stage_failure_with_completed_summary(tmp_path: Path):
+def test_webhook_worker_records_review_stage_failure_with_completed_plan(tmp_path: Path):
     event = parse_gitlab_merge_request_event(
         _merge_request_payload(),
         Config(gitlab_base_url="https://gitlab.example.com"),
@@ -469,13 +477,7 @@ def test_webhook_worker_records_review_stage_failure_with_completed_summary(tmp_
             raise ReviewStageError(
                 "review",
                 RuntimeError("agent unavailable"),
-                {
-                    "overview": "修复认证流程",
-                    "change_areas": ["auth"],
-                    "behavior_changes": ["刷新token"],
-                    "risk_areas": ["并发刷新"],
-                    "test_changes": [],
-                },
+                _review_plan(),
             )
 
     queue = WebhookReviewQueue(
@@ -491,7 +493,8 @@ def test_webhook_worker_records_review_stage_failure_with_completed_summary(tmp_
     report = json.loads(next(tmp_path.glob("*.json")).read_text(encoding="utf-8"))
     assert report["status"] == "failed"
     assert report["failure_stage"] == "review"
-    assert report["summary"]["overview"] == "修复认证流程"
+    assert report["summary"] is None
+    assert report["review_plan"]["change_intent"] == ["修复认证流程"]
     markdown = Path(report["markdown_report_path"]).read_text(encoding="utf-8")
     assert "修复认证流程" in markdown
     assert "失败阶段：review" in markdown
@@ -529,13 +532,7 @@ class _RecordingReviewService:
         self.structured_output_flags.append(structured_output)
         return ReviewReport(
             markdown=self.markdown,
-            summary={
-                "overview": "修复认证流程",
-                "change_areas": ["src/example.py"],
-                "behavior_changes": ["新增查询"],
-                "risk_areas": ["查询规模"],
-                "test_changes": [],
-            },
+            review_plan=_review_plan(),
             base_sha="base-sha",
             head_sha=target.head_sha,
             changed_files=["app.py"],

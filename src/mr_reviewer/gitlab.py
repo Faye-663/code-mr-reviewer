@@ -71,6 +71,19 @@ class GitLabClient:
         project = urllib.parse.quote(mr.project_path, safe="")
         return self._get_json(f"/projects/{project}/merge_requests/{mr.mr_iid}")
 
+    def get_project(self, project_path: str) -> dict:
+        project = urllib.parse.quote(project_path, safe="")
+        result = self._get_json(f"/projects/{project}")
+        if not isinstance(result, dict):
+            raise ValueError("GitLab project response must be an object")
+        return result
+
+    def get_review_set_merge_request(self, project_id: int, mr_iid: int) -> dict:
+        result = self._get_json(f"/projects/{project_id}/isource/merge_requests/{mr_iid}")
+        if not isinstance(result, dict):
+            raise ValueError("GitLab ReviewSet MR detail response must be an object")
+        return result
+
     def get_mr_detail_for_discussion_position(self, target) -> dict:
         project = urllib.parse.quote(target.project_path, safe="")
         return self._get_json(f"/projects/{project}/merge_requests/{target.mr_iid}")

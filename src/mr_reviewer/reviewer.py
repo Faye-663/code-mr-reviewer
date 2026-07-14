@@ -11,9 +11,21 @@ from mr_reviewer.git import GitCheckout, GitClient
 from mr_reviewer.gitlab import GitLabClient, GitLabMrUrl, choose_diff_refs
 from mr_reviewer.observability import task_stage
 from mr_reviewer.opencode import AgentRunner
-from mr_reviewer.prompting import build_review_plan_prompt, build_review_prompt
+from mr_reviewer.prompting import (
+    build_review_plan_prompt,
+    build_review_prompt,
+    build_review_set_plan_prompt,
+    build_review_set_review_prompt,
+)
 from mr_reviewer.review_routing import resolve_review_routing
 from mr_reviewer.review_result import parse_review_plan
+from mr_reviewer.review_set import PreparedReviewSetMember, ReviewSetManifest, ReviewSetPreparer
+from mr_reviewer.review_set_result import (
+    StructuredReviewSetResult,
+    parse_review_set_plan,
+    parse_structured_review_set_result,
+)
+from mr_reviewer.im import ReviewSetRequest
 
 LOG = logging.getLogger("mr_reviewer")
 DEFAULT_REVIEW_SKILL = "code-review"
@@ -49,6 +61,16 @@ class ReviewReport:
     routing_marker: str = ""
     agent_call_count: int = 0
     failure_stage: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewSetReviewReport:
+    manifest: ReviewSetManifest
+    review_plan: dict[str, object]
+    result: StructuredReviewSetResult
+    members: tuple[PreparedReviewSetMember, ...]
+    prompt_templates: dict[str, dict[str, str]]
+    agent_call_count: int
 
 
 class ReviewStageError(RuntimeError):
@@ -103,6 +125,79 @@ class ReviewService:
             title=str(mr_data.get("title") or ""),
         )
         return self.review_target(target, config, task_id, structured_output=True)
+
+    def review_set(self, request: ReviewSetRequest, config: Config, task_id: str) -> ReviewSetReviewReport:
+        task_dir = config.work_dir / task_id
+        deadline = time.monotonic() + config.task_timeout_seconds
+        review_plan = None
+        agent_call_count = 0
+        try:
+            prepared = ReviewSetPreparer(self.gitlab, self.git).prepare(request, config, task_dir)
+            member_ids = {member.member.member_id for member in prepared.members}
+            LOG.info(
+                "task=%s review_scope=review-set review_set_id=%s req_id=%s members=%s stage=prepared",
+                task_id,
+                prepared.manifest.review_set_id,
+                prepared.manifest.req_id,
+                len(prepared.members),
+            )
+
+            plan_prompt = build_review_set_plan_prompt(
+                review_set_id=prepared.manifest.review_set_id,
+                req_id=prepared.manifest.req_id,
+            )
+            try:
+                agent_call_count += 1
+                with task_stage("review_set_plan"):
+                    raw_plan = self.opencode.run_review(
+                        plan_prompt,
+                        task_dir,
+                        _remaining_timeout(deadline),
+                        plan_prompt.metadata,
+                    )
+                review_plan = parse_review_set_plan(raw_plan, member_ids)
+            except Exception as exc:  # noqa: BLE001 - 联合任务必须保留明确失败阶段且停止第二次调用。
+                raise ReviewStageError("review_set_plan", exc, agent_call_count=agent_call_count) from exc
+
+            review_prompt = build_review_set_review_prompt(
+                review_set_id=prepared.manifest.review_set_id,
+                req_id=prepared.manifest.req_id,
+                review_plan=review_plan,
+            )
+            try:
+                agent_call_count += 1
+                with task_stage("review_set_review"):
+                    raw_result = self.opencode.run_review(
+                        review_prompt,
+                        task_dir,
+                        _remaining_timeout(deadline),
+                        review_prompt.metadata,
+                    )
+                result = parse_structured_review_set_result(raw_result)
+            except Exception as exc:  # noqa: BLE001 - 结构化结果失败时不得进入发布阶段。
+                raise ReviewStageError("review_set_review", exc, review_plan, agent_call_count) from exc
+
+            return ReviewSetReviewReport(
+                manifest=prepared.manifest,
+                review_plan=review_plan,
+                result=result,
+                members=prepared.members,
+                prompt_templates={
+                    "review_set_plan": {
+                        "id": plan_prompt.template_id,
+                        "version": plan_prompt.template_version,
+                    },
+                    "review_set_review": {
+                        "id": review_prompt.template_id,
+                        "version": review_prompt.template_version,
+                    },
+                },
+                agent_call_count=agent_call_count,
+            )
+        finally:
+            # ReviewSet 根目录同时包含多个源码 checkout，任何退出路径都必须整组清理。
+            shutil.rmtree(task_dir, ignore_errors=True)
+            LOG.info("task=%s review_scope=review-set stage=cleanup path=%s", task_id, task_dir)
 
     def review_target(
             self,

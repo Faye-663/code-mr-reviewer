@@ -78,6 +78,31 @@ def build_review_prompt(
     return _render("deep-review", values)
 
 
+def build_review_set_plan_prompt(*, review_set_id: str, req_id: str) -> RenderedPrompt:
+    return _render(
+        "review-set-plan",
+        {
+            "review_set_id": review_set_id,
+            "req_id": req_id,
+            "manifest_path": "review-set.json",
+        },
+    )
+
+
+def build_review_set_review_prompt(
+        *, review_set_id: str, req_id: str, review_plan: dict[str, object]
+) -> RenderedPrompt:
+    return _render(
+        "review-set-review",
+        {
+            "review_set_id": review_set_id,
+            "req_id": req_id,
+            "manifest_path": "review-set.json",
+            "review_plan_json": json.dumps(review_plan, ensure_ascii=False, indent=2, sort_keys=True),
+        },
+    )
+
+
 def _render(template_id: str, values: dict[str, str | None]) -> RenderedPrompt:
     content = _load_template(template_id)
     missing = sorted(name for name, value in values.items() if value is None or value == "")

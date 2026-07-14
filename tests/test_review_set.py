@@ -15,6 +15,13 @@ from mr_reviewer.im import (
     resolve_review_trigger,
 )
 from mr_reviewer.review_set import ReviewSetPreparer, ReviewSetValidationError, extract_req_id
+from mr_reviewer.review_set_result import (
+    ReviewSetPlanParseError,
+    StructuredReviewSetParseError,
+    parse_review_set_plan,
+    parse_structured_review_set_result,
+)
+from mr_reviewer.reviewer import ReviewService, ReviewStageError
 
 
 def _message(text: str) -> ImMessage:
@@ -289,3 +296,168 @@ def test_review_set_preparer_cleans_all_members_when_clone_fails(tmp_path: Path)
         )
 
     assert not task_dir.exists()
+
+
+def _plan_payload() -> dict:
+    return {
+        "schema_version": "review-set-plan/v1",
+        "member_focus": [
+            {
+                "member_id": "p101-mr7",
+                "change_intent": ["调整调用方空值处理"],
+                "critical_paths": [
+                    {"path": "src/caller.py", "reason": "调用入口", "verify": ["空值契约"]}
+                ],
+                "test_risks": ["缺少空值测试"],
+            },
+            {
+                "member_id": "p202-mr8",
+                "change_intent": ["调整 SDK 返回契约"],
+                "critical_paths": [
+                    {"path": "src/sdk.py", "reason": "SDK 出口", "verify": ["返回值"]}
+                ],
+                "test_risks": [],
+            },
+        ],
+        "relationships": [
+            {
+                "from_member_id": "p101-mr7",
+                "to_member_id": "p202-mr8",
+                "contract": "调用方依赖 SDK 返回值",
+                "evidence_refs": [
+                    {
+                        "member_id": "p202-mr8",
+                        "path": "src/sdk.py",
+                        "start_line": 40,
+                        "end_line": 42,
+                        "detail": "新增 null 返回分支",
+                    }
+                ],
+                "verification": ["确认调用方处理 null"],
+            }
+        ],
+        "open_questions": [],
+    }
+
+
+def _result_payload() -> dict:
+    return {
+        "schema_version": "review-set-review/v1",
+        "findings": [
+            {
+                "issue_id": "CONTRACT_NULLABILITY_001",
+                "rule_id": "CONTRACT_NULLABILITY",
+                "severity": "major",
+                "confidence": "HIGH",
+                "title": "调用方未处理 SDK 空返回",
+                "impact": "生产请求可能触发空指针异常。",
+                "evidence_refs": [
+                    {
+                        "member_id": "p202-mr8",
+                        "path": "src/sdk.py",
+                        "start_line": 40,
+                        "end_line": 42,
+                        "detail": "SDK 可以返回 null。",
+                    }
+                ],
+                "targets": [
+                    {
+                        "member_id": "p101-mr7",
+                        "position": {
+                            "old_path": "src/caller.py",
+                            "new_path": "src/caller.py",
+                            "old_line": -1,
+                            "new_line": 57,
+                        },
+                        "suggestion": "解引用前处理 null。",
+                    },
+                    {
+                        "member_id": "p202-mr8",
+                        "position": None,
+                        "suggestion": "在 SDK 契约中明确空值语义。",
+                    },
+                ],
+            }
+        ],
+        "relationship_summary": ["app 调用 sdk，空值契约不一致。"],
+        "notes": [],
+        "test_gaps": ["缺少联合契约测试。"],
+        "good": [],
+    }
+
+
+def test_parse_review_set_plan_requires_exact_members():
+    plan = parse_review_set_plan(
+        json.dumps(_plan_payload(), ensure_ascii=False),
+        {"p101-mr7", "p202-mr8"},
+    )
+
+    assert plan["schema_version"] == "review-set-plan/v1"
+    assert [item["member_id"] for item in plan["member_focus"]] == ["p101-mr7", "p202-mr8"]
+
+
+def test_parse_review_set_plan_rejects_unknown_member():
+    payload = _plan_payload()
+    payload["member_focus"][0]["member_id"] = "unknown"
+
+    with pytest.raises(ReviewSetPlanParseError, match="member_focus must cover"):
+        parse_review_set_plan(json.dumps(payload), {"p101-mr7", "p202-mr8"})
+
+
+def test_parse_review_set_result_accepts_multi_target_and_null_position():
+    result = parse_structured_review_set_result(json.dumps(_result_payload(), ensure_ascii=False))
+
+    assert result.schema_version == "review-set-review/v1"
+    assert result.findings[0].targets[0].position.new_line == 57
+    assert result.findings[0].targets[1].position is None
+
+
+def test_parse_review_set_result_rejects_unexpected_fields():
+    payload = _result_payload()
+    payload["overview"] = "not allowed"
+
+    with pytest.raises(StructuredReviewSetParseError, match="unexpected fields"):
+        parse_structured_review_set_result(json.dumps(payload))
+
+
+class _ReviewSetRunner:
+    def __init__(self, invalid_plan: bool = False):
+        self.calls: list[tuple] = []
+        self.invalid_plan = invalid_plan
+
+    def run_review(self, prompt, cwd, timeout_seconds, prompt_metadata=None):
+        self.calls.append((str(prompt), Path(cwd), timeout_seconds, prompt_metadata))
+        if prompt_metadata.template_id == "review-set-plan":
+            return "not json" if self.invalid_plan else json.dumps(_plan_payload(), ensure_ascii=False)
+        return json.dumps(_result_payload(), ensure_ascii=False)
+
+
+def test_review_service_runs_review_set_as_fixed_two_step_from_task_root(tmp_path: Path):
+    runner = _ReviewSetRunner()
+    service = ReviewService(_RecordingGitLab(), _RecordingGit(), runner)
+    task_dir = tmp_path / "joint-task"
+
+    report = service.review_set(_review_set_request(), _config(tmp_path), task_id="joint-task")
+
+    assert report.manifest.req_id == "REQ-1"
+    assert report.agent_call_count == 2
+    assert report.result.findings[0].issue_id == "CONTRACT_NULLABILITY_001"
+    assert [call[1] for call in runner.calls] == [task_dir, task_dir]
+    assert [call[3].template_id for call in runner.calls] == ["review-set-plan", "review-set-review"]
+    assert "cross-repo-code-review skill" in runner.calls[0][0]
+    assert "review-set.json" in runner.calls[0][0]
+    assert "diff-101" not in runner.calls[0][0]
+    assert "review-set-plan/v1" in runner.calls[1][0]
+    assert not task_dir.exists()
+
+
+def test_review_service_stops_review_set_when_plan_is_invalid(tmp_path: Path):
+    runner = _ReviewSetRunner(invalid_plan=True)
+    service = ReviewService(_RecordingGitLab(), _RecordingGit(), runner)
+
+    with pytest.raises(ReviewStageError) as exc_info:
+        service.review_set(_review_set_request(), _config(tmp_path), task_id="invalid-plan")
+
+    assert exc_info.value.stage == "review_set_plan"
+    assert len(runner.calls) == 1
+    assert not (tmp_path / "invalid-plan").exists()

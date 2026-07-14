@@ -1,6 +1,6 @@
 # 设计方案图
 
-本项目有两类触发入口：WeLink IM poll 和 GitLab webhook。入口负责接收事件、过滤不可处理请求，然后把 GitLab MR 信息交给共用的 review core。review core 负责 clone/fetch/checkout、生成 diff，并根据最新 MR title 路由：普通 MR 执行 one-step review；`【Deep-Review】` 前缀执行 two-step。Python 侧再负责校验、inline 发布或 Markdown 渲染。
+本项目有两类触发入口：WeLink IM poll 和 GitLab webhook。入口负责接收事件、过滤不可处理请求，然后把 GitLab MR 信息交给共用的 review core。单 MR review core 负责 clone/fetch/checkout、生成 diff，并根据最新 MR title 路由：普通 MR 执行 one-step review；`【Deep-Review】` 前缀执行 two-step。WeLink IM 还支持显式提交 2–3 个不同项目 MR 的 ReviewSet；该路径固定 two-step，不参与 title 路由。Python 侧负责信任边界校验、GitLab 发布和 Markdown 渲染。
 
 ## 总体结构
 
@@ -9,7 +9,9 @@ flowchart TD
     A["WeLink IM poll"] --> B["解析群消息与 @Bot 触发条件"]
     C["GitLab webhook"] --> D["校验 path / method / secret"]
     D --> E["解析 merge_request payload"]
-    B --> F["ReviewService"]
+    B --> B2{"唯一 MR 数量"}
+    B2 -- "1" --> F["ReviewService 单 MR"]
+    B2 -- "2–3 个不同项目" --> R["ReviewSet 预检 / manifest"]
     E --> F
     F --> G["GitClient: clone / fetch / checkout / diff"]
     G --> H{"title 以 Deep-Review marker 开头"}
@@ -21,6 +23,10 @@ flowchart TD
     J --> K["IM 入口: 渲染 Markdown 上传 OneBox 并通知群聊"]
     J --> L["webhook 入口: 发布 GitLab inline discussion"]
     J --> M["写入本地 JSON / Markdown 报告"]
+    R --> R2["固定两次 Agent 调用"]
+    R2 --> R3["校验 evidence / targets / diff position"]
+    R3 --> R4["聚合报告上传 OneBox"]
+    R3 --> R5["按责任 MR 发布 inline / note"]
 ```
 
 ## WeLink IM poll 流程
@@ -29,9 +35,11 @@ flowchart TD
 flowchart TD
     A["WeLink 群消息"] --> B["poll: 查询群历史"]
     B --> C["parse_poll_output: 解析 respData.chatInfo"]
-    C --> D{"should_trigger_review"}
+    C --> D{"resolve_review_trigger"}
     D -- "未 @Bot / 不在白名单 / 无 MR URL" --> E["跳过消息"]
-    D -- "命中 GitLab MR URL" --> F["GitLabClient: 获取 MR 元数据"]
+    D -- "1 个唯一 MR" --> F["GitLabClient: 获取 MR 元数据"]
+    D -- "2–3 个不同项目" --> R["ReviewSetPreparer"]
+    D -- "数量 / 项目 / 仓库不合法" --> X["安全拒绝文案 + rejected"]
     F --> G["ReviewService.review"]
     G --> H["按 title 路由审查模式"]
     H --> H2["one-step 或计划驱动的 Deep Review"]
@@ -39,7 +47,35 @@ flowchart TD
     I --> J["WeLink OneBox 文件上传"]
     J --> K["WeLink 群通知报告文件名"]
     K --> L["StateStore: 标记消息已处理"]
+    R --> R2["project path -> project_id"]
+    R2 --> R3["isource MR: diff_refs + ReqID"]
+    R3 --> R4{"ReqID 非空且一致"}
+    R4 -- "否" --> X
+    R4 -- "是" --> R5["多成员精确 checkout + review-set.json"]
+    R5 --> R6["review-set-plan/v1"]
+    R6 --> R7["review-set-review/v1"]
+    R7 --> R8["聚合报告 + 责任 MR 发布"]
+    R8 --> L
+    X --> L
 ```
+
+## ReviewSet 契约与发布
+
+ReviewSet 根目录固定为：
+
+```text
+<task-root>/
+  review-set.json
+  members/p<project-id>-mr<iid>/repo/
+```
+
+`project_id` 必须通过 MR URL 中的 project path 查询，`iid` 只取自 URL；生产 MR 详情读取 `/projects/{project_id}/isource/merge_requests/{iid}`。`ReqID` 只接受 `e2e_issues[0].issue_num` 的 trim 后非空字符串。manifest 包含 `schema_version`、完整 SHA-256 `review_set_id`、`req_id` 和成员 project/iid/base/start/head/repo path；成员顺序不影响 ID，head 变化会生成新 ID。
+
+Agent 的第一阶段输出 `review-set-plan/v1`，第二阶段输出 `review-set-review/v1`。最终 finding 可以引用多个成员证据和多个责任 target，但 Agent 不能提供可信 URL、project id、SHA 或 marker。Python 在发布前校验全部 evidence/target：未知成员、越界路径或非法行号记为 `invalid`；合法位置不在当前 diff 时回退为普通 MR note。
+
+只有 HIGH 且 major/fatal 的 target 自动发布。marker 由 ReviewSet ID、规范化 evidence、rule 和 target 计算；分页读取 discussions 时，individual note 也参与去重。单目标 POST 失败不回滚其它已发布目标，状态转为 `success_with_warnings`。`MR_REVIEWER_REVIEW_SET_POST_COMMENT=false` 时只生成报告并把候选记为 `disabled`；开关开启但 `MR_REVIEWER_AGENT_MODEL_NAME` 为空时不发布，状态为 `success_with_warnings`。
+
+聚合报告 basename 固定为 `review-set-<review_set_id 前 12 位>.md`，包含 ReqID、成员 refs、计划、关系结论、所有 findings、证据、责任位置和逐 target 发布状态。任务状态限定为 `rejected`、`failed`、`success` 或 `success_with_warnings`；拒绝和运行失败都以安全 IM 文案终结原消息，不自动重试。
 
 ## GitLab webhook 流程
 
@@ -129,6 +165,8 @@ log/webhook-reports/20260709T120000Z-team_project-mr-7-webhook-abc123.md
 - 读取远端 discussions 失败：不发布新 discussion，避免失去幂等后刷屏。
 - 单条 discussion POST 失败：记录该 finding failed，继续处理其它 finding。
 - Markdown 报告写入失败：任务标记 failed，因为本地 Markdown 报告是 webhook 可观测性的一部分。
+- ReviewSet 任一预检、checkout、计划、review 或结构化解析失败：不进入 GitLab 发布；发送安全 IM 失败文案并将原消息标记 `failed`。
+- ReviewSet 单个 target 发布失败：保留其它发布结果，在唯一聚合报告中记录失败并标记 `success_with_warnings`。
 
 ## 模块边界
 
@@ -137,10 +175,12 @@ MR Web URL 与 REST API root 是两个独立边界：`MR_REVIEWER_GITLAB_BASE_UR
 - `cli.py`：命令入口、轮询循环和 review service 装配。
 - `welink.py`：WeLink poll/reply 命令执行、OneBox 上传与群通知编排。
 - `webhook.py`：GitLab webhook HTTP handler、secret 校验、payload 解析、后台队列、inline discussion 发布编排和本地报告写入。
-- `im.py`：WeLink 历史消息解析、字段归一化、触发条件判断。
-- `gitlab.py`：GitLab MR URL 解析、MR 元数据、MR 详情 diff_refs、项目 clone URL 查询、discussions 读取与 inline discussion 发布。
+- `im.py`：WeLink 历史消息解析、字段归一化，以及忽略/单 MR/ReviewSet/拒绝四态触发判断。
+- `gitlab.py`：GitLab MR URL 解析、project path 到 project id 查询、MR/isource MR 元数据、项目 clone URL、分页 discussions、inline discussion 与普通 note API。
 - `git.py`：临时 clone、fork remote 处理、分支 fetch、checkout、diff 与资源限制。
-- `reviewer.py`：共用 review core，串联 GitLab、Git 和 two-step Agent 调用，并管理两步共享的任务超时预算。
+- `review_set.py`：ReviewSet 预检、ReqID/refs 信任边界、确定性 manifest 与多成员 workspace。
+- `review_set_result.py` / `review_set_publish.py` / `review_set_report.py`：联合 plan/result 严格解析、责任 target 校验/幂等发布和聚合 Markdown。
+- `reviewer.py`：共用 review core，串联 GitLab、Git 和 Agent；ReviewSet 固定两次调用并共享任务剩余超时预算。
 - `review_result.py` / `inline_review.py` / `markdown_report.py`：审查计划与 review JSON 解析、finding 行定位校验、GitLab inline 发布结果整理和本地 Markdown 报告渲染。
 - `opencode.py`：AgentRunner protocol、OpenCode/Claude Code adapter、debug 参数和 prompt 日志脱敏。
 - `state.py`：IM poll 的本地去重状态文件，避免重复处理同一条 IM 消息。

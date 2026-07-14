@@ -71,6 +71,19 @@ class GitLabClient:
         project = urllib.parse.quote(mr.project_path, safe="")
         return self._get_json(f"/projects/{project}/merge_requests/{mr.mr_iid}")
 
+    def get_project(self, project_path: str) -> dict:
+        project = urllib.parse.quote(project_path, safe="")
+        result = self._get_json(f"/projects/{project}")
+        if not isinstance(result, dict):
+            raise ValueError("GitLab project response must be an object")
+        return result
+
+    def get_review_set_merge_request(self, project_id: int, mr_iid: int) -> dict:
+        result = self._get_json(f"/projects/{project_id}/isource/merge_requests/{mr_iid}")
+        if not isinstance(result, dict):
+            raise ValueError("GitLab ReviewSet MR detail response must be an object")
+        return result
+
     def get_mr_detail_for_discussion_position(self, target) -> dict:
         project = urllib.parse.quote(target.project_path, safe="")
         return self._get_json(f"/projects/{project}/merge_requests/{target.mr_iid}")
@@ -91,10 +104,17 @@ class GitLabClient:
 
     def list_mr_discussions(self, target) -> list[dict]:
         project = urllib.parse.quote(target.project_path, safe="")
-        discussions = self._get_json(f"/projects/{project}/merge_requests/{target.mr_iid}/discussions")
-        if not isinstance(discussions, list):
-            raise ValueError("GitLab discussions response must be a list")
-        return discussions
+        base_path = f"/projects/{project}/merge_requests/{target.mr_iid}/discussions"
+        discussions = []
+        page = 1
+        while True:
+            batch = self._get_json(f"{base_path}?per_page=100&page={page}")
+            if not isinstance(batch, list):
+                raise ValueError("GitLab discussions response must be a list")
+            discussions.extend(batch)
+            if len(batch) < 100:
+                return discussions
+            page += 1
 
     def post_mr_discussion(self, target, body: str, severity: str, position: dict) -> dict:
         project = urllib.parse.quote(target.project_path, safe="")

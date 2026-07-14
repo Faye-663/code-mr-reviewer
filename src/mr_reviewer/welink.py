@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import subprocess
 import tempfile
 import uuid
+from pathlib import Path
 
 from mr_reviewer.config import Config
 from mr_reviewer.gitlab import GitLabMrUrl
@@ -57,25 +59,67 @@ def poll_messages(config: Config):
 
 
 def reply(config: Config, markdown: str, mr: GitLabMrUrl) -> None:
-    if not config.im_reply_command:
-        raise ValueError("IM reply command is required")
-    group_id = _require_welink_group_id(config)
-
     project_name = mr.project_path.split("/")[-1]
+    prefix = f"review-{project_name}-mr-{mr.mr_iid}"
+    _reply_report(
+        config,
+        markdown,
+        prefix,
+        "代码审查报告已上传到 WeLink OneBox，群空间Review目录下: {file_name}",
+    )
+
+
+def reply_review_set(
+        config: Config,
+        markdown: str,
+        review_set_id: str,
+        publish_counts: dict[str, int],
+) -> None:
+    prefix = f"review-set-{review_set_id[:12]}"
+    posted = publish_counts.get("posted_inline", 0) + publish_counts.get("posted_note", 0)
+    failed = (
+        publish_counts.get("failed", 0)
+        + publish_counts.get("invalid", 0)
+        + publish_counts.get("model_not_configured", 0)
+    )
+    _reply_report(
+        config,
+        markdown,
+        prefix,
+        "联合代码审查报告已上传到 WeLink OneBox，群空间Review目录下: {file_name}；"
+        f"已发布 {posted} 条，异常/无效 {failed} 条。",
+        exact_file_name=f"{prefix}.md",
+    )
+
+
+def _reply_report(
+        config: Config,
+        markdown: str,
+        prefix: str,
+        success_text: str,
+        exact_file_name: str | None = None,
+) -> None:
     random_suffix = uuid.uuid4().hex[:6]
-    prefix = f"review-{project_name}-mr-{mr.mr_iid}-{random_suffix}"
+    file_prefix = f"{prefix}-{random_suffix}"
     file_path = None
+    temp_dir = None
     try:
         # WeLink 群消息不适合承载完整 Markdown，先落临时文件再上传 OneBox。
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            suffix=".md",
-            delete=False,
-            encoding="utf-8",
-            prefix=prefix,
-        ) as f:
-            f.write(markdown)
-            file_path = f.name
+        if exact_file_name:
+            # 唯一目录隔离并发任务，同时保留 ReviewSet 对外约定的稳定文件名。
+            temp_dir = tempfile.mkdtemp(prefix="mr-reviewer-report-")
+            file_path = str(Path(temp_dir) / exact_file_name)
+            Path(file_path).write_text(markdown, encoding="utf-8")
+        else:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                suffix=".md",
+                delete=False,
+                encoding="utf-8",
+                prefix=file_prefix,
+            ) as f:
+                f.write(markdown)
+                file_path = f.name
 
         file_name = os.path.basename(file_path)
         upload_error = upload_report(config, file_path, markdown)
@@ -87,31 +131,46 @@ def reply(config: Config, markdown: str, mr: GitLabMrUrl) -> None:
                 f"错误: {upload_error}"
             )
         else:
-            notify_text = f"代码审查报告已上传到 WeLink OneBox，群空间Review目录下: {file_name}"
-        LOG.info("stage=im_send group_id=%s text_chars=%s", group_id, len(notify_text))
-        reply_args = split_command(config.im_reply_command) + [
-            "--group-id",
-            group_id,
-            "--text",
-            notify_text,
-        ]
-        reply_result = subprocess.run(
-            prepare_command(reply_args),
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            capture_output=True,
-            check=False,
-        )
-        write_debug_text("im", "send-stdout", ".log", reply_result.stdout or "", config.gitlab_token)
-        write_debug_text("im", "send-stderr", ".log", reply_result.stderr or "", config.gitlab_token)
-        LOG.info("stage=im_send_result returncode=%s stdout_chars=%s stderr_chars=%s", reply_result.returncode, len(reply_result.stdout or ""), len(reply_result.stderr or ""))
-        if reply_result.returncode != 0:
-            raise RuntimeError(f"IM reply command failed: {reply_result.stderr.strip()}")
+            notify_text = success_text.format(file_name=file_name)
+        send_text(config, notify_text)
     finally:
-        if file_path and os.path.exists(file_path):
+        if temp_dir:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            LOG.info("stage=file_cleanup path=%s", file_path)
+        elif file_path and os.path.exists(file_path):
             os.remove(file_path)
             LOG.info("stage=file_cleanup path=%s", file_path)
+
+
+def send_text(config: Config, text: str) -> None:
+    if not config.im_reply_command:
+        raise ValueError("IM reply command is required")
+    group_id = _require_welink_group_id(config)
+    LOG.info("stage=im_send group_id=%s text_chars=%s", group_id, len(text))
+    reply_args = split_command(config.im_reply_command) + [
+        "--group-id",
+        group_id,
+        "--text",
+        text,
+    ]
+    reply_result = subprocess.run(
+        prepare_command(reply_args),
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        check=False,
+    )
+    write_debug_text("im", "send-stdout", ".log", reply_result.stdout or "", config.gitlab_token)
+    write_debug_text("im", "send-stderr", ".log", reply_result.stderr or "", config.gitlab_token)
+    LOG.info(
+        "stage=im_send_result returncode=%s stdout_chars=%s stderr_chars=%s",
+        reply_result.returncode,
+        len(reply_result.stdout or ""),
+        len(reply_result.stderr or ""),
+    )
+    if reply_result.returncode != 0:
+        raise RuntimeError(f"IM reply command failed: {reply_result.stderr.strip()}")
 
 
 def upload_report(config: Config, file_path: str, markdown: str) -> str | None:

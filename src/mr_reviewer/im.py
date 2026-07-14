@@ -28,6 +28,18 @@ class ReviewRequest:
     mr: GitLabMrUrl
 
 
+@dataclass(frozen=True, slots=True)
+class ReviewSetRequest:
+    message: ImMessage
+    members: tuple[GitLabMrUrl, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewSetRejection:
+    message: ImMessage
+    reason_code: str
+
+
 def parse_poll_output(stdout: str) -> list[ImMessage]:
     payload = json.loads(stdout or "[]")
     raw_messages = _extract_messages(payload)
@@ -79,7 +91,10 @@ def _normalize_message(raw: dict) -> dict:
     }
 
 
-def should_trigger_review(message: ImMessage, config: Config) -> ReviewRequest | None:
+def resolve_review_trigger(
+        message: ImMessage,
+        config: Config,
+) -> ReviewRequest | ReviewSetRequest | ReviewSetRejection | None:
     # WeLink 的展示名可能变化，优先用 atAccountList 精确识别 bot 账号。
     mentioned_by_text = bool(config.bot_mention and config.bot_mention in message.text)
     mentioned_by_account = bool(config.bot_account and message.at and config.bot_account in message.at_account_list)
@@ -90,15 +105,38 @@ def should_trigger_review(message: ImMessage, config: Config) -> ReviewRequest |
     if config.allowed_users and message.sender_id not in config.allowed_users:
         return None
 
+    members: list[GitLabMrUrl] = []
+    seen = set()
     for match in URL_RE.finditer(message.text):
         try:
             mr = parse_gitlab_mr_url(match.group(0).rstrip(".,;"), config.gitlab_base_url)
         except ValueError:
             continue
+        identity = (mr.project_path, mr.mr_iid)
+        if identity not in seen:
+            seen.add(identity)
+            members.append(mr)
+
+    if not members:
+        return None
+    if len(members) == 1:
+        mr = members[0]
         if config.allowed_repos and mr.project_path not in config.allowed_repos:
             return None
         return ReviewRequest(message=message, mr=mr)
-    return None
+    if len(members) > 3:
+        return ReviewSetRejection(message, "too_many_mrs")
+    if len({mr.project_path for mr in members}) != len(members):
+        return ReviewSetRejection(message, "same_project")
+    if config.allowed_repos and any(mr.project_path not in config.allowed_repos for mr in members):
+        return ReviewSetRejection(message, "repo_not_allowed")
+    return ReviewSetRequest(message, tuple(members))
+
+
+def should_trigger_review(message: ImMessage, config: Config) -> ReviewRequest | None:
+    """保留现有单 MR 调用方兼容性；联合请求由新的入口显式接管。"""
+    result = resolve_review_trigger(message, config)
+    return result if isinstance(result, ReviewRequest) else None
 
 def build_welink_reply_args(command: str, group_id: str, markdown: str) -> list[str]:
     return split_command(command) + ["--group-id", group_id, "--text", markdown]

@@ -200,6 +200,7 @@ class WebhookReviewQueue:
                 failure_stage = exc.stage if isinstance(exc, ReviewStageError) else ""
                 agent_call_count = exc.agent_call_count if isinstance(exc, ReviewStageError) else 0
                 routing = resolve_review_routing(event.target.title)
+                report_context = exc.report_context if isinstance(exc, ReviewStageError) else {}
                 failure_report = ReviewReport(
                     markdown="",
                     summary=None,
@@ -210,9 +211,21 @@ class WebhookReviewQueue:
                     submission_status="failed",
                     failure_stage=failure_stage,
                     title=event.target.title,
-                    review_mode=routing.review_mode,
+                    requested_review_mode=str(report_context.get("requested_review_mode") or routing.review_mode),
+                    review_mode=str(report_context.get("review_mode") or routing.review_mode),
+                    review_scope=str(report_context.get("review_scope") or "single"),
                     routing_reason=routing.routing_reason,
                     routing_marker=routing.routing_marker,
+                    dependency_context_status=str(
+                        report_context.get("dependency_context_status") or "not_applicable"
+                    ),
+                    dependency_degradation_reason=str(
+                        report_context.get("dependency_degradation_reason") or ""
+                    ),
+                    dependency_failed_project=str(report_context.get("dependency_failed_project") or ""),
+                    dependency_context_id=str(report_context.get("dependency_context_id") or ""),
+                    dependency_repositories=list(report_context.get("dependency_repositories") or []),
+                    dependency_preparation_seconds=report_context.get("dependency_preparation_seconds"),
                     agent_call_count=agent_call_count,
                 )
                 try:
@@ -384,9 +397,18 @@ def write_webhook_monitor_report(
         "notes": report.notes or [],
         "test_gaps": report.test_gaps or [],
         "prompt_templates": report.prompt_templates or {},
+        "requested_review_mode": report.requested_review_mode or report.review_mode,
         "review_mode": report.review_mode,
+        "review_scope": report.review_scope,
         "routing_reason": report.routing_reason,
         "routing_marker": report.routing_marker,
+        "dependency_context_status": report.dependency_context_status,
+        "dependency_degradation_reason": report.dependency_degradation_reason,
+        "dependency_failed_project": report.dependency_failed_project,
+        "dependency_context_id": report.dependency_context_id,
+        "dependency_repositories": report.dependency_repositories or [],
+        "dependency_preparation_seconds": report.dependency_preparation_seconds,
+        "dependency_relationship_summary": report.dependency_relationship_summary or [],
         "agent_call_count": report.agent_call_count,
     }
     if report.structured_parse_status:

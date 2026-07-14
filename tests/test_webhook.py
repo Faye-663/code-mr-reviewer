@@ -475,9 +475,29 @@ def test_webhook_worker_records_review_stage_failure_with_completed_plan(tmp_pat
     class FailingReviewService:
         def review_target(self, target, config, task_id, structured_output=False):
             raise ReviewStageError(
-                "review",
+                "dependency_review",
                 RuntimeError("agent unavailable"),
                 _review_plan(),
+                2,
+                {
+                    "requested_review_mode": "two-step",
+                    "review_mode": "two-step",
+                    "review_scope": "dependency-review",
+                    "dependency_context_status": "complete",
+                    "dependency_degradation_reason": "",
+                    "dependency_failed_project": "",
+                    "dependency_context_id": "context-123",
+                    "dependency_repositories": [
+                        {
+                            "repo_id": "p202",
+                            "project_path": "team/sdk",
+                            "branch": "main",
+                            "commit_sha": "c" * 40,
+                            "preparation_seconds": 1.0,
+                        }
+                    ],
+                    "dependency_preparation_seconds": 1.2,
+                },
             )
 
     queue = WebhookReviewQueue(
@@ -492,12 +512,16 @@ def test_webhook_worker_records_review_stage_failure_with_completed_plan(tmp_pat
 
     report = json.loads(next(tmp_path.glob("*.json")).read_text(encoding="utf-8"))
     assert report["status"] == "failed"
-    assert report["failure_stage"] == "review"
+    assert report["failure_stage"] == "dependency_review"
+    assert report["requested_review_mode"] == "two-step"
+    assert report["review_scope"] == "dependency-review"
+    assert report["dependency_context_status"] == "complete"
+    assert report["dependency_repositories"][0]["project_path"] == "team/sdk"
     assert report["summary"] is None
     assert report["review_plan"]["change_intent"] == ["修复认证流程"]
     markdown = Path(report["markdown_report_path"]).read_text(encoding="utf-8")
     assert "修复认证流程" in markdown
-    assert "失败阶段：review" in markdown
+    assert "失败阶段：dependency_review" in markdown
 
 
 class _RecordingReviewService:

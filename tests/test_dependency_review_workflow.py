@@ -1,4 +1,5 @@
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -381,3 +382,17 @@ def test_invalid_dependency_result_records_second_stage_and_cleans(tmp_path: Pat
     assert exc_info.value.report_context["dependency_context_status"] == "complete"
     assert len(runner.calls) == 2
     assert not (tmp_path / task_id).exists()
+
+
+def test_joint_review_logs_exact_dependency_commits_and_preparation_time(tmp_path: Path, caplog):
+    with caplog.at_level(logging.INFO, logger="mr_reviewer"):
+        _review(
+            ReviewService(_GitLab("【Deep-Review】 Contract"), _Git(), _Runner()),
+            _config(tmp_path, _write_catalog(tmp_path / "catalog.json", ["team/repo-b"])),
+            "dependency-log",
+        )
+
+    log_text = "\n".join(record.getMessage() for record in caplog.records)
+    assert "requested_review_mode=two-step review_mode=two-step review_scope=dependency-review" in log_text
+    assert "project=team/repo-b branch=release commit=" + "c" * 40 in log_text
+    assert "elapsed=" in log_text

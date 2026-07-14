@@ -302,6 +302,22 @@ class ReviewService:
                         task_dir=task_dir,
                     )
                     dependency_preparation_seconds = prepared.preparation_seconds
+                    for dependency in prepared.dependencies:
+                        LOG.info(
+                            "task=%s stage=dependency_prepare status=ready project=%s branch=%s "
+                            "commit=%s elapsed=%.3fs",
+                            task_id,
+                            dependency.repository.project_path,
+                            dependency.repository.branch,
+                            dependency.repository.commit_sha,
+                            dependency.preparation_seconds,
+                        )
+                    LOG.info(
+                        "task=%s stage=dependency_prepare status=complete dependencies=%s elapsed=%.3fs",
+                        task_id,
+                        len(prepared.dependencies),
+                        dependency_preparation_seconds,
+                    )
                 except DependencyReviewPreparationError as exc:
                     dependency_preparation_seconds = time.monotonic() - preparation_started
                     dependency_failed_project = exc.project_path

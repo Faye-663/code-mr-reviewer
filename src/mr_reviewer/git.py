@@ -16,6 +16,17 @@ class ResourceLimitError(RuntimeError):
     pass
 
 
+class GitCommandError(RuntimeError):
+    def __init__(self, args: list[str], stderr: str) -> None:
+        super().__init__(f"git command failed: {stderr}")
+        self.command = tuple(args)
+        self.stderr = stderr
+
+
+class DependencyBranchMissingError(RuntimeError):
+    pass
+
+
 @dataclass(frozen=True, slots=True)
 class GitCheckout:
     target_repo_url: str
@@ -37,7 +48,7 @@ class GitClient:
         repo_path = work_dir / "repo"
         work_dir.mkdir(parents=True, exist_ok=True)
 
-        git_prefix, env = self._prepare_git_environment(checkout, token)
+        git_prefix, env = self._prepare_git_environment(checkout.target_repo_url, token)
         self._clone_target_repo(git_prefix, checkout, repo_path, work_dir, env)
         source_remote = self._ensure_source_remote(checkout, repo_path, env)
         self._fetch_review_refs(checkout, repo_path, source_remote, env)
@@ -59,10 +70,48 @@ class GitClient:
             "head_sha": checkout.head_sha,
         }
 
-    def _prepare_git_environment(self, checkout: GitCheckout, token: str) -> tuple[list[str], dict[str, str]]:
+    def clone_checkout_branch(self, repo_url: str, branch: str, token: str, repo_path: Path) -> str:
+        repo_path.parent.mkdir(parents=True, exist_ok=True)
+        git_prefix, env = self._prepare_git_environment(repo_url, token)
+        env.update({"LC_ALL": "C", "LANG": "C"})
+
+        self._run(["git", "check-ref-format", f"refs/heads/{branch}"], cwd=repo_path.parent, env=env)
+        self._run(["git", "init", str(repo_path)], cwd=repo_path.parent, env=env)
+        self._run(["git", "remote", "add", "origin", repo_url], cwd=repo_path, env=env)
+        try:
+            # 完整 refspec 和 --no-tags 共同保证不会解析默认分支、source branch 或 tag。
+            self._run(
+                [
+                    *git_prefix,
+                    "fetch",
+                    "--no-tags",
+                    "--no-recurse-submodules",
+                    "--refmap=",
+                    "origin",
+                    f"+refs/heads/{branch}:refs/remotes/origin/dependency-review",
+                ],
+                cwd=repo_path,
+                env=env,
+            )
+        except GitCommandError as exc:
+            if "couldn't find remote ref" in exc.stderr:
+                raise DependencyBranchMissingError(f"dependency branch does not exist: {branch}") from exc
+            raise
+
+        commit_sha = self._run(
+            ["git", "rev-parse", "--verify", "refs/remotes/origin/dependency-review^{commit}"],
+            cwd=repo_path,
+            env=env,
+        ).strip()
+        if not commit_sha:
+            raise RuntimeError("dependency branch did not resolve to a commit")
+        self._run(["git", "checkout", "--detach", commit_sha], cwd=repo_path, env=env)
+        return commit_sha
+
+    def _prepare_git_environment(self, repo_url: str, token: str) -> tuple[list[str], dict[str, str]]:
         env = os.environ.copy()
         git_prefix = ["git"]
-        if not checkout.target_repo_url.startswith("http") or not token:
+        if not repo_url.startswith("http") or not token:
             return git_prefix, env
 
         # 禁用 credential helper/GCM 弹窗；token 通过 Git 环境配置传入，避免出现在命令行。
@@ -176,7 +225,7 @@ class GitClient:
             check=False,
         )
         if result.returncode != 0:
-            raise RuntimeError(f"git command failed: {result.stderr.strip()}")
+            raise GitCommandError(args, result.stderr.strip())
         return result.stdout
 
     def _basic_auth_token(self, token: str) -> str:

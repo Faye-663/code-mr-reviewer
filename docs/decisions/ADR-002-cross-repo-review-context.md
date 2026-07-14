@@ -2,11 +2,17 @@
 
 ## Status
 
-Accepted（场景一进入实施；场景二尚未实施）
+Accepted（场景一 Implemented；场景二 Deferred）
 
 ## Date
 
 2026-07-14
+
+## Implementation status
+
+场景一已实现 IM 显式 ReviewSet、project path 到 `project_id` 再到 isource MR 的预检链路、精确多成员 checkout、固定 two-step、聚合报告和按责任 MR 幂等发布。场景二的内部 Maven 依赖源码上下文尚未实现，不得从本 ADR 的 Accepted 状态推断其已经可用。
+
+生产首次启用场景一时，应以 `MR_REVIEWER_REVIEW_SET_POST_COMMENT=false` 运行历史正反样本 dry-run；这属于 rollout 验收，不改变架构决策状态。
 
 ## Context
 
@@ -27,7 +33,7 @@ Accepted（场景一进入实施；场景二尚未实施）
 - 系统先按 MR URL 中的 project path 查询 `project_id`，再以 URL 中的 `iid` 调用 `GET /projects/{project_id}/isource/merge_requests/{iid}`；只读取该响应的 `e2e_issues[0].issue_num`，要求其为去除首尾空白后的非空字符串，并仅在全部成员值相同时继续。
 - webhook 保持单 MR 事件处理，不增加聚合状态、等待窗口或“变更集完整”推断。
 - 联合检视固定 two-step：先建立跨仓审查计划，再重新验证所有成员 diff；覆盖每个 MR 自身问题和组合问题。
-- 生成一个聚合报告。HIGH major/fatal finding 按 targets 回写责任 MR：可定位时使用 inline discussion，否则使用普通 comment。
+- 生成一个聚合报告。HIGH major/fatal finding 按 targets 回写责任 MR：可定位时使用 inline discussion；未提供位置或位置语法合法但无法映射当前 diff 时使用普通 note；未知成员、越界路径或非法行号不发布。
 
 项目信息、`isource` MR 详情和 `ReqID` 契约已由 `gitlab_mr_api.txt` 确认。实现不得从 MR URL 猜测 `project_id`，不得读取相近字段、猜测需求关联，或使用 `e2e_issues` 后续元素替代首元素。
 
@@ -105,7 +111,7 @@ Accepted（场景一进入实施；场景二尚未实施）
 - 联合任务固定两次 Agent 调用并最多 clone 3 个 MR，时延和失败面高于单 MR。
 - 单 MR 依赖质量取决于中央 GAV 目录和 release tag 约定的准确性。
 - 静态 Maven 子集无法覆盖动态 profile、远程 BOM、Gradle 和运行时组合，只能显式降级。
-- 多仓 Agent workspace 扩大了提示注入和文件访问面，必须先通过 adapter spike。
+- 多仓 Agent workspace 扩大了提示注入和文件访问面。自动化 adapter 契约测试和本机 Claude Code live smoke 已验证当前隔离方式；生产仍需对实际选用 adapter 执行 healthcheck。
 
 ### Operational constraints
 
@@ -113,7 +119,7 @@ Accepted（场景一进入实施；场景二尚未实施）
 - 不增加持久 clone cache；先采集 clone 耗时、上下文完整率和复用需求。
 - 不得在没有精确 tag 时 fallback 默认分支。
 - 不得静默忽略未解析或未入选的内部依赖。
-- 实施完成后将稳定行为折回 README、DESIGN 和入口指南，删除临时 requirements/implementation plan；ADR 保留。
+- 场景一稳定行为已经折回 README、DESIGN 和配置示例。临时 requirements/implementation plan 暂时保留场景二 Draft/Deferred 契约；场景二完成并同步长期文档后删除，ADR 保留。
 
 ## Future Decisions
 

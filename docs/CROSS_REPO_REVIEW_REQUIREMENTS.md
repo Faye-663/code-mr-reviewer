@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft（场景一契约已确认并进入实施；场景二仍为 Draft）
+Active（场景一 Implemented；场景二 Draft）
 
 ## Date
 
@@ -55,9 +55,9 @@ Draft（场景一契约已确认并进入实施；场景二仍为 Draft）
 系统必须在 clone 和 Agent 调用前：
 
 1. 按现有 host、用户、群组和仓库白名单校验每个 URL。
-2. 按 MR URL 的 project path 获取项目信息和 `project_id`，再用 `project_id` 与 URL 中的 `iid` 获取 MR 详情、target/source 仓库地址、base/start/head SHA 和 `ReqID`。
+2. 按 MR URL 的 project path 获取项目信息和 `project_id`，再用 `project_id` 与 URL 中的 `iid` 获取 isource MR 的 base/start/head SHA 和 `ReqID`；target/source 分支及项目地址继续通过现有标准 MR/project API 获取。
 3. 要求所有 `ReqID` 都存在且完全相同。
-4. 任一 MR 缺少 `ReqID`、字段无法读取或值不一致时，拒绝整个 ReviewSet；回复每个 MR 的校验结果，不降级为逐个检视。
+4. 任一 MR 缺少 `ReqID`、字段无法读取或值不一致时，拒绝整个 ReviewSet；向当前群发送稳定原因码对应的安全短文案，不泄漏原始响应或异常，也不降级为逐个检视。
 5. 任一成员 MR 元数据或源码无法获取时，联合检视失败，不产生部分评论。
 
 MR 详情的生产接口固定为 `GET /projects/{project_id}/isource/merge_requests/{iid}`，其中 `project_id` 来自 project path 查询，`iid` 来自 MR URL。`ReqID` 的生产解析路径固定为 `e2e_issues[0].issue_num`。`e2e_issues` 缺失、不是数组、数组为空、首元素不是对象、`issue_num` 缺失、不是字符串或去除首尾空白后为空时，均视为该成员缺少有效 `ReqID`。
@@ -69,19 +69,21 @@ MR 详情的生产接口固定为 `GET /projects/{project_id}/isource/merge_requ
   1. 第一阶段建立跨仓变更意图、调用路径、契约、不变量、发布顺序和验证计划，不输出 finding。
   2. 第二阶段重新读取每个 MR 的 diff 与源码验证计划，允许推翻计划并补充计划遗漏。
 - 所有成员 checkout 必须使用各自 GitLab MR API 返回的精确 base/head；不得使用默认分支代替。
-- 同一 `ReqID` 但未发现代码级依赖边时，仍完成各成员的单仓检视，并在聚合报告中明确“未发现可验证的跨仓调用关系”，不得编造关联。
+- 同一 `ReqID` 但未发现代码级依赖边时，仍完成各成员的单仓检视，并在聚合报告中明确“未发现可证实的跨仓关系”，不得编造关联。
 - ReviewSet 中任一成员超过现有单 MR 文件数或 diff 行数限制时，整个联合任务失败。聚合上限等于成员数乘以现有单 MR 上限。
-- clone、两次 Agent 调用和结果处理共享一个联合任务总超时预算。
+- 联合任务在预检前建立总截止时间；固定两次 Agent 调用共享扣除预检/checkout 耗时后的剩余预算。Git 命令继续沿用现有进程边界和资源限制。
 
 ### 4.4 结果与回写
 
-- 生成一份聚合 Markdown 报告，包含 `ReqID`、成员及 SHA、上下文状态、审查计划、跨仓证据、findings、test gaps 和发布结果。
+- 生成一份 basename 为 `review-set-<ReviewSet ID 前 12 位>.md` 的聚合 Markdown 报告，包含 `ReqID`、成员及 SHA、上下文状态、审查计划、跨仓证据、findings、责任位置、test gaps 和发布结果。
 - 每个 finding 必须声明一个或多个责任成员 MR；跨仓证据可以引用其它成员，但不能替代责任归属。
 - 只有 `confidence=HIGH` 且 `severity` 为 `major` 或 `fatal` 的 finding 自动回写。
-- 能映射到责任 MR diff 行时，发布 inline discussion；无法定位到具体 diff 行但仍有明确责任 MR 时，发布普通 MR comment。
-- 一个问题需要多个 MR 分别修改时，在各责任 MR 发布定点意见，并使用同一个 ReviewSet/finding marker 互相引用；不得向每个 MR 复制完整聚合报告。
+- 能映射到责任 MR diff 行时，发布 inline discussion；`position=null` 或语法合法但无法映射到当前 diff 时，发布普通 MR note。未知成员、越界路径或非法行号不得回退发布。
+- 一个问题需要多个 MR 分别修改时，在各责任 MR 发布定点意见，并使用同一个稳定 finding key 派生各 target marker；不得向每个 MR 复制完整聚合报告。
 - 所有其它 finding 只保留在聚合报告中。
 - 发布前按 ReviewSet、成员 head SHA、规则和目标位置生成稳定 marker，重复消息不得产生重复评论。
+- `MR_REVIEWER_REVIEW_SET_POST_COMMENT` 独立于 webhook 发布开关且默认 `true`；关闭时仍生成聚合报告并将候选标为 `disabled`。开关开启但 `MR_REVIEWER_AGENT_MODEL_NAME` 为空时不发布，任务标为 `success_with_warnings`。
+- 任务状态限定为 `rejected`、`failed`、`success`、`success_with_warnings`。拒绝与运行失败都会安全回复并终结原消息，重新执行必须发送新消息。
 
 ## 5. 场景二：单 MR 的内部依赖上下文
 
@@ -152,14 +154,20 @@ Maven 官方依赖能力和术语参考：[Apache Maven Dependency Plugin](https
 
 ### 8.1 功能验收
 
+场景一（Implemented）：
+
 - 1 个 MR 保持现有单 MR 行为；2–3 个不同项目且 `ReqID` 相同的 MR 形成 ReviewSet。
 - 缺少/不一致 `ReqID`、相同项目或超过 3 个 MR 时确定性拒绝，不调用 Agent。
 - 联合审查固定两次 Agent 调用，并生成一个聚合报告。
-- 跨仓 finding 能正确归属一个或多个成员；高置信重大问题按位置发布 inline 或降级为普通 comment。
-- ReviewSet 失败时不产生部分评论；重复请求不产生重复评论。
+- 跨仓 finding 能正确归属一个或多个成员；高置信重大问题按位置发布 inline，或在目标合法但不可定位时降级为普通 note。
+- 预检、Agent 或结构化解析失败时不产生评论；发布阶段单目标失败不回滚其它已发布评论，任务转为 `success_with_warnings`；重复请求不产生重复评论。
+- 公开发布开关默认开启、可独立关闭；缺少 model name 时聚合报告仍生成但不发布评论。
+- 现有 webhook 单 MR、IM 单 MR、title 路由和结构化单 MR finding 契约保持兼容。
+
+场景二（Draft，尚未实现）：
+
 - 单 MR 能在支持的 Maven 子集中 clone 最多 3 个精确 tag 依赖，并把来源写入报告。
 - 单 MR 依赖解析失败时仍完成单仓审查，报告明确显示 `degraded` 和未验证范围。
-- 现有 webhook 单 MR、IM 单 MR、title 路由和结构化单 MR finding 契约保持兼容。
 
 ### 8.2 历史样本对照
 
@@ -182,5 +190,6 @@ Maven 官方依赖能力和术语参考：[Apache Maven Dependency Plugin](https
 ## 10. 外部前置条件
 
 - GitLab 项目信息 API 必须按 project path 提供 `project_id`，MR 详情 API `GET /projects/{project_id}/isource/merge_requests/{iid}` 必须继续提供精确 `diff_refs` 和 `e2e_issues[0].issue_num` 非空字符串；示例响应见仓库根目录 `gitlab_mr_api.txt`。
-- 部署方建立并维护中央 GAV 源码目录，保证 tag template 能解析到不可变源码 ref。
-- OpenCode 与 Claude Code 多 sibling repo 可读性和仓库提示隔离 spike 通过后，才能开始联合 Agent 实现。
+- 生产启用的 Agent adapter 必须通过 healthcheck。自动化契约测试覆盖 OpenCode/Claude Code 的 ReviewSet cwd 与提示隔离；本机 Claude Code sibling repo live smoke 已通过，本机未安装 OpenCode，因此未执行其 live smoke。
+- 场景一首次生产验证必须先设置 `MR_REVIEWER_REVIEW_SET_POST_COMMENT=false` 对历史正反样本 dry-run，人工复核后再受控开启评论。
+- 场景二开始前，部署方需要建立并维护中央 GAV 源码目录，保证 tag template 能解析到不可变源码 ref。

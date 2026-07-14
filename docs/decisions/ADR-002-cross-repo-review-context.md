@@ -2,11 +2,11 @@
 
 ## Status
 
-Proposed（已形成推荐方向，功能尚未实施，`ReqID` API 契约待补充）
+Accepted（场景一进入实施；场景二尚未实施）
 
 ## Date
 
-2026-07-12
+2026-07-14
 
 ## Context
 
@@ -24,12 +24,12 @@ Proposed（已形成推荐方向，功能尚未实施，`ReqID` API 契约待补
 ### 1. 多 MR 使用显式 ReviewSet
 
 - ReviewSet 只由一条 WeLink IM 消息中的 2–3 个不同项目 MR URL 显式创建。
-- 系统读取 GitLab MR 详情中的非空 `ReqID`，仅在全部相同时继续；缺失或不一致时拒绝整个请求。
+- 系统先按 MR URL 中的 project path 查询 `project_id`，再以 URL 中的 `iid` 调用 `GET /projects/{project_id}/isource/merge_requests/{iid}`；只读取该响应的 `e2e_issues[0].issue_num`，要求其为去除首尾空白后的非空字符串，并仅在全部成员值相同时继续。
 - webhook 保持单 MR 事件处理，不增加聚合状态、等待窗口或“变更集完整”推断。
 - 联合检视固定 two-step：先建立跨仓审查计划，再重新验证所有成员 diff；覆盖每个 MR 自身问题和组合问题。
 - 生成一个聚合报告。HIGH major/fatal finding 按 targets 回写责任 MR：可定位时使用 inline discussion，否则使用普通 comment。
 
-`ReqID` 的真实 API 字段路径、类型与空值语义是本 ADR 转为 Accepted 和开始生产实现前必须补齐的外部契约。
+项目信息、`isource` MR 详情和 `ReqID` 契约已由 `gitlab_mr_api.txt` 确认。实现不得从 MR URL 猜测 `project_id`，不得读取相近字段、猜测需求关联，或使用 `e2e_issues` 后续元素替代首元素。
 
 ### 2. 单 MR 使用确定性的 Dependency Context Resolver
 

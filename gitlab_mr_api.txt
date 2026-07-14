@@ -2,7 +2,7 @@
 
 ## URL
 
-https://api.xxx.com/api/api/v4/projects/{id}/merge_requests/{noteable_id}/discussions
+https://api.xxx.com/api/v4/projects/{id}/merge_requests/{noteable_id}/discussions
 
 参数：
 
@@ -72,7 +72,7 @@ https://api.xxx.com/api/api/v4/projects/{id}/merge_requests/{noteable_id}/discus
 
 ## URL
 GET
-https://api.xxx.com/api/api/v4/projects/{project_id}/merge_requests/{iid}
+https://api.xxx.com/api/v4/projects/{project_id}/isource/merge_requests/{iid}
 
 参数：
 
@@ -96,7 +96,39 @@ https://api.xxx.com/api/api/v4/projects/{project_id}/merge_requests/{iid}
         "base_sha": "f6f51e5fb950d36908f4c35ee79a3e3e05668e4f",
         "head_sha": "160a832ad983cea7e2a9872f3421f5ee4c36b62c",
         "start_sha": "37b257aa52223fc6bd69d9fae56bc778b3451983"
+    },
+    "e2e_issues": [
+    {
+        "issue_num": "US20260714100001"
     }
+    ]
 }
 
 失败：httpCode 500
+
+
+# 获取项目信息
+
+  接口地址
+  GET https://api.xxx.com/api/v4/projects/{project_path}
+
+  路径参数
+
+  ┌──────────────┬────────┬──────────────────────────────────────────────────────────┐
+  │     参数     │  类型  │                           描述                           │
+  ├──────────────┼────────┼──────────────────────────────────────────────────────────┤
+  │ project_path │ string │ 项目路径，需 URL 编码。
+  └──────────────┴────────┴──────────────────────────────────────────────────────────┘
+示例：
+MR URL：https://api.xxx.com/d001010/code-mr-reviewer/merge_requests/10
+project_path是d001010/code-mr-reviewer
+URL编码后是d001010%2Fcode-mr-reviewer
+
+  成功响应（200）
+  {
+    "id": 12345,
+    "name": "code-mr-reviewer",
+    "path": "code-mr-reviewer",
+    "path_with_namespace": "d00808710/code-mr-reviewer",
+    ...
+  }

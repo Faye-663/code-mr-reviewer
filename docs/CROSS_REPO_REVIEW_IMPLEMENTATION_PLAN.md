@@ -2,11 +2,11 @@
 
 ## Status
 
-Draft（仅规划，功能尚未实施）
+Active（本轮仅实现场景一；场景二暂缓）
 
 ## Date
 
-2026-07-12
+2026-07-14
 
 ## 1. 输入与实施边界
 
@@ -99,8 +99,9 @@ ReviewSetManifest
   resource_limits
 ```
 
-- `review_set_id` 由 `ReqID` 与按 project path 排序后的 `project/iid@head_sha` 计算，不包含 token。
-- `member_id` 使用稳定、无路径穿越风险的短标识；manifest 保存真实 project path。
+- 先按 MR URL 的 project path 调用项目信息 API 获取 `project_id`，再以 URL 中的 `iid` 调用 `GET /projects/{project_id}/isource/merge_requests/{iid}`；`ReqID` 只读取该详情响应的 `e2e_issues[0].issue_num`，并要求其为去除首尾空白后的非空字符串。
+- `review_set_id` 由 `ReqID` 与排序后的 `project_id/iid@head_sha` 计算 SHA-256，不包含 token；成员顺序不影响结果。
+- `member_id` 固定为 `p<project_id>-mr<iid>`；manifest 同时保存真实 project path。
 - manifest 使用 UTF-8 JSON 写入任务目录，由 Python 生成，Agent 不得修改后反向影响发布目标。
 
 ### 4.2 联合 review 输出
@@ -219,7 +220,7 @@ spike 必须证明：
 
 目标：在修改业务流程前消除两个高风险未知项。
 
-- 根据用户补充的 GitLab API 文档实现并测试唯一 `ReqID` accessor；缺失、null、空字符串和错误类型均返回明确校验错误。
+- 根据 `gitlab_mr_api.txt` 实现并测试两段式查询与唯一 `ReqID` accessor：project path 查询只提供 `project_id`，MR `iid` 取自 URL，详情使用 `/projects/{project_id}/isource/merge_requests/{iid}`；只读取 `e2e_issues[0].issue_num`，缺失、空数组、null、空字符串和错误类型均返回明确校验错误。
 - 完成 OpenCode/Claude Code sibling repo 与提示隔离 spike。
 - 冻结 ReviewSet manifest、联合 review JSON 和中央目录 schema v1。
 
@@ -355,7 +356,6 @@ GitLab 位置与普通讨论能力以官方 [Discussions API](https://docs.gitla
 
 ## 10. 阻塞项
 
-- GitLab MR 详情 API 中 `ReqID` 的真实字段契约尚未提供。
 - OpenCode/Claude Code 多 sibling repo 与提示隔离能力尚未验证。
 
-这两个阻塞项解决前，可以实现无外部副作用的 domain/schema tests，但不得宣称生产联合检视可用。
+`ReqID` 外部契约已经补齐。adapter 自动化契约测试和本机已安装 adapter 的 live smoke 完成前，不得宣称生产联合检视可用。

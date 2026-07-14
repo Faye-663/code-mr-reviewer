@@ -2,11 +2,11 @@
 
 ## Status
 
-Draft（需求已讨论，`ReqID` API 契约待补充，功能尚未实施）
+Draft（场景一契约已确认并进入实施；场景二仍为 Draft）
 
 ## Date
 
-2026-07-12
+2026-07-14
 
 ## 1. 背景
 
@@ -34,7 +34,7 @@ Draft（需求已讨论，`ReqID` API 契约待补充，功能尚未实施）
 
 - **ReviewSet**：一条 IM 消息显式提交的 2–3 个不同仓库 MR，代表一次联合检视任务。
 - **成员 MR**：ReviewSet 中的单个 MR。
-- **ReqID**：GitLab MR 详情 API 返回的需求标识。真实字段路径、类型和空值语义尚待用户补充 API 文档；实现不得猜测或从相近字段推导。
+- **ReqID**：先按 MR URL 中的 project path 查询项目信息取得 `project_id`，再以 URL 中的 MR `iid` 调用 `GET /projects/{project_id}/isource/merge_requests/{iid}`，读取响应中 `e2e_issues[0].issue_num` 的值。该值必须是去除首尾空白后的非空字符串；实现只读取数组首元素，不从相近字段推导，也不校验后续元素。
 - **内部依赖**：中央依赖目录中存在 GAV 映射、且源码位于同一受信 GitLab 组织内的 Maven 直接依赖。
 - **依赖上下文**：按精确版本 tag clone 的内部依赖只读源码及其来源元数据。
 - **完整上下文**：计划需要的成员 MR 或内部依赖源码均已按精确 ref 获取。
@@ -55,12 +55,12 @@ Draft（需求已讨论，`ReqID` API 契约待补充，功能尚未实施）
 系统必须在 clone 和 Agent 调用前：
 
 1. 按现有 host、用户、群组和仓库白名单校验每个 URL。
-2. 获取每个 MR 的详情、target/source 仓库地址、base/head SHA 和 `ReqID`。
+2. 按 MR URL 的 project path 获取项目信息和 `project_id`，再用 `project_id` 与 URL 中的 `iid` 获取 MR 详情、target/source 仓库地址、base/start/head SHA 和 `ReqID`。
 3. 要求所有 `ReqID` 都存在且完全相同。
 4. 任一 MR 缺少 `ReqID`、字段无法读取或值不一致时，拒绝整个 ReviewSet；回复每个 MR 的校验结果，不降级为逐个检视。
 5. 任一成员 MR 元数据或源码无法获取时，联合检视失败，不产生部分评论。
 
-`ReqID` 的真实 API 契约是实施前置条件。在契约补齐前，文档和测试可使用名为 `ReqID` 的占位字段，但不得据此实现生产解析路径。
+MR 详情的生产接口固定为 `GET /projects/{project_id}/isource/merge_requests/{iid}`，其中 `project_id` 来自 project path 查询，`iid` 来自 MR URL。`ReqID` 的生产解析路径固定为 `e2e_issues[0].issue_num`。`e2e_issues` 缺失、不是数组、数组为空、首元素不是对象、`issue_num` 缺失、不是字符串或去除首尾空白后为空时，均视为该成员缺少有效 `ReqID`。
 
 ### 4.3 审查行为
 
@@ -181,6 +181,6 @@ Maven 官方依赖能力和术语参考：[Apache Maven Dependency Plugin](https
 
 ## 10. 外部前置条件
 
-- 用户补充 GitLab MR 详情 API 中 `ReqID` 的真实字段路径、类型、缺失/空值语义和示例响应。
+- GitLab 项目信息 API 必须按 project path 提供 `project_id`，MR 详情 API `GET /projects/{project_id}/isource/merge_requests/{iid}` 必须继续提供精确 `diff_refs` 和 `e2e_issues[0].issue_num` 非空字符串；示例响应见仓库根目录 `gitlab_mr_api.txt`。
 - 部署方建立并维护中央 GAV 源码目录，保证 tag template 能解析到不可变源码 ref。
 - OpenCode 与 Claude Code 多 sibling repo 可读性和仓库提示隔离 spike 通过后，才能开始联合 Agent 实现。

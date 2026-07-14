@@ -76,6 +76,7 @@ class Config:
     webhook_secret: str = ""
     webhook_secret_header: str = "X-Gitlab-Token"
     webhook_post_comment: bool = True
+    review_set_post_comment: bool = True
     report_dir: Path = Path("log/webhook-reports")
     max_files: int = 50
     max_diff_lines: int = 2000
@@ -160,6 +161,7 @@ class Config:
             webhook_secret=get("WEBHOOK_SECRET"),
             webhook_secret_header=get("WEBHOOK_SECRET_HEADER", "X-Gitlab-Token"),
             webhook_post_comment=_parse_bool(get("WEBHOOK_POST_COMMENT", "true")),
+            review_set_post_comment=_parse_bool(get("REVIEW_SET_POST_COMMENT", "true")),
             report_dir=Path(get("REPORT_DIR", "log/webhook-reports")),
             max_files=int(get("MAX_FILES", "50")),
             max_diff_lines=int(get("MAX_DIFF_LINES", "2000")),

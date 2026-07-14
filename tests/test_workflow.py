@@ -401,6 +401,147 @@ def test_poll_once_runs_review_and_replies(tmp_path: Path):
     assert " 763 " not in upload_text
 
 
+def test_poll_once_runs_review_set_and_uploads_aggregate_report(tmp_path: Path):
+    def create_repo(name: str, file_name: str, base_text: str, head_text: str) -> tuple[Path, str, str]:
+        repo = tmp_path / name
+        subprocess.run(["git", "init", str(repo)], check=True, stdout=subprocess.DEVNULL)
+        subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+        (repo / file_name).write_text(base_text, encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", file_name], check=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-m", "base"], check=True, stdout=subprocess.DEVNULL)
+        subprocess.run(["git", "-C", str(repo), "branch", "main"], check=True)
+        base = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+        subprocess.run(["git", "-C", str(repo), "checkout", "-b", "feature"], check=True, stdout=subprocess.DEVNULL)
+        (repo / file_name).write_text(head_text, encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "commit", "-am", "head"], check=True, stdout=subprocess.DEVNULL)
+        head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+        return repo, base, head
+
+    app_repo, app_base, app_head = create_repo("app-origin", "app.py", "value = 1\n", "value = 2\n")
+    sdk_repo, sdk_base, sdk_head = create_repo("sdk-origin", "sdk.py", "VALUE = 1\n", "VALUE = 2\n")
+    poll_script = tmp_path / "poll-review-set.py"
+    reply_script = tmp_path / "reply-review-set.py"
+    reply_file = tmp_path / "reply-review-set.json"
+    agent_script = tmp_path / "review-set-agent.py"
+    agent_calls = tmp_path / "agent-calls.txt"
+    gitlab_file = tmp_path / "review-set-gitlab.json"
+    uploaded_report = tmp_path / "uploaded-review-set.md"
+    upload_script = tmp_path / "upload-review-set.py"
+    bin_dir = tmp_path / "review-set-bin"
+    bin_dir.mkdir()
+
+    poll_script.write_text(
+        "import json\n"
+        "print(json.dumps({'resultCode':'0','respData':{'chatInfo':[{'msgId':2,'groupId':'c1','sender':'u1','content':'@ReviewBot https://gitlab.example.com/team/app/merge_requests/7 https://gitlab.example.com/team/sdk/merge_requests/8','serverSendTime':'now','at':True,'atAccountList':['bot001']}]}}))\n",
+        encoding="utf-8",
+    )
+    reply_script.write_text(
+        "import json, pathlib, sys\n"
+        "pathlib.Path(sys.argv[1]).write_text(json.dumps(sys.argv[2:], ensure_ascii=False), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    agent_script.write_text(
+        "import json, pathlib, sys\n"
+        "sys.stdout.reconfigure(encoding='utf-8')\n"
+        f"calls = pathlib.Path({str(agent_calls)!r})\n"
+        "prompt = pathlib.Path(sys.argv[sys.argv.index('--file') + 1]).read_text(encoding='utf-8')\n"
+        "manifest = json.loads(pathlib.Path('review-set.json').read_text(encoding='utf-8'))\n"
+        "assert all(pathlib.Path(item['repo_path']).joinpath('.git').exists() for item in manifest['members'])\n"
+        "with calls.open('a', encoding='utf-8') as stream: stream.write(('plan' if 'review-set-plan/v1' in prompt and '不输出 finding' in prompt else 'review') + '\\n')\n"
+        "if '不输出 finding' in prompt:\n"
+        "    print(json.dumps({'schema_version':'review-set-plan/v1','member_focus':[{'member_id':item['member_id'],'change_intent':['verify member'],'critical_paths':[{'path':'app.py' if item['project_path'].endswith('/app') else 'sdk.py','reason':'changed path','verify':['behavior']}],'test_risks':[]} for item in manifest['members']],'relationships':[],'open_questions':[]}))\n"
+        "else:\n"
+        "    print(json.dumps({'schema_version':'review-set-review/v1','findings':[],'relationship_summary':['未发现可证实的跨仓关系'],'notes':[],'test_gaps':[],'good':[]}, ensure_ascii=False))\n",
+        encoding="utf-8",
+    )
+    upload_script.write_text(
+        "import pathlib, sys\n"
+        f"pathlib.Path({str(uploaded_report)!r}).write_text(pathlib.Path(sys.argv[-1]).read_text(encoding='utf-8'), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    (bin_dir / "welink-cli.cmd").write_text(
+        f'@"{sys.executable}" "{upload_script}" %*\r\n',
+        encoding="utf-8",
+    )
+    gitlab_file.write_text(
+        json.dumps(
+            {
+                "/projects/team%2Fapp": {"id": 101, "path_with_namespace": "team/app"},
+                "/projects/101/isource/merge_requests/7": {
+                    "project_id": 101,
+                    "iid": 7,
+                    "diff_refs": {"base_sha": app_base, "start_sha": app_base, "head_sha": app_head},
+                    "e2e_issues": [{"issue_num": "REQ-1"}],
+                },
+                "/projects/team%2Fapp/merge_requests/7": {
+                    "source_project_id": 101,
+                    "target_project_id": 101,
+                    "source_branch": "feature",
+                    "target_branch": "main",
+                },
+                "/projects/101": {"http_url_to_repo": str(app_repo)},
+                "/projects/team%2Fsdk": {"id": 202, "path_with_namespace": "team/sdk"},
+                "/projects/202/isource/merge_requests/8": {
+                    "project_id": 202,
+                    "iid": 8,
+                    "diff_refs": {"base_sha": sdk_base, "start_sha": sdk_base, "head_sha": sdk_head},
+                    "e2e_issues": [{"issue_num": "REQ-1"}],
+                },
+                "/projects/team%2Fsdk/merge_requests/8": {
+                    "source_project_id": 202,
+                    "target_project_id": 202,
+                    "source_branch": "feature",
+                    "target_branch": "main",
+                },
+                "/projects/202": {"http_url_to_repo": str(sdk_repo)},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "MR_REVIEWER_GITLAB_BASE_URL": "https://gitlab.example.com",
+            "MR_REVIEWER_GITLAB_TOKEN": "token",
+            "MR_REVIEWER_IM_POLL_COMMAND": f"{sys.executable} {poll_script}",
+            "MR_REVIEWER_IM_REPLY_COMMAND": f"{sys.executable} {reply_script} {reply_file}",
+            "MR_REVIEWER_WELINK_GROUP_ID": "configured-group",
+            "MR_REVIEWER_WELINK_ONEBOX_SPACE_ID": "space-example",
+            "MR_REVIEWER_WELINK_ONEBOX_PARENT_ID": "parent-example",
+            "MR_REVIEWER_BOT_MENTION": "@ReviewBot",
+            "MR_REVIEWER_BOT_ACCOUNT": "bot001",
+            "MR_REVIEWER_WORK_DIR": str(tmp_path / "review-set-work"),
+            "MR_REVIEWER_STATE_PATH": str(tmp_path / "review-set-state.json"),
+            "MR_REVIEWER_OPENCODE_COMMAND": f"{sys.executable} {agent_script}",
+            "MR_REVIEWER_TEST_GITLAB_RESPONSES": str(gitlab_file),
+            "MR_REVIEWER_REVIEW_SET_POST_COMMENT": "false",
+            "MR_REVIEWER_LOG_LEVEL": "INFO",
+            "PYTHONPATH": str(Path("src").resolve()),
+            "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
+        }
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-m", "mr_reviewer.cli", "poll", "--once"],
+        check=True,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+
+    assert "review_scope=review-set" in result.stderr
+    assert agent_calls.read_text(encoding="utf-8").splitlines() == ["plan", "review"]
+    report = uploaded_report.read_text(encoding="utf-8")
+    assert "# 多 MR 联合代码检视报告" in report
+    assert "team/app!7" in report
+    assert "team/sdk!8" in report
+    assert "未发现可证实的跨仓关系" in report
+    state = json.loads((tmp_path / "review-set-state.json").read_text(encoding="utf-8"))
+    assert state["processed"]["2"]["status"] == "success"
+
+
 def test_welink_reply_uses_utf8_and_redacts_text_in_logs(monkeypatch, caplog):
     calls = []
 

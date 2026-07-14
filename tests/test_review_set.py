@@ -82,6 +82,21 @@ def test_resolve_review_trigger_builds_review_set_for_different_projects():
     ]
 
 
+def test_resolve_review_trigger_builds_three_member_review_set():
+    result = resolve_review_trigger(
+        _message(
+            "@ReviewBot "
+            "https://gitlab.example.com/team/app/merge_requests/7 "
+            "https://gitlab.example.com/team/sdk/merge_requests/8 "
+            "https://gitlab.example.com/team/api/merge_requests/9"
+        ),
+        _config(),
+    )
+
+    assert isinstance(result, ReviewSetRequest)
+    assert len(result.members) == 3
+
+
 def test_resolve_review_trigger_rejects_more_than_three_unique_mrs():
     result = resolve_review_trigger(
         _message(

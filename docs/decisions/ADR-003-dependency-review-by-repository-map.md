@@ -2,11 +2,17 @@
 
 ## Status
 
-Accepted
+Accepted（Implemented）
 
 ## Date
 
 2026-07-14
+
+## Implementation status
+
+已实现严格项目依赖目录、title 路由、1–3 个依赖的同名 target branch 精确 checkout、`dependency-review/v1` manifest、独立联合检视 skill/prompt/schema、全有或全无的 one-step 降级，以及 Markdown、webhook JSON、INFO 日志和 healthcheck 审计字段。
+
+生产首次启用时，应以 `MR_REVIEWER_WEBHOOK_POST_COMMENT=false` 对历史正反样本执行 dry-run，比较单仓 Deep Review 与依赖联合 Deep Review；这属于 rollout 验收，不改变实现状态。
 
 ## Context
 
@@ -48,5 +54,5 @@ ADR-002 原计划通过静态 Maven 解析和精确版本 tag 为单 MR 补充�
 - 场景二无需执行构建工具，也不新增 Maven 解析与版本映射代码。
 - 同名 branch 是可变 ref；任务报告必须记录实际 commit SHA，且不能宣称它等同于制品版本源码。
 - 显式维护的依赖目录成为联合上下文范围的事实来源，需要部署方负责审查和更新。
-- `【Deep-Review】` 在依赖上下文异常时会从请求的 two-step 降级为实际 one-step，报告必须同时保留 requested/effective mode，避免路由信息失真。
+- `【Deep-Review】` 在依赖上下文异常时会从请求的 two-step 降级为实际 one-step，报告必须同时保留 `requested_review_mode` 和实际 `review_mode`，避免路由信息失真。
 - ADR-002 的 ReviewSet 决策继续有效；其场景二 Maven/tag 决策由本 ADR 修订。

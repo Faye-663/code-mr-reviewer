@@ -5,7 +5,7 @@
 ## 适用场景
 
 - GitLab 在 MR 打开、重新打开或 source branch 更新时主动回调本机服务。
-- 服务收到 webhook 后按 MR title 路由：普通 MR 默认执行 one-step review；title 去除前导空白后以 `【Deep-Review】` 开头时（忽略大小写）执行 two-step，并把结果写入 `MR_REVIEWER_REPORT_DIR`。仅修改 title 不触发 review。
+- 服务收到 webhook 后按 MR title 与可选项目依赖目录路由：title 去除前导空白后以 `【Deep-Review】` 开头时（忽略大小写）请求 Deep Review；普通 MR 固定单仓 one-step；Deep Review 无依赖映射时单仓 two-step，完整准备 1–3 个依赖时联合 two-step；目录/数量/准备异常时降级为单仓 one-step。所有路径都把结果写入 `MR_REVIEWER_REPORT_DIR`。仅修改 title 不触发 review。
 - Python 侧会把高置信、可定位的 finding 发布为 GitLab inline discussion；也可以关闭自动发布，只保留本地报告。
 
 ## 最小配置
@@ -36,6 +36,9 @@ MR_REVIEWER_WEBHOOK_SECRET=your-webhook-secret
 MR_REVIEWER_WEBHOOK_SECRET_HEADER=X-Gitlab-Token
 MR_REVIEWER_WEBHOOK_POST_COMMENT=true
 MR_REVIEWER_REPORT_DIR=log/webhook-reports
+
+# 可选：只读项目依赖目录；生产首次验证可先不配置或关闭评论开关。
+MR_REVIEWER_REPOSITORY_DEPENDENCY_CATALOG=
 ```
 
 说明：
@@ -45,11 +48,12 @@ MR_REVIEWER_REPORT_DIR=log/webhook-reports
 - `MR_REVIEWER_WEBHOOK_SECRET` 可为空；配置后会校验 `MR_REVIEWER_WEBHOOK_SECRET_HEADER` 指定的请求头，默认是 `X-Gitlab-Token`。
 - `MR_REVIEWER_WEBHOOK_SECRET_HEADER` 可按平台调整，例如 CodeHub 使用 `X-CodeHub-Token` 时改成该值。
 - `MR_REVIEWER_WEBHOOK_POST_COMMENT=false` 时不会发布 inline discussion，只写本地 JSON 监视报告和 Markdown review 报告。
-- `MR_REVIEWER_COMMENT_SKILL` 仍可选用于指定 review prompt skill；该 skill 必须只输出结构化 JSON，不要配置会自行提交评论的 skill。
+- `MR_REVIEWER_REPOSITORY_DEPENDENCY_CATALOG` 可选，只在 `【Deep-Review】` 单 MR 中读取。配置 1–3 个直接依赖且全部同名 target branch checkout 成功时才执行联合检视；任何不完整上下文都整组降级，不使用部分依赖。
+- `MR_REVIEWER_COMMENT_SKILL` 仍可选用于指定单仓 review prompt skill；依赖联合检视固定使用 `dependency-code-review`，不受该配置覆盖。skill 必须只输出结构化 JSON，不要配置会自行提交评论的 skill。
 - `MR_REVIEWER_AGENT_MODEL_NAME` 是 webhook inline discussion 的展示模型名。它为空时，worker 只写本地报告并标记 `model_not_configured`，不会提交 GitLab discussion；不会从 Agent 输出推断模型名。
-- Deep Review 的审查计划只保存在本地 JSON/Markdown 报告中，不会发布到 GitLab；one-step 不生成计划。线上仅发布满足条件的 review finding。
+- 单仓或依赖联合 Deep Review 的审查计划只保存在本地 JSON/Markdown 报告中，不会发布到 GitLab；one-step 不生成计划。依赖仓只能提供 evidence，线上 finding 仍只能发布到主 MR。
 - `MR_REVIEWER_LOG_LEVEL` 默认 `OFF`，不会输出项目日志或创建 debug 文件。设为 `INFO` 时只记录 API、Agent 调用元数据；设为 `DEBUG` 时会把脱敏后的请求、响应、prompt 和 Agent 输出写到 `MR_REVIEWER_DEBUG_DIR/YYYYMMDD/<task_id>/`。常规 webhook 审计仍使用 `MR_REVIEWER_REPORT_DIR`，它不受日志级别影响。
-- review/review-plan/deep-review prompt 只使用本项目随 Git 发布的包内模板，不支持部署侧覆盖。webhook JSON 审计报告会记录实际使用阶段的模板 ID 与内容哈希版本；DEBUG 的 Agent `request.json` 也会记录对应版本。
+- review/review-plan/deep-review/dependency-review prompt 只使用本项目随 Git 发布的包内模板，不支持部署侧覆盖。webhook JSON 审计报告会记录实际使用阶段的模板 ID 与内容哈希版本；DEBUG 的 Agent `request.json` 也会记录对应版本。启用依赖联合检视前，需要在所选 Agent 中安装仓库 `.skill/dependency-code-review`。
 
 ## 启动服务
 
@@ -94,7 +98,7 @@ Invoke-WebRequest `
   -Body '{"object_kind":"push"}'
 ```
 
-如果使用最小 MR payload 自测，可处理事件会返回 `202 accepted`，随后后台任务会尝试 clone、diff 和按 title 路由后的 Agent review，并在 `MR_REVIEWER_REPORT_DIR` 写入同 stem 的 `.json` 监视报告和 `.md` review 报告；当 `MR_REVIEWER_WEBHOOK_POST_COMMENT=true` 时还会发布可定位 finding 的 inline discussion。
+如果使用最小 MR payload 自测，可处理事件会返回 `202 accepted`，随后后台任务会尝试 clone、diff 和按 title/catalog 路由后的 Agent review，并在 `MR_REVIEWER_REPORT_DIR` 写入同 stem 的 `.json` 监视报告和 `.md` review 报告；当 `MR_REVIEWER_WEBHOOK_POST_COMMENT=true` 时还会发布可定位 finding 的 inline discussion。首次生产验证建议关闭该开关，用有/无真实依赖契约的历史样本比较单仓 Deep 与依赖联合 Deep 报告。
 
 ## 常见问题
 
@@ -104,4 +108,6 @@ Invoke-WebRequest `
 - 返回 `403 WEBHOOK_TOKEN_INVALID`：GitLab Secret token 和 `MR_REVIEWER_WEBHOOK_SECRET` 不一致。
 - 返回 `200 skipped`：请求已到达服务，但事件不是可处理的 MR open、reopen 或 source update 事件。
 - review 成功但 MR 没有 inline discussion：检查 `MR_REVIEWER_WEBHOOK_POST_COMMENT` 是否为 `true`，`MR_REVIEWER_GITLAB_TOKEN` 是否有读取 MR diff 与提交 discussion 的权限，并查看本地 `.json`/`.md` 报告中的 finding 是否被过滤、无法定位或判定为重复。
-- 本地报告失败：查看 JSON/Markdown 中的 `failure_stage`。`review_plan` 表示 Deep Review 计划生成或校验失败且未进入 review；`review` 表示 review 阶段失败，Deep Review 报告仍会保留已生成的计划。
+- `healthcheck` 显示 `repository_dependency_catalog: invalid`：检查 path、文件权限、JSON 和严格 schema。无效目录不会影响普通 MR，但 Deep Review 会降级为单仓 one-step。
+- 报告显示“未执行依赖联合检视”：查看 `dependency_degradation_reason`、`dependency_failed_project`、`requested_review_mode` 与实际 `review_mode`；超过 3 个依赖、同名 target branch 缺失或任一 checkout 失败都不会做部分联合检视。
+- 本地报告失败：查看 JSON/Markdown 中的 `failure_stage`。`review_plan`/`review` 表示单仓 Deep 两阶段；`dependency_review_plan`/`dependency_review` 表示依赖联合两阶段，报告会保留已准备依赖的 project、branch、commit SHA 和耗时。

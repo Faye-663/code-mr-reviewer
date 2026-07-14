@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted（场景一 Implemented；场景二由 ADR-003 修订）
+Accepted（场景一与场景二均已 Implemented；场景二由 ADR-003 修订）
 
 ## Date
 
@@ -10,7 +10,7 @@ Accepted（场景一 Implemented；场景二由 ADR-003 修订）
 
 ## Implementation status
 
-场景一已实现 IM 显式 ReviewSet、project path 到 `project_id` 再到 isource MR 的预检链路、精确多成员 checkout、固定 two-step、聚合报告和按责任 MR 幂等发布。场景二尚未实现；其 Maven/tag 方案已由 [ADR-003](ADR-003-dependency-review-by-repository-map.md) 修订为项目依赖映射与同名 target branch 联合检视，不得从本 ADR 的 Accepted 状态推断场景二已经可用。
+场景一已实现 IM 显式 ReviewSet、project path 到 `project_id` 再到 isource MR 的预检链路、精确多成员 checkout、固定 two-step、聚合报告和按责任 MR 幂等发布。场景二也已实现；其 Maven/tag 方案已由 [ADR-003](ADR-003-dependency-review-by-repository-map.md) 修订为项目依赖映射、同名 target branch 联合检视以及全有或全无的 one-step 降级。
 
 生产首次启用场景一时，应以 `MR_REVIEWER_REVIEW_SET_POST_COMMENT=false` 运行历史正反样本 dry-run；这属于 rollout 验收，不改变架构决策状态。
 
@@ -19,9 +19,9 @@ Accepted（场景一 Implemented；场景二由 ADR-003 修订）
 当前 review core 每次只 clone 一个 GitLab MR 仓库，并要求 Agent 基于一个 base/head range 输出 finding。这一边界适合大多数单仓变更，但无法可靠处理：
 
 1. 多个不同仓库的 MR 共同实现同一需求，契约只有组合后才能验证。
-2. 单个 MR 的改动依赖同组织 SDK 的类型、空值、枚举、序列化或异常语义，需要读取其实际依赖版本源码。
+2. 单个 MR 的改动依赖同组织 SDK 的类型、空值、枚举、序列化或异常语义，需要读取部署方指定的直接依赖仓源码。
 
-简单扩大 Agent 的搜索范围不能解决问题。跨仓结论必须知道哪些 MR 属于同一变更集、依赖实际解析为何版本、源码对应哪个不可变 ref，以及 finding 应回写哪个 MR。
+简单扩大 Agent 的搜索范围不能解决问题。跨仓结论必须知道哪些 MR 属于同一变更集、允许读取哪些依赖仓、任务实际 checkout 的 commit SHA，以及 finding 应回写哪个 MR。
 
 本决策优先保证 review 证据质量和可复现性，其次考虑时延和 clone 成本。首期只提供建议，不作为合并门禁。
 
@@ -85,7 +85,7 @@ Accepted（场景一 Implemented；场景二由 ADR-003 修订）
 
 - 优点：比完整 clone 轻量，并与制品版本绑定。
 - 缺点：通常缺少测试、构建配置和历史上下文，需要额外制品下载路径。
-- 未选择原因：首期限制最多 3 个依赖，选择精确 tag clone 能用更简单的单一来源满足所需上下文。
+- 未选择原因：该方案属于已被 ADR-003 修订的版本映射路线；现行实现使用部署侧项目映射和同名 target branch。
 
 ### 方案 F：由 Agent 自行发现和下载相关仓库
 
@@ -97,7 +97,7 @@ Accepted（场景一 Implemented；场景二由 ADR-003 修订）
 
 - 优点：能覆盖 parent、BOM、profile 和 Gradle 动态逻辑，解析结果更接近真实构建。
 - 缺点：Gradle 和 Maven extension/plugin 配置可能执行 MR 中的任意代码，需要隔离运行环境和凭据治理。
-- 未选择原因：首期明确不执行被检视仓库代码；超出静态 Maven 子集时选择降级。
+- 未选择原因：首期明确不执行被检视仓库代码；现行方案完全不解析构建依赖，直接依赖范围由受信项目目录提供。
 
 ## Consequences
 
@@ -122,7 +122,7 @@ Accepted（场景一 Implemented；场景二由 ADR-003 修订）
 - 不增加持久 clone cache；先采集 clone 耗时、上下文完整率和复用需求。
 - 依赖仓不得 fallback source branch、默认分支、tag 或近似 ref。
 - 不得静默选择部分依赖；超过 3 个或任一准备失败时按 ADR-003 降级为单仓 one-step。
-- 场景一稳定行为已经折回 README、DESIGN 和配置示例。临时 requirements/implementation plan 暂时保留场景二 Draft/Deferred 契约；场景二完成并同步长期文档后删除，ADR 保留。
+- 场景一与场景二的稳定行为已经折回 README、DESIGN、Webhook 快速开始和配置示例；临时 requirements/implementation plan 已删除，ADR 继续保留决策历史。
 
 ## Future Decisions
 

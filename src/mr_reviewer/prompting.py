@@ -103,6 +103,29 @@ def build_review_set_review_prompt(
     )
 
 
+def build_dependency_review_plan_prompt(*, context_id: str) -> RenderedPrompt:
+    return _render(
+        "dependency-review-plan",
+        {
+            "context_id": context_id,
+            "manifest_path": "dependency-review.json",
+        },
+    )
+
+
+def build_dependency_review_prompt(
+        *, context_id: str, review_plan: dict[str, object]
+) -> RenderedPrompt:
+    return _render(
+        "dependency-review",
+        {
+            "context_id": context_id,
+            "manifest_path": "dependency-review.json",
+            "review_plan_json": json.dumps(review_plan, ensure_ascii=False, indent=2, sort_keys=True),
+        },
+    )
+
+
 def _render(template_id: str, values: dict[str, str | None]) -> RenderedPrompt:
     content = _load_template(template_id)
     missing = sorted(name for name, value in values.items() if value is None or value == "")

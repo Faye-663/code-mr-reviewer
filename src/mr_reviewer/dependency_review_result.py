@@ -364,3 +364,47 @@ def _evidence_dict(evidence: DependencyEvidenceRef) -> dict[str, object]:
         "end_line": evidence.end_line,
         "detail": evidence.detail,
     }
+
+
+def dependency_review_result_as_single_review_json(result: StructuredDependencyReviewResult) -> str:
+    findings = []
+    for finding in result.findings:
+        position = finding.position
+        if position is None:
+            # 单仓发布器要求位置字段；-1/-1 会稳定进入 monitor-only，不会误评论依赖仓。
+            primary_evidence = next(ref for ref in finding.evidence_refs if ref.repo_id == PRIMARY_REPO_ID)
+            old_path = new_path = primary_evidence.path
+            old_line = new_line = -1
+        else:
+            old_path = position.old_path
+            new_path = position.new_path
+            old_line = position.old_line
+            new_line = position.new_line
+        evidence = "；".join(
+            f"[{ref.repo_id}] {ref.path}:{ref.start_line}-{ref.end_line} {ref.detail}"
+            for ref in finding.evidence_refs
+        )
+        findings.append(
+            {
+                "rule_id": finding.rule_id,
+                "severity": finding.severity,
+                "confidence": finding.confidence,
+                "old_path": old_path,
+                "new_path": new_path,
+                "old_line": old_line,
+                "new_line": new_line,
+                "title": finding.title,
+                "evidence": evidence,
+                "impact": finding.impact,
+                "suggestion": finding.suggestion,
+            }
+        )
+    return json.dumps(
+        {
+            "findings": findings,
+            "notes": result.notes,
+            "test_gaps": result.test_gaps,
+            "good": result.good,
+        },
+        ensure_ascii=False,
+    )

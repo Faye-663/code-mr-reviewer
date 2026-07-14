@@ -149,3 +149,16 @@ def select_dependency_review(
             "dependency_limit_exceeded",
         )
     return DependencyReviewSelection("two-step", "two-step", "dependency-review", dependencies, "")
+
+
+def degrade_dependency_review(
+    selection: DependencyReviewSelection,
+    reason_code: str,
+) -> DependencyReviewSelection:
+    return DependencyReviewSelection(
+        requested_review_mode=selection.requested_review_mode,
+        review_mode="one-step",
+        review_scope="single",
+        dependencies=(),
+        degradation_reason=reason_code,
+    )

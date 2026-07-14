@@ -451,8 +451,10 @@ def test_review_service_runs_review_set_as_fixed_two_step_from_task_root(tmp_pat
     runner = _ReviewSetRunner()
     service = ReviewService(_RecordingGitLab(), _RecordingGit(), runner)
     task_dir = tmp_path / "joint-task"
+    config = _config(tmp_path)
+    config.repository_dependency_catalog = tmp_path / "must-not-be-read.json"
 
-    report = service.review_set(_review_set_request(), _config(tmp_path), task_id="joint-task")
+    report = service.review_set(_review_set_request(), config, task_id="joint-task")
 
     assert report.manifest.req_id == "REQ-1"
     assert report.agent_call_count == 2

@@ -10,7 +10,7 @@ Active（场景一 Complete；场景二 Deferred）
 
 ## 1. 输入与实施边界
 
-本计划以 [跨仓 MR 与内部二方依赖检视需求](CROSS_REPO_REVIEW_REQUIREMENTS.md) 和 [ADR-002](decisions/ADR-002-cross-repo-review-context.md) 为依据。
+本计划以 [跨仓 MR 与内部二方依赖检视需求](CROSS_REPO_REVIEW_REQUIREMENTS.md)、[ADR-002](decisions/ADR-002-cross-repo-review-context.md) 和修订场景二的 [ADR-003](decisions/ADR-003-dependency-review-by-repository-map.md) 为依据。
 
 实施顺序固定为：
 
@@ -32,7 +32,7 @@ Active（场景一 Complete；场景二 Deferred）
 
 剩余差距全部属于场景二或生产验收：
 
-- 尚无内部依赖中央目录、静态 Maven resolver、精确 tag clone 和 `dependency_context_status`。
+- 尚无项目依赖目录、同名 target branch checkout、依赖联合 schema 和 `dependency_context_status`。
 - 尚未运行生产历史正反样本 dry-run，也未形成有效 finding、重大误报和耗时基线。
 - 本机未安装 OpenCode，因此只完成自动化 adapter 契约测试；已安装的 Claude Code sibling repo/提示隔离 live smoke 已通过。
 
@@ -62,17 +62,16 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A["单 MR checkout / changed files"] --> B["定位 changed Maven modules"]
-    B --> C["静态解析直接依赖和确定版本"]
-    C --> D["中央 GAV 目录分类内部依赖"]
-    D --> E["相关性排序并选择最多 3 个"]
-    E --> F["按 tag clone 到只读依赖目录"]
-    F --> G["写 dependency context manifest"]
-    G --> H["现有 one-step / two-step review"]
-    C --> I["无法解析：记录 degraded"]
-    D --> I
-    F --> I
-    I --> H
+    A["单 MR title 路由"] --> B{"命中 Deep-Review"}
+    B -- "否" --> C["单仓 one-step，不读取目录"]
+    B -- "是" --> D["读取项目依赖目录"]
+    D --> E{"直接依赖数量"}
+    E -- "无映射" --> F["现有单仓 two-step"]
+    E -- "1-3" --> G["准备全部同名 target branch"]
+    E -- ">3 / 目录无效" --> H["degraded：单仓 one-step"]
+    G --> I{"全部成功"}
+    I -- "是" --> J["dependency-review 联合 two-step"]
+    I -- "否" --> H
 ```
 
 ## 4. 计划接口与数据契约
@@ -161,20 +160,17 @@ ReviewSetManifest
 - Python 根据 ReviewSet ID、规范化 evidence、rule 和 target 生成 marker，不信任 Agent 提供评论 URL、SHA、project id 或 marker。
 - 现有单 MR JSON 契约保持不变；单 MR 依赖证据写入报告上下文和 finding evidence，不增加第二个评论目标。
 
-### 4.3 中央依赖目录
+### 4.3 项目依赖目录
 
-首期使用部署侧只读 JSON 文件，建议通过新增配置 `MR_REVIEWER_INTERNAL_DEPENDENCY_CATALOG` 指向：
+首期使用部署侧只读 JSON 文件，通过新增配置 `MR_REVIEWER_REPOSITORY_DEPENDENCY_CATALOG` 指向：
 
 ```json
 {
   "schema_version": 1,
-  "dependencies": [
+  "repositories": [
     {
-      "group_id": "com.example.platform",
-      "artifact_id": "customer-sdk",
-      "gitlab_project_path": "platform/customer-sdk",
-      "tag_template": "v{version}",
-      "package_prefixes": ["com.example.platform.customer"]
+      "project_path": "team/repo-a",
+      "dependencies": ["team/repo-b", "team/repo-c"]
     }
   ]
 }
@@ -183,23 +179,18 @@ ReviewSetManifest
 加载时必须校验：
 
 - `schema_version` 仅接受 `1`。
-- GAV 唯一，所有字符串去除首尾空白后非空。
-- `tag_template` 恰好包含受支持的 `{version}` 占位，不允许命令或路径插值。
-- package prefix 非空且不得重复。
-- project path 必须通过现有 GitLab base URL 和 token 查询 clone URL，不允许目录提供任意本地路径或任意 host URL。
+- 主 project path 唯一，所有字符串去除首尾空白后非空。
+- 依赖 path 不得重复或等于主 project path；目录不表达传递关系。
+- 依赖数可以超过 3，但运行时必须整组降级为单仓 one-step，不能选择部分依赖。
+- project path 必须通过现有 GitLab API 和 token 查询 clone URL，不允许目录提供任意本地路径或任意 host URL。
 
-### 4.4 静态 Maven resolver
+### 4.4 Dependency Review 契约
 
-新增 resolver 只读取 XML，不调用 Maven/Gradle：
-
-1. 由 changed file 向上寻找最近 `pom.xml`，得到 changed modules。
-2. 解析 module、同 checkout local parent、properties 和 dependencyManagement。
-3. 对直接依赖执行有限 property 替换，得到确定 GAV。
-4. 排除 test/system/import scope，并按中央目录筛选内部依赖。
-5. 按需求文档中的优先级选择最多 3 个。
-6. 对超出子集的节点返回结构化 unresolved reason，不尝试猜测。
-
-安全要求：拒绝 DOCTYPE/外部实体；限制 local parent 路径必须留在当前 checkout 内；检测 parent/property 循环；限制 XML、module 和 property 数量，避免资源耗尽。
+- `dependency-review/v1` manifest 包含主 MR base/head、target branch、repo path，以及排序后的依赖 project、branch、commit SHA 和 repo path。
+- `dependency-review-plan/v1` 只规划主 MR 变更与待验证项目依赖契约。
+- `dependency-review-result/v1` 允许 evidence 引用 manifest 中任一 repo，但 finding 的唯一 target 是主 MR。
+- Python 不解析 Maven/POM/GAV/version，也不按 changed file 内容筛选依赖；Agent 在联合检视中判断相关性。
+- manifest、prompt 和 parser 必须拒绝 manifest 外 repo、越界相对路径、非法行号和依赖仓 target。
 
 ## 5. Agent workspace 与提示隔离
 
@@ -211,7 +202,14 @@ task-root/
   members/<member-id>/repo/
 ```
 
-`dependencies/<dependency-id>/repo/` 只属于 Deferred 的场景二，不在当前 ReviewSet workspace 中创建。
+场景二使用独立 workspace，不复用 ReviewSet manifest：
+
+```text
+task-root/
+  dependency-review.json
+  primary/repo/
+  dependencies/<repo-id>/repo/
+```
 
 spike 必须证明：
 
@@ -271,15 +269,14 @@ GitLab 位置与普通评论能力以官方 [Discussions API](https://docs.gitla
 
 ### Phase 4：单 MR 内部依赖上下文（Deferred）
 
-目标：在不执行构建的前提下，为支持的 Maven 子集提供最多 3 个精确源码上下文。
+目标：只在显式 Deep Review 中，使用部署侧项目映射为主 MR 提供最多 3 个完整依赖仓上下文。
 
-- 增加目录配置、严格 JSON loader 和 GAV/project/tag 映射。
-- 实现 changed module 定位、静态 Maven resolver、相关性排序和 unresolved reasons。
-- 通过 GitLab project API 获取 clone URL，fetch/checkout 精确 tag，并记录实际 commit SHA。
-- 将 dependency manifest 注入现有 review/review-plan prompt；single finding 仍只能定位当前 MR。
-- IM 与 webhook 共用同一 resolver；失败时继续 review，并在 JSON/Markdown/INFO 元数据中显示 `degraded`。
+- 增加目录配置、严格 JSON loader 和 requested/effective 路由决策。
+- 通过 GitLab project API 获取 clone URL，只 fetch 主 MR target branch，并记录实际 commit SHA。
+- 增加独立 manifest、`dependency-code-review` skill、plan/result schema 和两次 Agent 编排。
+- IM、webhook 和 `run-once` 共用 review core；数量超限、目录无效或任一准备失败时清理部分上下文并降级为单仓 one-step。
 
-验收：支持的 local parent/properties/dependencyManagement 可复现；动态/外部输入确定性降级；最多 clone 3 个；默认分支永不作为 tag fallback。
+验收：普通 one-step 不读取目录；无映射 Deep Review 保持单仓 two-step；完整 1–3 依赖固定联合 two-step；任何不完整上下文固定单仓 one-step，且没有 branch/tag/default fallback。
 
 ### Phase 5：历史样本验收与文档收口（场景一文档完成；生产样本与场景二收口待办）
 
@@ -288,7 +285,7 @@ GitLab 位置与普通评论能力以官方 [Discussions API](https://docs.gitla
 - 用相同模型和模板版本运行现有单仓 baseline 与新流程，人工确认正反样本。
 - 汇总有效 finding、重大误报、责任归属、上下文降级率及 p50/p95 耗时。
 - 场景一实现完成后同步 `README.md`、`docs/DESIGN.md`、配置示例和 ADR-002；webhook 使用说明因行为未变无需修改。
-- 两份临时文档暂时保留场景二 Draft/Deferred 契约；场景二完成且稳定行为全部进入长期文档后再删除，保留 ADR-002。
+- 两份临时文档暂时保留场景二 Draft/Deferred 契约；场景二完成且稳定行为全部进入长期文档后再删除，保留 ADR-002 与 ADR-003。
 
 场景一代码验收：完整测试与本地两仓端到端 fixture 通过；README 明确 ReviewSet 行为和独立发布开关。生产样本指标与场景二验收仍待完成。
 
@@ -302,9 +299,10 @@ GitLab 位置与普通评论能力以官方 [Discussions API](https://docs.gitla
   - 联合 plan/result JSON 的 schema、evidence refs、multi-target 和 null position。
   - marker 稳定性、inline/普通 note 选择、非法目标、分页去重、部分发布失败和独立开关。
 - 场景二待实现：
-  - 目录 schema、GAV 唯一性、tag template 和 project path 校验。
-  - Maven local parent、properties、dependencyManagement、scope、循环、DOCTYPE、动态版本和降级原因。
-  - 依赖排序、3 个上限、精确 tag checkout 和无默认分支 fallback。
+  - 目录 schema、project path 唯一性、重复/自身依赖和 3 个上限。
+  - 普通/Deep/联合/降级路由矩阵和 requested/effective mode。
+  - 精确 target branch checkout、all-or-nothing 清理和无 source/default/tag fallback。
+  - 独立 plan/result schema、evidence/target 边界和无关联结果。
 
 ### Integration tests
 
@@ -321,7 +319,7 @@ GitLab 位置与普通评论能力以官方 [Discussions API](https://docs.gitla
 
 ## 8. Commit Plan
 
-场景一实际按 5 个逻辑提交实施。runtime 与对应 tests 同提交，文档契约和最终 docs-sync 独立提交。
+场景一实际按 5 个逻辑提交实施；场景二按后续 6 个逻辑提交实施。runtime 与对应 tests 同提交，文档契约和最终 docs-sync 独立提交。
 
 ### Commit 1：`docs(cross-repo): lock ReviewSet contract`（Complete，`a9e56ee`）
 
@@ -353,12 +351,48 @@ GitLab 位置与普通评论能力以官方 [Discussions API](https://docs.gitla
 - 完成标志：主文档记录场景一稳定行为与配置；Requirements 标记场景一 Implemented/场景二 Draft；本计划标记场景一 Complete/场景二 Deferred；ADR 保持 Accepted。
 - 后续开始条件：无；场景一代码和文档收口完成。两份临时文档保留到场景二完成，避免丢失未实施契约。
 
+### 场景二 Commit 1：`docs(dependency-review): lock repository mapping contract`
+
+- 范围：两份跨仓临时文档、ADR-002 和 ADR-003。
+- 完成标志：项目映射、Deep Review 触发、3 仓上限、all-or-nothing 和单仓 one-step 降级锁定。
+- 下次开始条件：文档 diff check 通过，场景二仍标记 Deferred。
+
+### 场景二 Commit 2：`feat(dependency-review): load repository dependency mappings`
+
+- 范围：配置、目录 loader、路由策略和 tests。
+- 完成标志：普通、无映射 Deep、1–3 候选、超限/无效降级矩阵通过。
+- 下次开始条件：targeted/full tests 和 docs-sync 通过。
+
+### 场景二 Commit 3：`feat(dependency-review): prepare exact dependency workspaces`
+
+- 范围：GitLab project 映射、target branch checkout、manifest、清理和 tests。
+- 完成标志：全部依赖成功才产生 manifest；任一失败不保留部分上下文。
+- 下次开始条件：本地多仓 fixture、完整回归和 docs-sync 通过。
+
+### 场景二 Commit 4：`feat(dependency-review): add strict joint review contracts`
+
+- 范围：专用 skill、prompt、plan/result parser 和契约 tests。
+- 完成标志：evidence 只能引用 manifest repo，target 只能是主 MR。
+- 下次开始条件：schema/skill/full tests 和 docs-sync 通过。
+
+### 场景二 Commit 5：`feat(dependency-review): integrate joint and degraded review flows`
+
+- 范围：review core、报告、入口、日志和端到端 tests。
+- 完成标志：联合固定两次调用，降级固定单仓 one-step 一次调用，ReviewSet 不变。
+- 下次开始条件：完整回归、diff/编码检查和 docs-sync 通过。
+
+### 场景二 Commit 6：`docs(dependency-review): document scenario-two behavior`
+
+- 范围：README、配置示例、DESIGN、ADR 状态和临时文档收口。
+- 完成标志：长期文档成为唯一当前事实源，两份临时文档删除。
+- 后续开始条件：历史样本 dry-run 完成。
+
 ## 9. 风险与缓解
 
-- **错误版本源码导致错误 finding**：只允许确定版本和精确 tag；任何缺口降级，不 fallback 默认分支。
+- **同名分支不等于制品版本**：报告固定记录实际 commit SHA，不宣称读取的是制品精确版本；不得 fallback source/default/tag。
 - **多仓上下文放大 prompt injection**：manifest 由 Python 控制，仓库内容只作为证据；自动化 adapter 契约测试和 Claude Code live smoke 已验证提示隔离，生产仍需验证实际 adapter。
 - **联合任务耗时过长**：MR 和依赖均限制为 3，保留文件/diff/总超时限制，先采集数据再讨论缓存。
-- **中央目录漂移**：启动时严格校验，报告记录 tag 和 commit；目录责任人和变更审查流程由部署方治理。
+- **项目依赖目录漂移**：healthcheck 严格校验，报告记录 project/branch/commit；目录责任人和变更审查流程由部署方治理。
 - **评论重复或错投**：Python 校验 target/member/diff refs，使用稳定 marker，Agent 不提供发布 URL。
 - **临时文档成为第二事实源**：场景一稳定行为已折回长期 docs；临时文档只保留场景二未实施契约，场景二完成后删除。
 
@@ -366,4 +400,4 @@ GitLab 位置与普通评论能力以官方 [Discussions API](https://docs.gitla
 
 - 场景一无代码实施阻塞项；生产 rollout 先以 `MR_REVIEWER_REVIEW_SET_POST_COMMENT=false` 对历史正反样本 dry-run，再由运维显式开启评论。
 - 生产实际选择的 adapter 必须通过 healthcheck；本机 OpenCode live smoke 未执行，不能把 Claude Code 的结论外推为 OpenCode 生产验证。
-- 场景二开始前需确认中央 GAV 目录的 owner、部署路径和 tag 约定；在此之前保持 Deferred。
+- 场景二开始前需确认项目依赖目录的 owner、部署路径，并为生产 Agent 安装 `dependency-code-review` skill；在此之前保持 Deferred。

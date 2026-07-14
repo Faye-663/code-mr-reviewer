@@ -28,17 +28,17 @@ Active（场景一 Implemented；场景二 Draft）
 - 发现单仓 diff 无法证明的跨仓契约缺陷。
 - 减少 Agent 因缺少内部 SDK 真实契约而产生的猜测和误报。
 - 明确跨仓问题应由哪个 MR 修改，并把高置信重大问题送达对应作者。
-- 保留依赖版本、源码 ref、降级原因和 Agent 调用过程，便于复核结论。
+- 保留依赖项目、目标分支、实际 commit SHA、降级原因和 Agent 调用过程，便于复核结论。
 
 ## 3. 术语
 
 - **ReviewSet**：一条 IM 消息显式提交的 2–3 个不同仓库 MR，代表一次联合检视任务。
 - **成员 MR**：ReviewSet 中的单个 MR。
 - **ReqID**：先按 MR URL 中的 project path 查询项目信息取得 `project_id`，再以 URL 中的 MR `iid` 调用 `GET /projects/{project_id}/isource/merge_requests/{iid}`，读取响应中 `e2e_issues[0].issue_num` 的值。该值必须是去除首尾空白后的非空字符串；实现只读取数组首元素，不从相近字段推导，也不校验后续元素。
-- **内部依赖**：中央依赖目录中存在 GAV 映射、且源码位于同一受信 GitLab 组织内的 Maven 直接依赖。
-- **依赖上下文**：按精确版本 tag clone 的内部依赖只读源码及其来源元数据。
+- **项目依赖**：中央项目依赖目录为当前主项目显式列出的同一受信 GitLab 组织内的直接依赖项目。
+- **依赖上下文**：依赖项目与主 MR `target_branch` 同名分支在任务开始时对应的只读源码及其来源元数据。
 - **完整上下文**：计划需要的成员 MR 或内部依赖源码均已按精确 ref 获取。
-- **降级上下文**：部分内部依赖无法确定版本、无法映射或无法 clone，但单 MR 审查仍继续。
+- **降级上下文**：项目依赖目录或任一依赖源码无法完整准备，联合检视未执行，任务改为单仓 one-step。
 
 ## 4. 场景一：多 MR 联合检视
 
@@ -85,50 +85,44 @@ MR 详情的生产接口固定为 `GET /projects/{project_id}/isource/merge_requ
 - `MR_REVIEWER_REVIEW_SET_POST_COMMENT` 独立于 webhook 发布开关且默认 `true`；关闭时仍生成聚合报告并将候选标为 `disabled`。开关开启但 `MR_REVIEWER_AGENT_MODEL_NAME` 为空时不发布，任务标为 `success_with_warnings`。
 - 任务状态限定为 `rejected`、`failed`、`success`、`success_with_warnings`。拒绝与运行失败都会安全回复并终结原消息，重新执行必须发送新消息。
 
-## 5. 场景二：单 MR 的内部依赖上下文
+## 5. 场景二：基于项目依赖映射的 Deep Review
 
 ### 5.1 适用入口与路由
 
-- WeLink IM poll、GitLab webhook 和现有 review core 共用相同的依赖上下文解析。
-- 单 MR 继续沿用现有 title 路由：默认 one-step，`【Deep-Review】` 前缀使用 two-step。
-- 依赖上下文只补充证据，不改变 MR range，也不允许报告与当前 MR diff 无关的历史问题。
+- WeLink IM poll、GitLab webhook、`run-once` 和现有 review core 共用相同的项目依赖目录与路由。
+- 普通单 MR 默认 one-step，且不得读取项目依赖目录或 clone 依赖仓。
+- 单 MR title 去除前导空白后以 `【Deep-Review】` 开头时（忽略大小写）才评估项目依赖目录；仅修改 title 不触发新的 webhook review，后续正常事件使用最新 title。
+- `【Deep-Review】` MR 未配置依赖时继续执行现有单仓 two-step；配置 1–3 个依赖且全部准备成功时执行依赖联合 two-step。
+- 依赖超过 3 个、目录无效或任一依赖准备失败时，丢弃全部依赖上下文并降级为单仓 one-step；不得执行部分联合检视。
+- 依赖上下文只补充证据，不改变主 MR range，也不允许报告与当前 MR diff 无关的依赖仓历史问题。
 
-### 5.2 首期 Maven 支持边界
+### 5.2 项目依赖目录
 
-首期只支持无需执行仓库代码即可确定的 Maven 静态子集：
+- reviewer 部署侧维护只读 JSON 目录，显式记录 `主 project path -> 直接依赖 project paths`。
+- 目录只表达源码仓关系，不表达 Maven 制品、GAV、版本或发布关系，也不递归展开依赖项目自己的映射。
+- 主项目必须唯一；project path 和依赖 path 必须为去除首尾空白后的非空字符串；依赖不得重复或指向主项目自身。
+- 未配置目录或当前项目无映射不属于失败。已配置但文件不可读、JSON/schema 非法时，Deep Review 必须降级为单仓 one-step。
+- 目录允许记录超过 3 个依赖，但对应 Deep Review 必须直接降级，不得按顺序或其它规则选择前 3 个。
 
-- 识别 changed files 所属的最近 Maven module。
-- 读取 module `pom.xml`、同一 checkout 中的 local parent、properties 和 `dependencyManagement`。
-- 只考虑变更 module 的直接内部依赖，scope 为默认/compile、provided 或 runtime；排除 test、system 和 import。
-- 只接受可解析为单一确定版本的依赖；版本范围、动态 profile、外部 parent/BOM、Gradle 构建逻辑、无法求值的 property 和非固定 snapshot 一律标记为未解析。
-- 不运行 Maven/Gradle 命令，不执行 build、test、plugin 或 project extension。
+### 5.3 依赖源码获取与联合检视
 
-Maven 官方依赖能力和术语参考：[Apache Maven Dependency Plugin](https://maven.apache.org/plugins/maven-dependency-plugin/)。首期实现仍受上述更窄的静态边界约束。
-
-### 5.3 依赖选择与源码获取
-
-- 使用 reviewer 部署侧维护的中央 JSON 目录，将 `groupId:artifactId` 映射为 GitLab project、tag template 和 package prefixes。
-- 每个单 MR 最多 clone 3 个直接内部依赖。
-- 超过 3 个候选时按以下顺序选择：
-  1. 本次 MR 新增或修改了依赖声明的坐标。
-  2. changed Java lines 的 import/FQCN 命中目录中的 package prefixes。
-  3. 其余直接内部依赖按 GAV 字典序补足。
-- 未入选候选必须列入报告的未验证依赖，不得静默忽略。
-- 依赖源码必须 clone 中央目录映射得到的精确 tag；不得使用默认分支或近似 tag。
-- 首期不下载 sources JAR，也不反编译二进制 JAR。
-- clone 后记录 GAV、解析版本、project、tag 和实际 commit SHA，作为 Agent 输入和审计证据。
+- 配置 1–3 个依赖时，通过 GitLab project API 将受信 project path 转为 HTTPS clone URL。
+- 每个依赖仓只 fetch 与主 MR `target_branch` 同名的 `refs/heads/<branch>`，再 detached checkout fetch 得到的 commit SHA；不得 fallback 到 source branch、默认分支、tag 或近似 ref。
+- 只有所有依赖都成功准备后才生成 `dependency-review/v1` manifest 并执行联合 two-step；任一失败时删除已准备的部分上下文。
+- Python 不按 changed file、package、import、FQCN 或 path 筛选依赖。Agent 读取主 MR changed files 后，自行判断 manifest 中哪些依赖关系与本次变更相关。
+- 联合第一阶段只生成主 MR 的变更计划和待验证依赖契约；第二阶段重新读取主 MR diff 与必要依赖源码，允许推翻计划并覆盖遗漏。
+- 没有发现可证实依赖关系时仍完成主 MR 的单仓检视，并明确记录“未发现可证实的依赖关系”，不得编造关联。
+- finding 可以引用依赖仓作为 evidence，但唯一责任目标和发布目标是主 MR。
 
 ### 5.4 降级策略
 
-以下情况不阻止单仓 review，但必须把上下文状态标为 `degraded`：
+以下情况必须把上下文状态标为 `degraded`，并将请求的 Deep Review 改为单仓 one-step：
 
-- POM 超出静态 Maven 子集。
-- GAV 不在中央目录或目录项无效。
-- 版本无法映射为精确 tag。
-- tag 不存在、GitLab 无权限或 clone 失败。
-- 候选超过 3 个而未全部读取。
+- 目录已配置但不可读、JSON/schema 非法或当前项目目录项无效。
+- 当前项目配置超过 3 个直接依赖。
+- 任一依赖项目查询失败、无权限、同名 target branch 不存在或 checkout 失败。
 
-报告必须列出失败阶段、依赖坐标和因此无法验证的风险。不得把降级任务描述为已完成跨仓验证。
+报告必须同时记录 requested/effective review mode、稳定 reason code、失败项目和因此未验证的风险。不得把降级任务描述为已完成依赖联合检视。
 
 ## 6. 安全与信任边界
 
@@ -142,11 +136,11 @@ Maven 官方依赖能力和术语参考：[Apache Maven Dependency Plugin](https
 
 每次相关任务至少记录：
 
-- `review_scope`：`single` 或 `review-set`。
+- `review_scope`：`single`、`review-set` 或 `dependency-review`。
 - ReviewSet 的稳定 ID、`ReqID`、成员、base/head SHA 和 Agent 调用次数。
 - `dependency_context_status`：`not_applicable`、`complete` 或 `degraded`。
-- 发现、候选、已选择、已 clone 和未验证的内部依赖数量。
-- 每个依赖的 GAV、版本、project、tag、commit SHA 和失败阶段；不记录凭据。
+- requested/effective review mode 与依赖降级 reason code。
+- 每个依赖的 project、target branch、实际 commit SHA、准备耗时和失败阶段；不记录凭据。
 - clone、计划、review、发布和总任务耗时。
 - inline、普通 comment、过滤、去重和失败的 finding 数量。
 
@@ -166,13 +160,15 @@ Maven 官方依赖能力和术语参考：[Apache Maven Dependency Plugin](https
 
 场景二（Draft，尚未实现）：
 
-- 单 MR 能在支持的 Maven 子集中 clone 最多 3 个精确 tag 依赖，并把来源写入报告。
-- 单 MR 依赖解析失败时仍完成单仓审查，报告明确显示 `degraded` 和未验证范围。
+- 普通 one-step 不读取目录；无依赖映射的 Deep Review 维持现有单仓 two-step。
+- 配置 1–3 个依赖且全部准备成功时，固定两次 Agent 调用并生成独立依赖联合 manifest/结果。
+- 依赖超过 3 个、目录无效或任一依赖准备失败时，固定降级为单仓 one-step、一次 Agent 调用，并明确显示 `degraded` 和未验证范围。
+- 依赖仓只使用与主 MR target branch 同名的分支，报告记录实际 commit SHA，且 finding 只能发布到主 MR。
 
 ### 8.2 历史样本对照
 
 - 选择真实的跨仓已知缺陷、内部依赖误用和无缺陷样本，对现有单仓 review 与新流程做同模型、同 prompt 版本对照。
-- 每个正样本必须识别已知根因、引用正确版本/成员并给出正确责任 MR；无法证明时应降级而不是猜测。
+- 每个正样本必须识别已知根因、引用正确成员或依赖 commit，并给出正确责任 MR；无法证明时不得猜测。
 - 负样本不得新增错误的 HIGH major/fatal 自动评论。
 - 记录新增有效 finding、重大误报、上下文完整率/降级率、p50/p95 总耗时和 clone 耗时；首期仅建议，不将指标接入合并门禁。
 
@@ -180,9 +176,9 @@ Maven 官方依赖能力和术语参考：[Apache Maven Dependency Plugin](https
 
 - 开源三方件分析、CVE、许可证或供应链安全。
 - JAR 下载、sources JAR、二进制反编译。
-- Gradle 或任意可执行构建脚本的依赖解析。
+- Maven、Gradle、POM、GAV 或 dependency version 解析。
 - 编译、测试、集成环境或临时制品发布。
-- 全量 clone 所有直接或传递依赖。
+- 递归展开传递项目依赖，或 clone 超过 3 个依赖仓。
 - webhook 多 MR 聚合、等待窗口或自动需求聚类。
 - 根据标题相似度、分支名或代码相似度猜测 `ReqID`。
 - 合并门禁或自动阻断。
@@ -192,4 +188,4 @@ Maven 官方依赖能力和术语参考：[Apache Maven Dependency Plugin](https
 - GitLab 项目信息 API 必须按 project path 提供 `project_id`，MR 详情 API `GET /projects/{project_id}/isource/merge_requests/{iid}` 必须继续提供精确 `diff_refs` 和 `e2e_issues[0].issue_num` 非空字符串；示例响应见仓库根目录 `gitlab_mr_api.txt`。
 - 生产启用的 Agent adapter 必须通过 healthcheck。自动化契约测试覆盖 OpenCode/Claude Code 的 ReviewSet cwd 与提示隔离；本机 Claude Code sibling repo live smoke 已通过，本机未安装 OpenCode，因此未执行其 live smoke。
 - 场景一首次生产验证必须先设置 `MR_REVIEWER_REVIEW_SET_POST_COMMENT=false` 对历史正反样本 dry-run，人工复核后再受控开启评论。
-- 场景二开始前，部署方需要建立并维护中央 GAV 源码目录，保证 tag template 能解析到不可变源码 ref。
+- 场景二开始前，部署方需要建立并维护只读项目依赖目录，并为生产实际选用的 Agent 安装 `dependency-code-review` skill。

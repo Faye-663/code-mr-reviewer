@@ -12,3 +12,4 @@ $review_plan_json
 {"schema_version":"review-set-review/v1","findings":[{"issue_id":"CONTRACT_001","rule_id":"CONTRACT","severity":"major","confidence":"HIGH","title":"...","impact":"...","evidence_refs":[{"member_id":"p2-mr2","path":"src/sdk.py","start_line":1,"end_line":2,"detail":"..."}],"targets":[{"member_id":"p1-mr1","position":{"old_path":"src/caller.py","new_path":"src/caller.py","old_line":-1,"new_line":42},"suggestion":"..."}]}],"relationship_summary":["..."],"notes":[],"test_gaps":[],"good":[]}
 
 severity 只能是 suggestion、minjor、major、fatal；confidence 只能是 HIGH、MEDIUM、LOW。targets 只能引用 manifest 成员；position 无法确定时必须为 null。没有可证实的跨仓关系时，relationship_summary 必须明确写“未发现可证实的跨仓关系”，同时仍完成每个成员自身检视。
+position 中的 old_line 和 new_line 表示同一个评论锚点在变更前后的行号，不是范围的起止行。新增行必须使用 old_line=-1、new_line=新增后的行号；删除行必须使用 old_line=删除前的行号、new_line=-1；只有 diff 中未修改的上下文行才同时提供两者。找不到真实 diff 锚点时 position 必须为 null，禁止伪造或借用邻近 diff 行。

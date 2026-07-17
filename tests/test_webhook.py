@@ -351,6 +351,36 @@ def test_webhook_worker_posts_inline_discussion_from_python(tmp_path: Path):
     assert "修复认证流程" not in posted["body"]
 
 
+def test_webhook_worker_keeps_non_diff_finding_local(tmp_path: Path):
+    event = parse_gitlab_merge_request_event(
+        _merge_request_payload(),
+        Config(gitlab_base_url="https://gitlab.example.com"),
+    )
+    assert event is not None
+    payload = json.loads(_RecordingReviewService().markdown)
+    payload["findings"][0]["new_line"] = 99
+    service = _RecordingReviewService(json.dumps(payload, ensure_ascii=False))
+    gitlab = _RecordingGitLabClient()
+    config = Config(
+        gitlab_base_url="https://gitlab.example.com",
+        gitlab_token="secret-token",
+        report_dir=tmp_path,
+        webhook_post_comment=True,
+        agent_model_name="GLM5",
+    )
+    queue = WebhookReviewQueue(service, gitlab, config)
+    queue.start()
+
+    queue.enqueue(event)
+    queue._queue.join()
+
+    assert gitlab.comments == []
+    assert gitlab.discussions == []
+    report = json.loads(next(tmp_path.glob("*.json")).read_text(encoding="utf-8"))
+    assert report["finding_results"][0]["status"] == "invalid"
+    assert report["finding_results"][0]["reason"] == "line_not_in_diff"
+
+
 def test_webhook_worker_can_skip_python_comment(tmp_path: Path):
     event = parse_gitlab_merge_request_event(
         _merge_request_payload(),

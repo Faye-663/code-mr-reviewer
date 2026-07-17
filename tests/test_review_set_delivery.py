@@ -224,6 +224,30 @@ def test_review_set_publisher_falls_back_to_note_when_valid_position_is_not_in_d
     assert publication.results[0]["reason"] == "position_not_in_diff"
 
 
+def test_review_set_publisher_does_not_fallback_for_inconsistent_line_sides():
+    payload = _result_payload()
+    payload["findings"][0]["targets"] = [
+        {
+            "member_id": "p101-mr7",
+            "position": {
+                "old_path": "src/caller.py",
+                "new_path": "src/caller.py",
+                "old_line": 56,
+                "new_line": 57,
+            },
+            "suggestion": "修复调用方。",
+        }
+    ]
+    gitlab = _PublishingGitLab()
+
+    publication = ReviewSetPublisher(gitlab).publish(_report(payload), enabled=True, model_name="GLM5")
+
+    assert publication.results[0]["status"] == "invalid"
+    assert publication.results[0]["reason"] == "inconsistent_line_sides"
+    assert gitlab.inline_posts == []
+    assert gitlab.note_posts == []
+
+
 def test_review_set_publisher_rejects_unknown_target_without_blocking_valid_target():
     payload = _result_payload()
     payload["findings"][0]["targets"][0]["member_id"] = "unknown"

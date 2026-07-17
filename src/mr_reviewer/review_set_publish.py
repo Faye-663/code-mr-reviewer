@@ -127,16 +127,18 @@ class ReviewSetPublisher:
                 if target.position is None:
                     decisions.append(_TargetDecision(finding, target, target_index, member, "publishable_note", "position_not_provided", None, marker))
                     continue
-                diff_position = _position_map(prepared[member.member_id]).find(
+                resolution = _position_map(prepared[member.member_id]).resolve(
                     target.position.old_path,
                     target.position.new_path,
                     target.position.old_line,
                     target.position.new_line,
                 )
-                if diff_position is None:
+                if resolution.position is not None:
+                    decisions.append(_TargetDecision(finding, target, target_index, member, "publishable_inline", "", resolution.position, marker))
+                elif resolution.reason == "line_not_in_diff":
                     decisions.append(_TargetDecision(finding, target, target_index, member, "publishable_note", "position_not_in_diff", None, marker))
                 else:
-                    decisions.append(_TargetDecision(finding, target, target_index, member, "publishable_inline", "", diff_position, marker))
+                    decisions.append(_TargetDecision(finding, target, target_index, member, "invalid", resolution.reason, None, marker))
         return tuple(decisions)
 
     def _post(self, decision: _TargetDecision, model_name: str) -> dict[str, object]:

@@ -48,9 +48,15 @@ class FindingValidationDecision:
 
 class DiffPositionMap:
     def __init__(self, positions: list[DiffPosition]):
-        self._positions = {
-            (position.old_path, position.new_path, position.old_line, position.new_line): position
+        self._new_positions = {
+            (position.new_path, position.new_line): position
             for position in positions
+            if position.new_line != -1
+        }
+        self._old_positions = {
+            (position.old_path, position.old_line): position
+            for position in positions
+            if position.old_line != -1
         }
 
     @classmethod
@@ -99,7 +105,10 @@ class DiffPositionMap:
         return cls(positions)
 
     def find(self, old_path: str, new_path: str, old_line: int, new_line: int) -> DiffPosition | None:
-        return self._positions.get((old_path, new_path, old_line, new_line))
+        # GitLab 同时收到两侧行号时按 new_line 定位；只有新侧缺失时才使用旧侧。
+        if new_line != -1:
+            return self._new_positions.get((new_path, new_line))
+        return self._old_positions.get((old_path, old_line))
 
 
 def validate_review_findings(

@@ -100,14 +100,64 @@ diff --git a/src/example.py b/src/example.py
     assert decisions[2].reason == "line_not_in_diff"
 
 
-def _finding(severity: str, confidence: str, new_line: int) -> ReviewFinding:
+def test_validate_review_findings_prefers_new_side_when_both_lines_are_provided():
+    position_map = DiffPositionMap.from_unified_diff(
+        """
+diff --git a/src/example.py b/src/example.py
+--- a/src/example.py
++++ b/src/example.py
+@@ -119,1 +119,1 @@
+-old
++replacement
+""".strip(),
+        DiffRefs(base_sha="base-sha", start_sha="start-sha", head_sha="head-sha"),
+    )
+    review = StructuredReviewResult(
+        findings=[_finding(severity="major", confidence="HIGH", old_line=119, new_line=119)],
+        notes=[],
+        test_gaps=[],
+    )
+
+    decisions = validate_review_findings(review, position_map)
+
+    assert decisions[0].status == "publishable"
+    assert decisions[0].position is not None
+    assert decisions[0].position.old_line == -1
+    assert decisions[0].position.new_line == 119
+
+
+def test_validate_review_findings_does_not_fallback_when_new_side_is_invalid():
+    position_map = DiffPositionMap.from_unified_diff(
+        """
+diff --git a/src/example.py b/src/example.py
+--- a/src/example.py
++++ b/src/example.py
+@@ -119,1 +119,1 @@
+-old
++replacement
+""".strip(),
+        DiffRefs(base_sha="base-sha", start_sha="start-sha", head_sha="head-sha"),
+    )
+    review = StructuredReviewResult(
+        findings=[_finding(severity="major", confidence="HIGH", old_line=119, new_line=999)],
+        notes=[],
+        test_gaps=[],
+    )
+
+    decisions = validate_review_findings(review, position_map)
+
+    assert decisions[0].status == "invalid"
+    assert decisions[0].reason == "line_not_in_diff"
+
+
+def _finding(severity: str, confidence: str, new_line: int, old_line: int = -1) -> ReviewFinding:
     return ReviewFinding(
         rule_id="SQL_PERFORMANCE",
         severity=severity,
         confidence=confidence,
         old_path="src/example.py",
         new_path="src/example.py",
-        old_line=-1,
+        old_line=old_line,
         new_line=new_line,
         title="批量查询缺少数量限制",
         evidence="本次变更新增 IN 查询，但未限制集合大小。",

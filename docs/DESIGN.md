@@ -130,6 +130,7 @@ flowchart TD
 - `severity` 使用 GitLab discussions API 枚举：`suggestion`、`minjor`、`major`、`fatal`。
 - `confidence` 只能是 `HIGH`、`MEDIUM`、`LOW`。
 - 新增行使用 `old_line=-1`；删除行使用 `new_line=-1`。
+- 同时提供 `old_line` 和 `new_line` 时按 `new_path + new_line` 定位；只有 `new_line=-1` 时才按 `old_path + old_line` 定位。发布前使用 MR diff 中解析出的规范位置，避免模型提供的不一致行号组合造成误投。
 - `old_path` / `new_path` 使用 GitLab diff 中的路径；重命名时分别填旧路径和新路径。
 - `evidence` 和 `suggestion` 必须非空，否则 finding 不进入发布候选。
 

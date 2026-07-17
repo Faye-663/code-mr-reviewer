@@ -5,7 +5,7 @@ description: "Use when reviewing a GitLab MR URL with OpenCode or Claude Code th
 
 # GitLab MR Review
 
-你负责把一个 GitLab MR URL 交给确定性脚本处理。这个 skill 只做端到端编排：获取 MR 元数据、clone/fetch/checkout，并按 title 选择 one-step 或 Deep Review。普通 MR 直接调用 `code-review skill`；title 去除前导空白后以 `【Deep-Review】` 开头时（忽略大小写）先生成严格审查计划，再把计划作为待验证线索交给 review。本地 Markdown 报告使用“代码检视报告 / Discoveries / 检视意见 / 检视摘要”结构；按配置写回现有 MR 的 comment 只包含 review JSON 正文。
+你负责把一个 GitLab MR URL 交给确定性脚本处理。这个 skill 只做端到端编排：获取 MR 元数据、clone/fetch/checkout，并按 title 选择 one-step 或 Deep Review。普通 MR 直接调用 `code-review skill`；title 去除前导空白后以 `【Deep-Review】` 或 `[Deep-Review]` 开头时（忽略大小写）先生成严格审查计划，再把计划作为待验证线索交给 review。两种括号必须完整匹配，混合形式不触发 Deep Review。本地 Markdown 报告使用“代码检视报告 / Discoveries / 检视意见 / 检视摘要”结构；按配置写回现有 MR 的 comment 只包含 review JSON 正文。
 
 ## 输入
 
@@ -45,7 +45,7 @@ python <复制后的skill目录>/gitlab-mr-review/scripts/review_gitlab_mr.py "<
 2. 调 GitLab API 获取 MR 元数据和 target/source project 的 HTTPS clone URL。
 3. clone target repo 到临时目录，显式 fetch target/source 分支。
 4. checkout `diff_refs.head_sha`，读取 `Base SHA`、`Head SHA` 和 `Changed files`。
-5. 按最新 MR title 路由：普通 title 执行一次 review；`【Deep-Review】` 前缀执行两次调用，先生成审查计划再 review。
+5. 按最新 MR title 路由：普通 title 执行一次 review；`【Deep-Review】` 或 `[Deep-Review]` 完整前缀执行两次调用，先生成审查计划再 review。
 6. 要求同一 Agent 使用现有 `code-review skill` 审查本地 repo 的 MR range。
 7. 写出本地 Markdown 报告；Deep Review 报告额外包含审查计划。当 `MR_REVIEW_SUBMIT_COMMENT` 不是 `false` 时，只把 review 正文提交到现有 MR comment。
 

@@ -12,7 +12,7 @@ Accepted（场景一 Implemented；场景二 Deferred）
 
 场景一已实现 IM 显式 ReviewSet、project path 到 `project_id` 再到 isource MR 的预检链路、精确多成员 checkout、固定 two-step、聚合报告和按责任 MR 幂等发布。场景二的内部 Maven 依赖源码上下文尚未实现，不得从本 ADR 的 Accepted 状态推断其已经可用。
 
-生产首次启用场景一时，应以 `MR_REVIEWER_REVIEW_SET_POST_COMMENT=false` 运行历史正反样本 dry-run；这属于 rollout 验收，不改变架构决策状态。
+生产首次启用场景一时，应以 `MR_REVIEWER_REVIEW_SET_POST_COMMENT=false` 运行历史正反样本 dry-run；这属于 rollout 验收，不改变架构决策状态。webhook 与 ReviewSet 后续统一使用共享 `FindingPublicationPolicy`，默认门槛为 `minjor+HIGH`，发布门槛不改变聚合报告 findings 收录。
 
 ## Context
 
@@ -33,7 +33,7 @@ Accepted（场景一 Implemented；场景二 Deferred）
 - 系统先按 MR URL 中的 project path 查询 `project_id`，再以 URL 中的 `iid` 调用 `GET /projects/{project_id}/isource/merge_requests/{iid}`；只读取该响应的 `e2e_issues[0].issue_num`，要求其为去除首尾空白后的非空字符串，并仅在全部成员值相同时继续。
 - webhook 保持单 MR 事件处理，不增加聚合状态、等待窗口或“变更集完整”推断。
 - 联合检视固定 two-step：先建立跨仓审查计划，再重新验证所有成员 diff；覆盖每个 MR 自身问题和组合问题。
-- 生成一个聚合报告。HIGH major/fatal finding 按 targets 回写责任 MR：可定位时使用 inline discussion；未提供位置或位置语法合法但无法映射当前 diff 时使用普通 note；未知成员、越界路径或非法行号不发布。
+- 生成一个聚合报告。满足共享发布门槛的 finding 按 targets 回写责任 MR：可定位时使用 inline discussion；未提供位置或位置语法合法但无法映射当前 diff 时使用普通 note；未知成员、越界路径、非法行号或自相矛盾的两侧行号不发布。默认门槛为 severity 至少 `minjor` 且 confidence 至少 `HIGH`，部署侧可通过受现有枚举约束的 `MR_REVIEWER_PUBLISH_MIN_SEVERITY` 与 `MR_REVIEWER_PUBLISH_MIN_CONFIDENCE` 调整。
 
 项目信息、`isource` MR 详情和 `ReqID` 契约已由 `gitlab_mr_api.txt` 确认。实现不得从 MR URL 猜测 `project_id`，不得读取相近字段、猜测需求关联，或使用 `e2e_issues` 后续元素替代首元素。
 

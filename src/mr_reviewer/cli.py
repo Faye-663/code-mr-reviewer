@@ -61,6 +61,8 @@ def healthcheck(config: Config) -> int:
     print(f"webhook_secret: {'ok' if config.webhook_secret else 'optional'}")
     print(f"webhook_post_comment: {'enabled' if config.webhook_post_comment else 'disabled'}")
     print(f"review_set_post_comment: {'enabled' if config.review_set_post_comment else 'disabled'}")
+    print(f"publish_min_severity: {config.publish_min_severity}")
+    print(f"publish_min_confidence: {config.publish_min_confidence}")
     return 0 if all(checks.values()) else 1
 
 
@@ -194,7 +196,10 @@ def _process_review_set(
     try:
         with task_context(task_id, config.debug_dir, config.log_level == "DEBUG"):
             report = service.review_set(request, config, task_id)
-            publication = ReviewSetPublisher(service.gitlab).publish(
+            publication = ReviewSetPublisher(
+                service.gitlab,
+                config.publication_policy,
+            ).publish(
                 report,
                 enabled=config.review_set_post_comment,
                 model_name=config.agent_model_name,

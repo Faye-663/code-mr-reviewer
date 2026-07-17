@@ -148,6 +148,26 @@ def test_review_service_uses_two_steps_for_deep_review_title(tmp_path: Path):
     assert report.agent_call_count == 2
 
 
+def test_review_service_uses_two_steps_for_ascii_deep_review_title(tmp_path: Path):
+    class DeepReviewGitLabClient(FakeGitLabClient):
+        def get_merge_request(self, mr: GitLabMrUrl):
+            data = super().get_merge_request(mr)
+            data["title"] = "  [deep-review] Fix auth"
+            return data
+
+    runner = RecordingOpenCodeRunner()
+    report = ReviewService(DeepReviewGitLabClient(), RecordingGitClient(), runner).review(
+        GitLabMrUrl("https://gitlab.example.com", "team/project", 7),
+        Config(gitlab_base_url="https://gitlab.example.com", work_dir=tmp_path),
+        task_id="task-ascii-deep-review",
+    )
+
+    assert len(runner.prompts) == 2
+    assert report.review_mode == "two-step"
+    assert report.routing_marker == "[Deep-Review]"
+    assert report.agent_call_count == 2
+
+
 def test_review_service_uses_source_project_repo_for_fork_mr(tmp_path: Path):
     class ForkGitLabClient(FakeGitLabClient):
         def get_merge_request(self, mr: GitLabMrUrl):

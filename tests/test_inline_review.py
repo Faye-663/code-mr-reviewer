@@ -90,6 +90,7 @@ diff --git a/src/example.py b/src/example.py
         findings=[
             _finding(severity="major", confidence="HIGH", new_line=2),
             _finding(severity="suggestion", confidence="HIGH", new_line=2),
+            _finding(severity="minjor", confidence="MEDIUM", new_line=2),
             _finding(severity="major", confidence="HIGH", new_line=99),
         ],
         notes=[],
@@ -98,10 +99,16 @@ diff --git a/src/example.py b/src/example.py
 
     decisions = validate_review_findings(review, position_map)
 
-    assert [decision.status for decision in decisions] == ["publishable", "filtered", "invalid"]
+    assert [decision.status for decision in decisions] == [
+        "publishable",
+        "filtered",
+        "filtered",
+        "invalid",
+    ]
     assert decisions[0].position is not None
-    assert decisions[1].reason == "below_publish_threshold"
-    assert decisions[2].reason == "line_not_in_diff"
+    assert decisions[1].reason == "below_min_severity"
+    assert decisions[2].reason == "below_min_confidence"
+    assert decisions[3].reason == "line_not_in_diff"
 
 
 def test_validate_review_findings_rejects_conflicting_changed_sides():

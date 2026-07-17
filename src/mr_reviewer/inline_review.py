@@ -3,10 +3,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from mr_reviewer.publication_policy import DEFAULT_PUBLICATION_POLICY, FindingPublicationPolicy
 from mr_reviewer.review_result import ReviewFinding, StructuredReviewResult
-
-PUBLISHABLE_SEVERITIES = {"fatal", "major"}
-PUBLISHABLE_CONFIDENCE = "HIGH"
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,6 +161,7 @@ class DiffPositionMap:
 def validate_review_findings(
         review: StructuredReviewResult,
         position_map: DiffPositionMap,
+        publication_policy: FindingPublicationPolicy = DEFAULT_PUBLICATION_POLICY,
 ) -> list[FindingValidationDecision]:
     decisions = []
     for finding in review.findings:
@@ -175,8 +174,9 @@ def validate_review_findings(
         if resolution.position is None:
             decisions.append(FindingValidationDecision(finding, "invalid", resolution.reason, None))
             continue
-        if finding.severity not in PUBLISHABLE_SEVERITIES or finding.confidence != PUBLISHABLE_CONFIDENCE:
-            decisions.append(FindingValidationDecision(finding, "filtered", "below_publish_threshold", resolution.position))
+        filter_reason = publication_policy.filter_reason(finding.severity, finding.confidence)
+        if filter_reason:
+            decisions.append(FindingValidationDecision(finding, "filtered", filter_reason, resolution.position))
             continue
         decisions.append(FindingValidationDecision(finding, "publishable", "", resolution.position))
     return decisions

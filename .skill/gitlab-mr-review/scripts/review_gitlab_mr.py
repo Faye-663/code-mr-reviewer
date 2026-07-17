@@ -56,6 +56,7 @@ class ReviewRoutingDecision(NamedTuple):
 
 
 DEEP_REVIEW_MARKER = "【Deep-Review】"
+DEEP_REVIEW_MARKERS = (DEEP_REVIEW_MARKER, "[Deep-Review]")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -189,8 +190,10 @@ def normalize_base_url(base_url: str) -> str:
 
 def resolve_review_routing(title: object) -> ReviewRoutingDecision:
     normalized = title if isinstance(title, str) else ""
-    if normalized.lstrip().casefold().startswith(DEEP_REVIEW_MARKER.casefold()):
-        return ReviewRoutingDecision("two-step", "title_prefix", DEEP_REVIEW_MARKER)
+    normalized = normalized.lstrip().casefold()
+    for marker in DEEP_REVIEW_MARKERS:
+        if normalized.startswith(marker.casefold()):
+            return ReviewRoutingDecision("two-step", "title_prefix", marker)
     return ReviewRoutingDecision("one-step", "default", "")
 
 

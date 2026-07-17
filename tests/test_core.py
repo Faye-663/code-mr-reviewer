@@ -13,6 +13,7 @@ from mr_reviewer.observability import task_context
 from mr_reviewer.prompting import PromptTemplateError, build_review_plan_prompt, build_review_prompt
 from mr_reviewer.process import prepare_command
 from mr_reviewer.review_result import parse_review_plan, parse_structured_review_result
+from mr_reviewer.review_routing import resolve_review_routing
 from mr_reviewer.state import StateStore
 
 
@@ -141,6 +142,30 @@ def test_prompt_templates_are_portable_and_render_identically(tmp_path: Path):
     )
     parse_review_plan(main_summary.split("JSON 结构为：\n", 1)[1].split("\ncritical_paths", 1)[0])
     parse_structured_review_result(main_review.split("JSON 结构为：\n", 1)[1].split("\nseverity", 1)[0])
+
+
+@pytest.mark.parametrize(
+    ("title", "review_mode", "routing_marker"),
+    [
+        ("  【deep-review】 change", "two-step", "【Deep-Review】"),
+        ("  [deep-review] change", "two-step", "[Deep-Review]"),
+        ("【Deep-Review] change", "one-step", ""),
+        ("prefix [Deep-Review] change", "one-step", ""),
+    ],
+)
+def test_portable_skill_routing_matches_main_program(title: str, review_mode: str, routing_marker: str):
+    script = _load_gitlab_mr_review_script()
+
+    main = resolve_review_routing(title)
+    portable = script.resolve_review_routing(title)
+
+    assert (main.review_mode, main.routing_reason, main.routing_marker) == (
+        portable.review_mode,
+        portable.routing_reason,
+        portable.routing_marker,
+    )
+    assert main.review_mode == review_mode
+    assert main.routing_marker == routing_marker
 
 
 def test_prompt_renderer_rejects_missing_or_unresolved_template_values():

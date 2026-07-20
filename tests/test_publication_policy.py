@@ -6,16 +6,16 @@ from mr_reviewer.config import Config
 from mr_reviewer.publication_policy import FindingPublicationPolicy
 
 
-def test_default_publication_policy_uses_minjor_and_high_thresholds():
+def test_default_publication_policy_uses_minor_and_high_thresholds():
     policy = FindingPublicationPolicy()
 
-    assert policy.min_severity == "minjor"
+    assert policy.min_severity == "minor"
     assert policy.min_confidence == "HIGH"
-    assert policy.filter_reason("minjor", "HIGH") == ""
+    assert policy.filter_reason("minor", "HIGH") == ""
     assert policy.filter_reason("major", "HIGH") == ""
     assert policy.filter_reason("fatal", "HIGH") == ""
     assert policy.filter_reason("suggestion", "HIGH") == "below_min_severity"
-    assert policy.filter_reason("minjor", "MEDIUM") == "below_min_confidence"
+    assert policy.filter_reason("minor", "MEDIUM") == "below_min_confidence"
 
 
 def test_custom_publication_policy_applies_both_ordered_thresholds():
@@ -29,8 +29,8 @@ def test_custom_publication_policy_applies_both_ordered_thresholds():
 @pytest.mark.parametrize(
     ("severity", "confidence", "message"),
     [
-        ("MINJOR", "HIGH", "unsupported publish minimum severity"),
-        ("minjor", "high", "unsupported publish minimum confidence"),
+        (("min" + "jor").upper(), "HIGH", "unsupported publish minimum severity"),
+        ("minor", "high", "unsupported publish minimum confidence"),
     ],
 )
 def test_config_rejects_invalid_publication_thresholds(

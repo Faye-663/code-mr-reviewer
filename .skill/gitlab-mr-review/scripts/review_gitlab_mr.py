@@ -459,12 +459,12 @@ def render_local_report(
             f"**建议**: {finding.get('suggestion', '')}", "",
         ])
     counts = {severity: sum(1 for item in findings if isinstance(item, dict) and item.get("severity") == severity)
-              for severity in ("fatal", "major", "minjor", "suggestion")}
+              for severity in ("fatal", "major", "minor", "suggestion")}
     lines.extend(["## 检视摘要", "", "| 严重程度 | 数量 | 状态 |", "|----------|------|------|"])
-    for severity in ("fatal", "major", "minjor", "suggestion"):
-        state = "通过" if not counts[severity] else {"fatal": "阻止", "major": "警告", "minjor": "警告", "suggestion": "备注"}[severity]
+    for severity in ("fatal", "major", "minor", "suggestion"):
+        state = "通过" if not counts[severity] else {"fatal": "阻止", "major": "警告", "minor": "警告", "suggestion": "备注"}[severity]
         lines.append(f"| {severity} | {counts[severity]} | {state} |")
-    verdict = "阻止" if counts["fatal"] else "警告" if counts["major"] or counts["minjor"] else "备注" if counts["suggestion"] else "通过"
+    verdict = "阻止" if counts["fatal"] else "警告" if counts["major"] or counts["minor"] else "备注" if counts["suggestion"] else "通过"
     lines.extend(["", f"**裁决**：{verdict}"])
     if good:
         lines.extend(["", "## GOOD", ""])

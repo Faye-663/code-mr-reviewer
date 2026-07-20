@@ -427,6 +427,23 @@ def test_parse_review_set_result_accepts_multi_target_and_null_position():
     assert result.findings[0].targets[1].position is None
 
 
+def test_parse_review_set_result_accepts_minor_severity():
+    payload = _result_payload()
+    payload["findings"][0]["severity"] = "minor"
+
+    result = parse_structured_review_set_result(json.dumps(payload, ensure_ascii=False))
+
+    assert result.findings[0].severity == "minor"
+
+
+def test_parse_review_set_result_rejects_legacy_severity_typo():
+    payload = _result_payload()
+    payload["findings"][0]["severity"] = "min" + "jor"
+
+    with pytest.raises(StructuredReviewSetParseError, match="severity"):
+        parse_structured_review_set_result(json.dumps(payload, ensure_ascii=False))
+
+
 def test_parse_review_set_result_rejects_unexpected_fields():
     payload = _result_payload()
     payload["overview"] = "not allowed"

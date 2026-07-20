@@ -43,7 +43,8 @@ def test_code_review_skill_targets_gitlab_mr_range():
     assert '"findings"' in skill
     assert '"severity"' in skill
     assert "suggestion" in skill
-    assert "minjor" in skill
+    assert "minor" in skill
+    assert ("min" + "jor") not in skill
     assert "major" in skill
     assert "fatal" in skill
     assert "JSDoc" not in skill
@@ -127,9 +128,13 @@ def test_prompt_templates_are_portable_and_render_identically(tmp_path: Path):
     assert "覆盖计划未列出的" in main_review
     assert "不是范围的起止行" in main_review
     assert "禁止伪造或借用邻近 diff 行" in main_review
+    assert "minor" in main_review
+    assert ("min" + "jor") not in main_review
     review_set_template = Path("src/mr_reviewer/prompt_templates/review-set-review.md").read_text(encoding="utf-8")
     assert "不是范围的起止行" in review_set_template
     assert "position 必须为 null" in review_set_template
+    assert "minor" in review_set_template
+    assert ("min" + "jor") not in review_set_template
     assert len(main_review.template_version) == 12
     assert Path("src/mr_reviewer/prompt_templates/review-plan.md").read_bytes() == (
         Path(".skill/gitlab-mr-review/prompt_templates/review-plan.md").read_bytes()
@@ -271,6 +276,31 @@ def test_gitlab_mr_review_skill_runs_one_step_without_summary(monkeypatch, tmp_p
     assert result["summary"] is None
     assert result["agent_call_count"] == 1
     assert "one-step（default）" in result["local_report"]
+
+
+def test_gitlab_mr_review_skill_report_counts_minor_severity():
+    script = _load_gitlab_mr_review_script()
+    review = json.dumps(
+        {
+            "findings": [
+                {
+                    "severity": "minor",
+                    "title": "边界条件未覆盖",
+                    "new_path": "src/example.py",
+                    "new_line": 42,
+                }
+            ],
+            "good": [],
+            "notes": [],
+            "test_gaps": [],
+        },
+        ensure_ascii=False,
+    )
+
+    report = script.render_local_report(None, review, "base", "head")
+
+    assert "| minor | 1 | 警告 |" in report
+    assert ("min" + "jor") not in report
 
 
 def test_gitlab_mr_review_script_reads_independent_api_base_url(monkeypatch):

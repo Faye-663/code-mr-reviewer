@@ -172,9 +172,9 @@ def test_review_set_publisher_posts_inline_and_note_targets():
     assert all("<!-- ai-cr:review-set:" in item["marker"] for item in publication.results)
 
 
-def test_review_set_publisher_uses_default_minjor_high_policy():
+def test_review_set_publisher_uses_default_minor_high_policy():
     payload = _result_payload()
-    payload["findings"][0]["severity"] = "minjor"
+    payload["findings"][0]["severity"] = "minor"
     payload["findings"][0]["targets"] = payload["findings"][0]["targets"][:1]
     gitlab = _PublishingGitLab()
 
@@ -183,7 +183,7 @@ def test_review_set_publisher_uses_default_minjor_high_policy():
     )
 
     assert publication.results[0]["status"] == "posted_inline"
-    assert gitlab.inline_posts[0]["severity"] == "minjor"
+    assert gitlab.inline_posts[0]["severity"] == "minor"
 
 
 def test_review_set_publisher_uses_custom_publication_policy():
@@ -493,7 +493,7 @@ def test_healthcheck_prints_review_set_publish_switch(capsys, monkeypatch, tmp_p
     assert healthcheck(config) == 0
     output = capsys.readouterr().out
     assert "review_set_post_comment: enabled" in output
-    assert "publish_min_severity: minjor" in output
+    assert "publish_min_severity: minor" in output
     assert "publish_min_confidence: HIGH" in output
 
 

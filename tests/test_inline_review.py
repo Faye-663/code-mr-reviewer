@@ -90,7 +90,7 @@ diff --git a/src/example.py b/src/example.py
         findings=[
             _finding(severity="major", confidence="HIGH", new_line=2),
             _finding(severity="suggestion", confidence="HIGH", new_line=2),
-            _finding(severity="minjor", confidence="MEDIUM", new_line=2),
+            _finding(severity="minor", confidence="MEDIUM", new_line=2),
             _finding(severity="major", confidence="HIGH", new_line=99),
         ],
         notes=[],

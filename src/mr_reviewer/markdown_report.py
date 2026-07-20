@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from mr_reviewer.webhook import WebhookReviewEvent
 
 
-SEVERITIES = ("fatal", "major", "minjor", "suggestion")
+SEVERITIES = ("fatal", "major", "minor", "suggestion")
 
 
 def render_markdown_review_report(
@@ -158,18 +158,18 @@ def _comment_status(finding: dict) -> str:
 def _severity_status(severity: str, count: int) -> str:
     if count == 0:
         return "通过"
-    return {"fatal": "阻止", "major": "警告", "minjor": "警告", "suggestion": "备注"}[severity]
+    return {"fatal": "阻止", "major": "警告", "minor": "警告", "suggestion": "备注"}[severity]
 
 
 def _verdict(counts: dict[str, int]) -> str:
     if counts["fatal"]:
         return f"阻止 — {counts['fatal']} 个 fatal 级别问题必须在合并前解决。"
-    warning = counts["major"] + counts["minjor"]
+    warning = counts["major"] + counts["minor"]
     if warning:
-        return f"警告 — {warning} 个 major/minjor 级别问题应在合并前解决。"
+        return f"警告 — {warning} 个 major/minor 级别问题应在合并前解决。"
     if counts["suggestion"]:
         return f"备注 — {counts['suggestion']} 个 suggestion 级别建议可按需处理。"
-    return "通过 — 未发现 fatal、major、minjor 或 suggestion 级别问题。"
+    return "通过 — 未发现 fatal、major、minor 或 suggestion 级别问题。"
 
 
 def _finding_to_result(finding, status: str, reason: str) -> dict:

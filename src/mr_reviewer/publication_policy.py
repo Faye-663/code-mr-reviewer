@@ -4,13 +4,13 @@ from dataclasses import dataclass
 
 from mr_reviewer.review_result import ALLOWED_CONFIDENCES, ALLOWED_SEVERITIES
 
-SEVERITY_ORDER = ("suggestion", "minjor", "major", "fatal")
+SEVERITY_ORDER = ("suggestion", "minor", "major", "fatal")
 CONFIDENCE_ORDER = ("LOW", "MEDIUM", "HIGH")
 
 
 @dataclass(frozen=True, slots=True)
 class FindingPublicationPolicy:
-    min_severity: str = "minjor"
+    min_severity: str = "minor"
     min_confidence: str = "HIGH"
 
     def __post_init__(self) -> None:

@@ -381,14 +381,14 @@ def test_webhook_worker_uses_custom_publication_policy(tmp_path: Path):
     assert gitlab.discussions[0]["severity"] == "suggestion"
 
 
-def test_webhook_worker_uses_default_minjor_high_policy(tmp_path: Path):
+def test_webhook_worker_uses_default_minor_high_policy(tmp_path: Path):
     event = parse_gitlab_merge_request_event(
         _merge_request_payload(),
         Config(gitlab_base_url="https://gitlab.example.com"),
     )
     assert event is not None
     payload = json.loads(_RecordingReviewService().markdown)
-    payload["findings"][0]["severity"] = "minjor"
+    payload["findings"][0]["severity"] = "minor"
     service = _RecordingReviewService(json.dumps(payload, ensure_ascii=False))
     gitlab = _RecordingGitLabClient()
     config = Config(
@@ -405,7 +405,7 @@ def test_webhook_worker_uses_default_minjor_high_policy(tmp_path: Path):
     queue._queue.join()
 
     assert len(gitlab.discussions) == 1
-    assert gitlab.discussions[0]["severity"] == "minjor"
+    assert gitlab.discussions[0]["severity"] == "minor"
 
 
 def test_webhook_worker_keeps_non_diff_finding_local(tmp_path: Path):

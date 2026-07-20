@@ -79,7 +79,7 @@ class Config:
     webhook_secret_header: str = "X-Gitlab-Token"
     webhook_post_comment: bool = True
     review_set_post_comment: bool = True
-    publish_min_severity: str = "minjor"
+    publish_min_severity: str = "minor"
     publish_min_confidence: str = "HIGH"
     report_dir: Path = Path("log/webhook-reports")
     max_files: int = 50
@@ -175,7 +175,7 @@ class Config:
             webhook_secret_header=get("WEBHOOK_SECRET_HEADER", "X-Gitlab-Token"),
             webhook_post_comment=_parse_bool(get("WEBHOOK_POST_COMMENT", "true")),
             review_set_post_comment=_parse_bool(get("REVIEW_SET_POST_COMMENT", "true")),
-            publish_min_severity=get("PUBLISH_MIN_SEVERITY", "minjor"),
+            publish_min_severity=get("PUBLISH_MIN_SEVERITY", "minor"),
             publish_min_confidence=get("PUBLISH_MIN_CONFIDENCE", "HIGH"),
             report_dir=Path(get("REPORT_DIR", "log/webhook-reports")),
             max_files=int(get("MAX_FILES", "50")),

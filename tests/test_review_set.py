@@ -411,6 +411,14 @@ def test_parse_review_set_plan_requires_exact_members():
     assert [item["member_id"] for item in plan["member_focus"]] == ["p101-mr7", "p202-mr8"]
 
 
+def test_parse_review_set_plan_recovers_wrapped_contract_object():
+    raw = "开始生成联合审查计划。\n" + json.dumps(_plan_payload(), ensure_ascii=False)
+
+    plan = parse_review_set_plan(raw, {"p101-mr7", "p202-mr8"})
+
+    assert plan["schema_version"] == "review-set-plan/v1"
+
+
 def test_parse_review_set_plan_rejects_unknown_member():
     payload = _plan_payload()
     payload["member_focus"][0]["member_id"] = "unknown"
@@ -425,6 +433,14 @@ def test_parse_review_set_result_accepts_multi_target_and_null_position():
     assert result.schema_version == "review-set-review/v1"
     assert result.findings[0].targets[0].position.new_line == 57
     assert result.findings[0].targets[1].position is None
+
+
+def test_parse_review_set_result_recovers_wrapped_contract_object():
+    raw = "```json\n" + json.dumps(_result_payload(), ensure_ascii=False) + "\n```"
+
+    result = parse_structured_review_set_result(raw)
+
+    assert result.findings[0].issue_id == "CONTRACT_NULLABILITY_001"
 
 
 def test_parse_review_set_result_accepts_minor_severity():
@@ -453,15 +469,18 @@ def test_parse_review_set_result_rejects_unexpected_fields():
 
 
 class _ReviewSetRunner:
-    def __init__(self, invalid_plan: bool = False):
+    def __init__(self, invalid_plan: bool = False, wrapped: bool = False):
         self.calls: list[tuple] = []
         self.invalid_plan = invalid_plan
+        self.wrapped = wrapped
 
     def run_review(self, prompt, cwd, timeout_seconds, prompt_metadata=None):
         self.calls.append((str(prompt), Path(cwd), timeout_seconds, prompt_metadata))
         if prompt_metadata.template_id == "review-set-plan":
-            return "not json" if self.invalid_plan else json.dumps(_plan_payload(), ensure_ascii=False)
-        return json.dumps(_result_payload(), ensure_ascii=False)
+            raw = "not json" if self.invalid_plan else json.dumps(_plan_payload(), ensure_ascii=False)
+        else:
+            raw = json.dumps(_result_payload(), ensure_ascii=False)
+        return f"按要求生成如下结果：\n{raw}\n完成。" if self.wrapped else raw
 
 
 def test_review_service_runs_review_set_as_fixed_two_step_from_task_root(tmp_path: Path):
@@ -481,6 +500,17 @@ def test_review_service_runs_review_set_as_fixed_two_step_from_task_root(tmp_pat
     assert "diff-101" not in runner.calls[0][0]
     assert "review-set-plan/v1" in runner.calls[1][0]
     assert not task_dir.exists()
+
+
+def test_review_service_recovers_wrapped_review_set_outputs_without_extra_calls(tmp_path: Path):
+    runner = _ReviewSetRunner(wrapped=True)
+    service = ReviewService(_RecordingGitLab(), _RecordingGit(), runner)
+
+    report = service.review_set(_review_set_request(), _config(tmp_path), task_id="wrapped-review-set")
+
+    assert report.result.findings[0].issue_id == "CONTRACT_NULLABILITY_001"
+    assert report.agent_call_count == 2
+    assert len(runner.calls) == 2
 
 
 def test_review_service_stops_review_set_when_plan_is_invalid(tmp_path: Path):

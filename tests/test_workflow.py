@@ -148,6 +148,33 @@ def test_review_service_uses_two_steps_for_deep_review_title(tmp_path: Path):
     assert report.agent_call_count == 2
 
 
+def test_review_service_recovers_wrapped_deep_review_outputs_without_extra_call(tmp_path: Path):
+    class DeepReviewGitLabClient(FakeGitLabClient):
+        def get_merge_request(self, mr: GitLabMrUrl):
+            data = super().get_merge_request(mr)
+            data["title"] = "【Deep-Review】 Fix auth"
+            return data
+
+    class WrappedOutputRunner(RecordingOpenCodeRunner):
+        def run_review(self, prompt, cwd, timeout_seconds, prompt_metadata=None):
+            raw = super().run_review(prompt, cwd, timeout_seconds, prompt_metadata)
+            if prompt_metadata.template_id == "review-plan":
+                return f"我将按要求生成审查计划。\n{raw}"
+            return f"我将按要求生成审查结果。\n```json\n{raw}\n```"
+
+    runner = WrappedOutputRunner()
+
+    report = ReviewService(DeepReviewGitLabClient(), RecordingGitClient(), runner).review(
+        GitLabMrUrl("https://gitlab.example.com", "team/project", 7),
+        Config(gitlab_base_url="https://gitlab.example.com", work_dir=tmp_path),
+        task_id="task-wrapped-plan",
+    )
+
+    assert report.review_plan["change_intent"] == ["修复认证流程"]
+    assert report.agent_call_count == 2
+    assert len(runner.prompts) == 2
+
+
 def test_review_service_uses_two_steps_for_ascii_deep_review_title(tmp_path: Path):
     class DeepReviewGitLabClient(FakeGitLabClient):
         def get_merge_request(self, mr: GitLabMrUrl):

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
+
+from mr_reviewer.structured_output import parse_json_object_output
 
 ALLOWED_SEVERITIES = {"suggestion", "minor", "major", "fatal"}
 ALLOWED_CONFIDENCES = {"HIGH", "MEDIUM", "LOW"}
@@ -47,10 +48,16 @@ class StructuredReviewResult:
 
 
 def parse_review_plan(raw_output: str) -> dict[str, object]:
-    try:
-        payload = json.loads(raw_output)
-    except json.JSONDecodeError as exc:
-        raise ReviewPlanParseError(f"review plan output must be valid JSON: {exc}") from exc
+    return parse_json_object_output(
+        raw_output,
+        output_type="review_plan",
+        error_label="review plan",
+        error_type=ReviewPlanParseError,
+        parse_object=_parse_review_plan_object,
+    )
+
+
+def _parse_review_plan_object(payload: object) -> dict[str, object]:
     if not isinstance(payload, dict):
         raise ReviewPlanParseError("review plan output must be a JSON object")
     expected_fields = {*REVIEW_PLAN_LIST_FIELDS, "critical_paths"}
@@ -94,11 +101,16 @@ def _review_plan_text_list(payload: dict, field: str, prefix: str = "") -> list[
 
 
 def parse_structured_review_result(raw_output: str) -> StructuredReviewResult:
-    try:
-        payload = json.loads(raw_output)
-    except json.JSONDecodeError as exc:
-        raise StructuredReviewParseError(f"review output must be valid JSON: {exc}") from exc
+    return parse_json_object_output(
+        raw_output,
+        output_type="review_result",
+        error_label="review",
+        error_type=StructuredReviewParseError,
+        parse_object=_parse_structured_review_object,
+    )
 
+
+def _parse_structured_review_object(payload: object) -> StructuredReviewResult:
     if not isinstance(payload, dict):
         raise StructuredReviewParseError("review output must be a JSON object")
     unexpected_fields = set(payload) - {"findings", "notes", "test_gaps", "good"}

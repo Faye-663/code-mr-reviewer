@@ -351,6 +351,39 @@ def test_webhook_worker_posts_inline_discussion_from_python(tmp_path: Path):
     assert "修复认证流程" not in posted["body"]
 
 
+def test_webhook_worker_posts_from_wrapped_structured_output(tmp_path: Path):
+    event = parse_gitlab_merge_request_event(
+        _merge_request_payload(),
+        Config(gitlab_base_url="https://gitlab.example.com"),
+    )
+    assert event is not None
+    strict_output = _RecordingReviewService().markdown
+    service = _RecordingReviewService(f"我将按要求进行 review。\n```json\n{strict_output}\n```")
+    gitlab = _RecordingGitLabClient()
+    queue = WebhookReviewQueue(
+        service,
+        gitlab,
+        Config(
+            gitlab_base_url="https://gitlab.example.com",
+            gitlab_token="secret-token",
+            report_dir=tmp_path,
+            webhook_post_comment=True,
+            agent_model_name="GLM5",
+        ),
+    )
+    queue.start()
+
+    queue.enqueue(event)
+    queue._queue.join()
+
+    assert len(gitlab.discussions) == 1
+    report = json.loads(next(tmp_path.glob("*.json")).read_text(encoding="utf-8"))
+    assert report["submission_status"] == "posted"
+    assert report["structured_parse_status"] == "success"
+    assert report["agent_call_count"] == 0
+    assert service.targets == [event.target]
+
+
 def test_webhook_worker_uses_custom_publication_policy(tmp_path: Path):
     event = parse_gitlab_merge_request_event(
         _merge_request_payload(),

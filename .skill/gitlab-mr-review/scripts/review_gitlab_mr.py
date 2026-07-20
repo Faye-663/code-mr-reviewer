@@ -57,6 +57,8 @@ class ReviewRoutingDecision(NamedTuple):
 
 DEEP_REVIEW_MARKER = "【Deep-Review】"
 DEEP_REVIEW_MARKERS = (DEEP_REVIEW_MARKER, "[Deep-Review]")
+ALLOWED_SEVERITIES = {"suggestion", "minor", "major", "fatal"}
+ALLOWED_CONFIDENCES = {"HIGH", "MEDIUM", "LOW"}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -281,10 +283,10 @@ def _changed_files(changed_files: list[str]) -> str:
 
 
 def parse_review_plan(raw_output: str) -> dict[str, object]:
-    try:
-        payload = json.loads(raw_output)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"review plan output must be valid JSON: {exc}") from exc
+    return _parse_json_object_output(raw_output, "review_plan", "review plan", _parse_review_plan_object)
+
+
+def _parse_review_plan_object(payload: object) -> dict[str, object]:
     if not isinstance(payload, dict):
         raise ValueError("review plan output must be a JSON object")
     list_fields = ("change_intent", "external_contracts", "state_invariants", "transaction_async_boundaries", "test_risks", "open_questions")
@@ -315,6 +317,104 @@ def parse_review_plan(raw_output: str) -> dict[str, object]:
         parsed_paths.append(item)
     result["critical_paths"] = parsed_paths
     return result
+
+
+def parse_structured_review_result(raw_output: str) -> dict[str, object]:
+    return _parse_json_object_output(raw_output, "review_result", "review", _parse_structured_review_object)
+
+
+def _parse_structured_review_object(payload: object) -> dict[str, object]:
+    if not isinstance(payload, dict):
+        raise ValueError("review output must be a JSON object")
+    unexpected_fields = set(payload) - {"findings", "notes", "test_gaps", "good"}
+    if unexpected_fields:
+        raise ValueError(f"review output contains unexpected fields: {sorted(unexpected_fields)}")
+    findings = payload.get("findings")
+    if not isinstance(findings, list):
+        raise ValueError("findings must be a list")
+    for index, finding in enumerate(findings):
+        _validate_review_finding(finding, index)
+    for field in ("notes", "test_gaps", "good"):
+        value = payload.get(field, [])
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            raise ValueError(f"{field} must be a list of strings")
+    return payload
+
+
+def _validate_review_finding(finding: object, index: int) -> None:
+    if not isinstance(finding, dict):
+        raise ValueError(f"findings[{index}] must be an object")
+    severity = _review_text(finding, "severity", index)
+    confidence = _review_text(finding, "confidence", index)
+    if severity not in ALLOWED_SEVERITIES:
+        raise ValueError(f"findings[{index}].severity must be one of {sorted(ALLOWED_SEVERITIES)}")
+    if confidence not in ALLOWED_CONFIDENCES:
+        raise ValueError(f"findings[{index}].confidence must be one of {sorted(ALLOWED_CONFIDENCES)}")
+    for field in ("rule_id", "old_path", "new_path", "title", "evidence", "impact", "suggestion"):
+        _review_text(finding, field, index)
+    for field in ("old_line", "new_line"):
+        if not isinstance(finding.get(field), int):
+            raise ValueError(f"findings[{index}].{field} must be an integer")
+
+
+def _review_text(finding: dict, field: str, index: int) -> str:
+    value = finding.get(field)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"findings[{index}].{field} must be a non-empty string")
+    return value
+
+
+def _parse_json_object_output(raw_output: str, output_type: str, error_label: str, parse_object):
+    """便携 skill 自包含运行，需在自身边界重复主程序的安全恢复策略。"""
+    try:
+        return parse_object(json.loads(raw_output))
+    except json.JSONDecodeError as strict_error:
+        decoder = json.JSONDecoder()
+        decoded_candidates = []
+        valid_candidates = []
+        validation_errors = []
+        for start, character in enumerate(raw_output):
+            if character != "{":
+                continue
+            try:
+                payload, end = decoder.raw_decode(raw_output, start)
+            except json.JSONDecodeError:
+                continue
+            decoded_candidates.append((start, end, payload))
+
+        outermost_candidates = []
+        for candidate in sorted(decoded_candidates, key=lambda item: (item[0], -item[1])):
+            start, end, _ = candidate
+            if any(parent_start <= start and end <= parent_end for parent_start, parent_end, _ in outermost_candidates):
+                continue
+            outermost_candidates.append(candidate)
+        decoded_candidates = outermost_candidates
+        for start, end, payload in decoded_candidates:
+            try:
+                parsed = parse_object(payload)
+            except ValueError as exc:
+                validation_errors.append(exc)
+                continue
+            valid_candidates.append((start, end, parsed))
+
+        if len(valid_candidates) > 1:
+            raise ValueError(f"{error_label} output contains multiple valid JSON objects") from strict_error
+        if len(valid_candidates) == 1:
+            start, end, parsed = valid_candidates[0]
+            print(
+                "warning: stage=structured_output_normalize "
+                f"output={output_type} status=recovered prefix_chars={start} "
+                f"suffix_chars={len(raw_output) - end} candidate_count={len(decoded_candidates)}",
+                file=sys.stderr,
+            )
+            return parsed
+        if len(decoded_candidates) == 1 and len(validation_errors) == 1:
+            raise validation_errors[0] from strict_error
+        if decoded_candidates:
+            raise ValueError(
+                f"{error_label} output does not contain a valid JSON object matching the required contract"
+            ) from strict_error
+        raise ValueError(f"{error_label} output must be valid JSON: {strict_error}") from strict_error
 
 
 def run_two_step_review(
@@ -352,6 +452,7 @@ def run_two_step_review(
         ),
         repo_path,
     )
+    comment_body = json.dumps(parse_structured_review_result(comment_body), ensure_ascii=False, separators=(",", ":"))
     return {
         "summary": None,
         "review_plan": review_plan,
@@ -387,6 +488,7 @@ def run_review(
             ),
             repo_path,
         )
+        comment_body = json.dumps(parse_structured_review_result(comment_body), ensure_ascii=False, separators=(",", ":"))
         result = {"summary": None, "review_plan": None, "comment_body": comment_body, "agent_call_count": 1}
     result["local_report"] = render_local_report(
         result.get("review_plan"),
@@ -411,18 +513,11 @@ def render_local_report(
     changed_files: list[str] | None = None,
 ) -> str:
     """Skill 独立运行时也使用与自动入口一致的本地报告骨架。"""
-    try:
-        structured = json.loads(review)
-    except json.JSONDecodeError:
-        structured = {"findings": [], "good": []}
-    findings = structured.get("findings") if isinstance(structured, dict) else []
-    findings = findings if isinstance(findings, list) else []
-    good = structured.get("good") if isinstance(structured, dict) else []
-    good = good if isinstance(good, list) and all(isinstance(item, str) for item in good) else []
-    notes = structured.get("notes") if isinstance(structured, dict) else []
-    notes = notes if isinstance(notes, list) and all(isinstance(item, str) for item in notes) else []
-    test_gaps = structured.get("test_gaps") if isinstance(structured, dict) else []
-    test_gaps = test_gaps if isinstance(test_gaps, list) and all(isinstance(item, str) for item in test_gaps) else []
+    structured = parse_structured_review_result(review)
+    findings = structured.get("findings", [])
+    good = structured.get("good", [])
+    notes = structured.get("notes", [])
+    test_gaps = structured.get("test_gaps", [])
     routing = routing or ReviewRoutingDecision("two-step", "title_prefix", DEEP_REVIEW_MARKER)
     changed_files = changed_files or []
     lines = [

@@ -77,6 +77,12 @@ def test_parse_structured_review_result_accepts_valid_findings():
     assert result.test_gaps == ["缺少边界测试"]
 
 
+def test_parse_structured_review_result_accepts_minor_severity():
+    result = parse_structured_review_result(_structured_payload(severity="minor"))
+
+    assert result.findings[0].severity == "minor"
+
+
 def test_parse_structured_review_result_rejects_invalid_json():
     with pytest.raises(StructuredReviewParseError, match="valid JSON"):
         parse_structured_review_result("not json")
@@ -119,7 +125,7 @@ def test_parse_structured_review_result_requires_impact_and_accepts_good():
     assert result.good == ["事务边界下沉到领域服务"]
 
 
-@pytest.mark.parametrize("severity", ["BLOCKER", "minor", ""])
+@pytest.mark.parametrize("severity", ["BLOCKER", "min" + "jor", ""])
 def test_parse_structured_review_result_rejects_unknown_severity(severity):
     payload = _structured_payload(severity=severity)
 
@@ -167,6 +173,17 @@ def test_render_structured_output_as_markdown_uses_python_renderer():
     assert "仅写入本地报告" in rendered.markdown
     assert "## Discoveries" in rendered.markdown
     assert "修复认证流程" in rendered.markdown
+
+
+def test_render_structured_output_as_markdown_counts_minor_severity():
+    report = ReviewReport(markdown=_structured_payload(severity="minor"))
+
+    rendered = render_structured_output_as_markdown(report)
+
+    assert "### [minor]" in rendered.markdown
+    assert "| minor | 1 | 警告 |" in rendered.markdown
+    assert "major/minor" in rendered.markdown
+    assert ("min" + "jor") not in rendered.markdown
 
 
 def _structured_payload(

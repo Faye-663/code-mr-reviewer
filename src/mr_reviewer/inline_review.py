@@ -3,10 +3,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from mr_reviewer.publication_policy import DEFAULT_PUBLICATION_POLICY, FindingPublicationPolicy
 from mr_reviewer.review_result import ReviewFinding, StructuredReviewResult
-
-PUBLISHABLE_SEVERITIES = {"fatal", "major"}
-PUBLISHABLE_CONFIDENCE = "HIGH"
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,14 +44,35 @@ class FindingValidationDecision:
     position: DiffPosition | None
 
 
+@dataclass(frozen=True, slots=True)
+class DiffPositionResolution:
+    position: DiffPosition | None
+    reason: str
+
+
 class DiffPositionMap:
     def __init__(self, positions: list[DiffPosition]):
-        self._new_positions = {
+        self._added_positions = {
+            (position.new_path, position.new_line): position
+            for position in positions
+            if position.old_line == -1
+        }
+        self._deleted_positions = {
+            (position.old_path, position.old_line): position
+            for position in positions
+            if position.new_line == -1
+        }
+        self._context_positions = {
+            (position.old_path, position.new_path, position.old_line, position.new_line): position
+            for position in positions
+            if position.old_line != -1 and position.new_line != -1
+        }
+        self._new_side_positions = {
             (position.new_path, position.new_line): position
             for position in positions
             if position.new_line != -1
         }
-        self._old_positions = {
+        self._old_side_positions = {
             (position.old_path, position.old_line): position
             for position in positions
             if position.old_line != -1
@@ -105,31 +124,61 @@ class DiffPositionMap:
         return cls(positions)
 
     def find(self, old_path: str, new_path: str, old_line: int, new_line: int) -> DiffPosition | None:
-        # GitLab 同时收到两侧行号时按 new_line 定位；只有新侧缺失时才使用旧侧。
-        if new_line != -1:
-            return self._new_positions.get((new_path, new_line))
-        return self._old_positions.get((old_path, old_line))
+        return self.resolve(old_path, new_path, old_line, new_line).position
+
+    def resolve(self, old_path: str, new_path: str, old_line: int, new_line: int) -> DiffPositionResolution:
+        lines = (old_line, new_line)
+        if any(line < -1 or line == 0 for line in lines) or lines == (-1, -1):
+            return DiffPositionResolution(None, "invalid_line_value")
+
+        if old_line == -1:
+            position = self._added_positions.get((new_path, new_line))
+            if position is not None:
+                return DiffPositionResolution(position, "")
+            if (new_path, new_line) in self._new_side_positions:
+                return DiffPositionResolution(None, "inconsistent_line_sides")
+            return DiffPositionResolution(None, "line_not_in_diff")
+
+        if new_line == -1:
+            position = self._deleted_positions.get((old_path, old_line))
+            if position is not None:
+                return DiffPositionResolution(position, "")
+            if (old_path, old_line) in self._old_side_positions:
+                return DiffPositionResolution(None, "inconsistent_line_sides")
+            return DiffPositionResolution(None, "line_not_in_diff")
+
+        position = self._context_positions.get((old_path, new_path, old_line, new_line))
+        if position is not None:
+            return DiffPositionResolution(position, "")
+        if (
+                (old_path, old_line) in self._old_side_positions
+                or (new_path, new_line) in self._new_side_positions
+        ):
+            return DiffPositionResolution(None, "inconsistent_line_sides")
+        return DiffPositionResolution(None, "line_not_in_diff")
 
 
 def validate_review_findings(
         review: StructuredReviewResult,
         position_map: DiffPositionMap,
+        publication_policy: FindingPublicationPolicy = DEFAULT_PUBLICATION_POLICY,
 ) -> list[FindingValidationDecision]:
     decisions = []
     for finding in review.findings:
-        position = position_map.find(
+        resolution = position_map.resolve(
             finding.old_path,
             finding.new_path,
             finding.old_line,
             finding.new_line,
         )
-        if position is None:
-            decisions.append(FindingValidationDecision(finding, "invalid", "line_not_in_diff", None))
+        if resolution.position is None:
+            decisions.append(FindingValidationDecision(finding, "invalid", resolution.reason, None))
             continue
-        if finding.severity not in PUBLISHABLE_SEVERITIES or finding.confidence != PUBLISHABLE_CONFIDENCE:
-            decisions.append(FindingValidationDecision(finding, "filtered", "below_publish_threshold", position))
+        filter_reason = publication_policy.filter_reason(finding.severity, finding.confidence)
+        if filter_reason:
+            decisions.append(FindingValidationDecision(finding, "filtered", filter_reason, resolution.position))
             continue
-        decisions.append(FindingValidationDecision(finding, "publishable", "", position))
+        decisions.append(FindingValidationDecision(finding, "publishable", "", resolution.position))
     return decisions
 
 

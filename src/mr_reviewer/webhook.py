@@ -270,7 +270,11 @@ class WebhookReviewQueue:
         detail = self.gitlab.get_mr_detail_for_discussion_position(event.target)
         refs = _diff_refs_from_detail(detail)
         position_map = DiffPositionMap.from_unified_diff(report.diff, refs)
-        decisions = validate_review_findings(structured, position_map)
+        decisions = validate_review_findings(
+            structured,
+            position_map,
+            self.config.publication_policy,
+        )
         publish_results = DiscussionPublisher(self.gitlab, self.config.agent_model_name).publish(event.target, decisions)
         status = "failed" if any(item["status"] == "failed" for item in publish_results) else "posted"
         return replace(

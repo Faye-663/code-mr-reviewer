@@ -28,7 +28,7 @@ Active（场景一 Complete；场景二 Deferred）
 - ReviewSet 通过 project path API 获取 `project_id`，再以 URL 中的 `iid` 读取 isource MR 的 `diff_refs` 和 `e2e_issues[0].issue_num`。
 - 2–3 个成员在独立 workspace 中按精确 base/head checkout，写入确定性 manifest，并固定执行 `review-set-plan/v1` 与 `review-set-review/v1` 两次 Agent 调用。
 - Python 校验 evidence、target 和 diff position，生成唯一聚合报告，并按责任 MR 幂等发布 inline discussion 或普通 note。
-- 新增独立配置 `MR_REVIEWER_REVIEW_SET_POST_COMMENT`；单 MR IM 和 webhook 行为保持不变。
+- 新增独立配置 `MR_REVIEWER_REVIEW_SET_POST_COMMENT`；场景一交付时单 MR IM 和 webhook 行为保持不变。后续发布策略修复增加了 webhook/ReviewSet 共用的可配置门槛，未改变聚合报告 findings 收录规则。
 
 剩余差距全部属于场景二或生产验收：
 
@@ -156,7 +156,7 @@ ReviewSetManifest
 
 - 场景一的 `evidence_refs[].member_id` 必须引用 manifest 成员，path 必须是仓库相对路径，行区间必须为正数且有序。场景二若允许依赖证据，需要另行演进 schema。
 - `targets` 至少一个，只能引用成员 MR。
-- `position` 可为 `null`。非空时先校验路径与行号；能映射时发布 inline，语法合法但不在当前 diff 时回退普通 note，非法位置不得发布。
+- `position` 可为 `null`。非空时先校验路径与行号；新增行使用 `old_line=-1, new_line=N`，删除行使用 `old_line=N, new_line=-1`，上下文行必须提供同一位置匹配的两侧行号，这两个字段不是范围起止行。能映射时发布 inline，语法合法但不在当前 diff 时回退普通 note，非法或自相矛盾的位置不得发布。
 - 一个跨仓问题可以有多个 targets；每个 target 有独立 suggestion。
 - Python 根据 ReviewSet ID、规范化 evidence、rule 和 target 生成 marker，不信任 Agent 提供评论 URL、SHA、project id 或 marker。
 - 现有单 MR JSON 契约保持不变；单 MR 依赖证据写入报告上下文和 finding evidence，不增加第二个评论目标。
@@ -260,7 +260,7 @@ spike 必须证明：
 目标：一次联合任务生成一份报告，并把可发布意见送到责任 MR。
 
 - 扩展 Markdown renderer，按 ReviewSet、跨仓 issue 和责任 MR 展示。
-- 复用现有 GitLab diff refs 和位置校验；HIGH major/fatal 优先 inline，`position=null` 或合法位置无法映射当前 diff 时发布普通 note，非法位置不发布。
+- 复用现有 GitLab diff refs 和严格位置校验；满足共享发布门槛的 finding 优先 inline，`position=null` 或合法位置无法映射当前 diff 时发布普通 note，非法位置不发布。默认门槛为 `minor+HIGH`，由 `MR_REVIEWER_PUBLISH_MIN_SEVERITY` 与 `MR_REVIEWER_PUBLISH_MIN_CONFIDENCE` 同时控制 webhook 和 ReviewSet。
 - marker 由 ReviewSet ID（已包含成员 head SHA）、规范化 evidence、rule 和 target 计算，跨新消息保持幂等。
 - 发布采用“先校验全部候选，再逐条提交”；Agent/解析/目标校验失败时零评论。单条 API POST 失败记录并继续其它已校验 target。
 - IM 仍上传一个聚合 Markdown 到 OneBox，并通知文件名和发布统计。
@@ -287,7 +287,7 @@ GitLab 位置与普通评论能力以官方 [Discussions API](https://docs.gitla
 
 - 用相同模型和模板版本运行现有单仓 baseline 与新流程，人工确认正反样本。
 - 汇总有效 finding、重大误报、责任归属、上下文降级率及 p50/p95 耗时。
-- 场景一实现完成后同步 `README.md`、`docs/DESIGN.md`、配置示例和 ADR-002；webhook 使用说明因行为未变无需修改。
+- 场景一实现完成时同步 `README.md`、`docs/DESIGN.md`、配置示例和 ADR-002；当时 webhook 行为未变。后续共享发布门槛与严格位置语义变更已同步 webhook 使用说明。
 - 两份临时文档暂时保留场景二 Draft/Deferred 契约；场景二完成且稳定行为全部进入长期文档后再删除，保留 ADR-002。
 
 场景一代码验收：完整测试与本地两仓端到端 fixture 通过；README 明确 ReviewSet 行为和独立发布开关。生产样本指标与场景二验收仍待完成。
@@ -300,7 +300,7 @@ GitLab 位置与普通评论能力以官方 [Discussions API](https://docs.gitla
   - IM URL 数量、去重、相同项目、白名单、`ReqID` 缺失/类型/不一致。
   - ReviewSet ID 和 manifest 稳定性、路径清理与资源限制。
   - 联合 plan/result JSON 的 schema、evidence refs、multi-target 和 null position。
-  - marker 稳定性、inline/普通 note 选择、非法目标、分页去重、部分发布失败和独立开关。
+  - marker 稳定性、inline/普通 note 选择、严格双侧行号、默认/自定义发布门槛、非法目标、分页去重、部分发布失败和独立开关。
 - 场景二待实现：
   - 目录 schema、GAV 唯一性、tag template 和 project path 校验。
   - Maven local parent、properties、dependencyManagement、scope、循环、DOCTYPE、动态版本和降级原因。

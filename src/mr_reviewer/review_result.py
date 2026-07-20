@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 
-ALLOWED_SEVERITIES = {"suggestion", "minjor", "major", "fatal"}
+ALLOWED_SEVERITIES = {"suggestion", "minor", "major", "fatal"}
 ALLOWED_CONFIDENCES = {"HIGH", "MEDIUM", "LOW"}
 REVIEW_PLAN_LIST_FIELDS = (
     "change_intent",

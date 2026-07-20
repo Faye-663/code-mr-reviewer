@@ -13,6 +13,7 @@ from mr_reviewer.observability import task_context
 from mr_reviewer.prompting import PromptTemplateError, build_review_plan_prompt, build_review_prompt
 from mr_reviewer.process import prepare_command
 from mr_reviewer.review_result import parse_review_plan, parse_structured_review_result
+from mr_reviewer.review_routing import resolve_review_routing
 from mr_reviewer.state import StateStore
 
 
@@ -42,7 +43,8 @@ def test_code_review_skill_targets_gitlab_mr_range():
     assert '"findings"' in skill
     assert '"severity"' in skill
     assert "suggestion" in skill
-    assert "minjor" in skill
+    assert "minor" in skill
+    assert ("min" + "jor") not in skill
     assert "major" in skill
     assert "fatal" in skill
     assert "JSDoc" not in skill
@@ -124,6 +126,15 @@ def test_prompt_templates_are_portable_and_render_identically(tmp_path: Path):
     assert "待验证线索" in main_review
     assert "允许推翻" in main_review
     assert "覆盖计划未列出的" in main_review
+    assert "不是范围的起止行" in main_review
+    assert "禁止伪造或借用邻近 diff 行" in main_review
+    assert "minor" in main_review
+    assert ("min" + "jor") not in main_review
+    review_set_template = Path("src/mr_reviewer/prompt_templates/review-set-review.md").read_text(encoding="utf-8")
+    assert "不是范围的起止行" in review_set_template
+    assert "position 必须为 null" in review_set_template
+    assert "minor" in review_set_template
+    assert ("min" + "jor") not in review_set_template
     assert len(main_review.template_version) == 12
     assert Path("src/mr_reviewer/prompt_templates/review-plan.md").read_bytes() == (
         Path(".skill/gitlab-mr-review/prompt_templates/review-plan.md").read_bytes()
@@ -136,6 +147,30 @@ def test_prompt_templates_are_portable_and_render_identically(tmp_path: Path):
     )
     parse_review_plan(main_summary.split("JSON 结构为：\n", 1)[1].split("\ncritical_paths", 1)[0])
     parse_structured_review_result(main_review.split("JSON 结构为：\n", 1)[1].split("\nseverity", 1)[0])
+
+
+@pytest.mark.parametrize(
+    ("title", "review_mode", "routing_marker"),
+    [
+        ("  【deep-review】 change", "two-step", "【Deep-Review】"),
+        ("  [deep-review] change", "two-step", "[Deep-Review]"),
+        ("【Deep-Review] change", "one-step", ""),
+        ("prefix [Deep-Review] change", "one-step", ""),
+    ],
+)
+def test_portable_skill_routing_matches_main_program(title: str, review_mode: str, routing_marker: str):
+    script = _load_gitlab_mr_review_script()
+
+    main = resolve_review_routing(title)
+    portable = script.resolve_review_routing(title)
+
+    assert (main.review_mode, main.routing_reason, main.routing_marker) == (
+        portable.review_mode,
+        portable.routing_reason,
+        portable.routing_marker,
+    )
+    assert main.review_mode == review_mode
+    assert main.routing_marker == routing_marker
 
 
 def test_prompt_renderer_rejects_missing_or_unresolved_template_values():
@@ -241,6 +276,31 @@ def test_gitlab_mr_review_skill_runs_one_step_without_summary(monkeypatch, tmp_p
     assert result["summary"] is None
     assert result["agent_call_count"] == 1
     assert "one-step（default）" in result["local_report"]
+
+
+def test_gitlab_mr_review_skill_report_counts_minor_severity():
+    script = _load_gitlab_mr_review_script()
+    review = json.dumps(
+        {
+            "findings": [
+                {
+                    "severity": "minor",
+                    "title": "边界条件未覆盖",
+                    "new_path": "src/example.py",
+                    "new_line": 42,
+                }
+            ],
+            "good": [],
+            "notes": [],
+            "test_gaps": [],
+        },
+        ensure_ascii=False,
+    )
+
+    report = script.render_local_report(None, review, "base", "head")
+
+    assert "| minor | 1 | 警告 |" in report
+    assert ("min" + "jor") not in report
 
 
 def test_gitlab_mr_review_script_reads_independent_api_base_url(monkeypatch):

@@ -56,6 +56,7 @@ class ReviewRoutingDecision(NamedTuple):
 
 
 DEEP_REVIEW_MARKER = "【Deep-Review】"
+DEEP_REVIEW_MARKERS = (DEEP_REVIEW_MARKER, "[Deep-Review]")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -189,8 +190,10 @@ def normalize_base_url(base_url: str) -> str:
 
 def resolve_review_routing(title: object) -> ReviewRoutingDecision:
     normalized = title if isinstance(title, str) else ""
-    if normalized.lstrip().casefold().startswith(DEEP_REVIEW_MARKER.casefold()):
-        return ReviewRoutingDecision("two-step", "title_prefix", DEEP_REVIEW_MARKER)
+    normalized = normalized.lstrip().casefold()
+    for marker in DEEP_REVIEW_MARKERS:
+        if normalized.startswith(marker.casefold()):
+            return ReviewRoutingDecision("two-step", "title_prefix", marker)
     return ReviewRoutingDecision("one-step", "default", "")
 
 
@@ -456,12 +459,12 @@ def render_local_report(
             f"**建议**: {finding.get('suggestion', '')}", "",
         ])
     counts = {severity: sum(1 for item in findings if isinstance(item, dict) and item.get("severity") == severity)
-              for severity in ("fatal", "major", "minjor", "suggestion")}
+              for severity in ("fatal", "major", "minor", "suggestion")}
     lines.extend(["## 检视摘要", "", "| 严重程度 | 数量 | 状态 |", "|----------|------|------|"])
-    for severity in ("fatal", "major", "minjor", "suggestion"):
-        state = "通过" if not counts[severity] else {"fatal": "阻止", "major": "警告", "minjor": "警告", "suggestion": "备注"}[severity]
+    for severity in ("fatal", "major", "minor", "suggestion"):
+        state = "通过" if not counts[severity] else {"fatal": "阻止", "major": "警告", "minor": "警告", "suggestion": "备注"}[severity]
         lines.append(f"| {severity} | {counts[severity]} | {state} |")
-    verdict = "阻止" if counts["fatal"] else "警告" if counts["major"] or counts["minjor"] else "备注" if counts["suggestion"] else "通过"
+    verdict = "阻止" if counts["fatal"] else "警告" if counts["major"] or counts["minor"] else "备注" if counts["suggestion"] else "通过"
     lines.extend(["", f"**裁决**：{verdict}"])
     if good:
         lines.extend(["", "## GOOD", ""])

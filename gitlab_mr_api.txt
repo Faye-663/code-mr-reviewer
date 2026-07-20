@@ -35,7 +35,7 @@ https://api.xxx.com/api/v4/projects/{id}/merge_requests/{noteable_id}/discussion
 | 名称 | 类型 | 必选 | 描述 |
 |------|------|------|------|
 | body | string | 是 | The content of a note |
-| severity | string | 否 | The severity level: suggestion,minjor,major,fatal|
+| severity | string | 否 | The severity level: suggestion,minor,major,fatal|
 
 
 参数position：

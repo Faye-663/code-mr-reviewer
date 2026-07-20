@@ -5,6 +5,8 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from mr_reviewer.publication_policy import FindingPublicationPolicy
+
 ENV_PREFIX = "MR_REVIEWER_"
 LOG_LEVELS = {"OFF", "INFO", "DEBUG"}
 
@@ -77,6 +79,8 @@ class Config:
     webhook_secret_header: str = "X-Gitlab-Token"
     webhook_post_comment: bool = True
     review_set_post_comment: bool = True
+    publish_min_severity: str = "minor"
+    publish_min_confidence: str = "HIGH"
     report_dir: Path = Path("log/webhook-reports")
     max_files: int = 50
     max_diff_lines: int = 2000
@@ -90,6 +94,15 @@ class Config:
             self.gitlab_api_base_url = self.gitlab_api_base_url.rstrip("/")
         elif self.gitlab_base_url:
             self.gitlab_api_base_url = f"{self.gitlab_base_url}/api/v4"
+        # 在启动读取配置时立即校验，避免后台 worker 运行到发布阶段才失败。
+        self.publication_policy
+
+    @property
+    def publication_policy(self) -> FindingPublicationPolicy:
+        return FindingPublicationPolicy(
+            min_severity=self.publish_min_severity,
+            min_confidence=self.publish_min_confidence,
+        )
 
     @classmethod
     def from_env(cls, dotenv_path: Path | None = None) -> "Config":
@@ -162,6 +175,8 @@ class Config:
             webhook_secret_header=get("WEBHOOK_SECRET_HEADER", "X-Gitlab-Token"),
             webhook_post_comment=_parse_bool(get("WEBHOOK_POST_COMMENT", "true")),
             review_set_post_comment=_parse_bool(get("REVIEW_SET_POST_COMMENT", "true")),
+            publish_min_severity=get("PUBLISH_MIN_SEVERITY", "minor"),
+            publish_min_confidence=get("PUBLISH_MIN_CONFIDENCE", "HIGH"),
             report_dir=Path(get("REPORT_DIR", "log/webhook-reports")),
             max_files=int(get("MAX_FILES", "50")),
             max_diff_lines=int(get("MAX_DIFF_LINES", "2000")),

@@ -9,13 +9,12 @@ from pathlib import PurePosixPath
 
 from mr_reviewer.gitlab import GitLabClient, GitLabMrUrl
 from mr_reviewer.inline_review import DiffPosition, DiffPositionMap, DiffRefs
+from mr_reviewer.publication_policy import DEFAULT_PUBLICATION_POLICY, FindingPublicationPolicy
 from mr_reviewer.review_set import PreparedReviewSetMember, ReviewSetMember
 from mr_reviewer.review_set_result import ReviewSetFinding, ReviewSetFindingTarget
 from mr_reviewer.reviewer import ReviewSetReviewReport
 
 LOG = logging.getLogger("mr_reviewer")
-PUBLISHABLE_SEVERITIES = {"major", "fatal"}
-PUBLISHABLE_CONFIDENCE = "HIGH"
 MARKER_RE = re.compile(r"<!-- ai-cr:review-set:[^>]+ -->")
 
 
@@ -39,8 +38,13 @@ class _TargetDecision:
 
 
 class ReviewSetPublisher:
-    def __init__(self, gitlab: GitLabClient):
+    def __init__(
+            self,
+            gitlab: GitLabClient,
+            publication_policy: FindingPublicationPolicy = DEFAULT_PUBLICATION_POLICY,
+    ):
         self.gitlab = gitlab
+        self.publication_policy = publication_policy
 
     def publish(
             self,
@@ -121,22 +125,28 @@ class ReviewSetPublisher:
                 if position_error:
                     decisions.append(_TargetDecision(finding, target, target_index, member, "invalid", position_error, None, marker))
                     continue
-                if finding.severity not in PUBLISHABLE_SEVERITIES or finding.confidence != PUBLISHABLE_CONFIDENCE:
-                    decisions.append(_TargetDecision(finding, target, target_index, member, "filtered", "below_publish_threshold", None, marker))
+                filter_reason = self.publication_policy.filter_reason(
+                    finding.severity,
+                    finding.confidence,
+                )
+                if filter_reason:
+                    decisions.append(_TargetDecision(finding, target, target_index, member, "filtered", filter_reason, None, marker))
                     continue
                 if target.position is None:
                     decisions.append(_TargetDecision(finding, target, target_index, member, "publishable_note", "position_not_provided", None, marker))
                     continue
-                diff_position = _position_map(prepared[member.member_id]).find(
+                resolution = _position_map(prepared[member.member_id]).resolve(
                     target.position.old_path,
                     target.position.new_path,
                     target.position.old_line,
                     target.position.new_line,
                 )
-                if diff_position is None:
+                if resolution.position is not None:
+                    decisions.append(_TargetDecision(finding, target, target_index, member, "publishable_inline", "", resolution.position, marker))
+                elif resolution.reason == "line_not_in_diff":
                     decisions.append(_TargetDecision(finding, target, target_index, member, "publishable_note", "position_not_in_diff", None, marker))
                 else:
-                    decisions.append(_TargetDecision(finding, target, target_index, member, "publishable_inline", "", diff_position, marker))
+                    decisions.append(_TargetDecision(finding, target, target_index, member, "invalid", resolution.reason, None, marker))
         return tuple(decisions)
 
     def _post(self, decision: _TargetDecision, model_name: str) -> dict[str, object]:

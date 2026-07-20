@@ -35,7 +35,7 @@ MR_REVIEWER_WEBHOOK_PATH=/webhook/gitlab
 MR_REVIEWER_WEBHOOK_SECRET=your-webhook-secret
 MR_REVIEWER_WEBHOOK_SECRET_HEADER=X-Gitlab-Token
 MR_REVIEWER_WEBHOOK_POST_COMMENT=true
-MR_REVIEWER_PUBLISH_MIN_SEVERITY=minjor
+MR_REVIEWER_PUBLISH_MIN_SEVERITY=minor
 MR_REVIEWER_PUBLISH_MIN_CONFIDENCE=HIGH
 MR_REVIEWER_REPORT_DIR=log/webhook-reports
 ```
@@ -47,7 +47,7 @@ MR_REVIEWER_REPORT_DIR=log/webhook-reports
 - `MR_REVIEWER_WEBHOOK_SECRET` 可为空；配置后会校验 `MR_REVIEWER_WEBHOOK_SECRET_HEADER` 指定的请求头，默认是 `X-Gitlab-Token`。
 - `MR_REVIEWER_WEBHOOK_SECRET_HEADER` 可按平台调整，例如 CodeHub 使用 `X-CodeHub-Token` 时改成该值。
 - `MR_REVIEWER_WEBHOOK_POST_COMMENT=false` 时不会发布 inline discussion，只写本地 JSON 监视报告和 Markdown review 报告。
-- `MR_REVIEWER_PUBLISH_MIN_SEVERITY` 与 `MR_REVIEWER_PUBLISH_MIN_CONFIDENCE` 同时用于 webhook 和 ReviewSet。默认发布 `minjor` 及以上且 `confidence=HIGH` 的 finding；severity 顺序为 `suggestion < minjor < major < fatal`，confidence 顺序为 `LOW < MEDIUM < HIGH`。非法枚举值会导致启动失败，这两个门槛不会过滤本地报告 findings。
+- `MR_REVIEWER_PUBLISH_MIN_SEVERITY` 与 `MR_REVIEWER_PUBLISH_MIN_CONFIDENCE` 同时用于 webhook 和 ReviewSet。默认发布 `minor` 及以上且 `confidence=HIGH` 的 finding；severity 顺序为 `suggestion < minor < major < fatal`，confidence 顺序为 `LOW < MEDIUM < HIGH`。非法枚举值会导致启动失败，这两个门槛不会过滤本地报告 findings。
 - `MR_REVIEWER_COMMENT_SKILL` 仍可选用于指定 review prompt skill；该 skill 必须只输出结构化 JSON，不要配置会自行提交评论的 skill。
 - `MR_REVIEWER_AGENT_MODEL_NAME` 是 webhook inline discussion 的展示模型名。它为空时，worker 只写本地报告并标记 `model_not_configured`，不会提交 GitLab discussion；不会从 Agent 输出推断模型名。
 - Deep Review 的审查计划只保存在本地 JSON/Markdown 报告中，不会发布到 GitLab；one-step 不生成计划。线上仅发布满足条件的 review finding。

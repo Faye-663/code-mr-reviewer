@@ -77,13 +77,13 @@ MR 详情的生产接口固定为 `GET /projects/{project_id}/isource/merge_requ
 
 - 生成一份 basename 为 `review-set-<ReviewSet ID 前 12 位>.md` 的聚合 Markdown 报告，包含 `ReqID`、成员及 SHA、上下文状态、审查计划、跨仓证据、findings、责任位置、test gaps 和发布结果。
 - 每个 finding 必须声明一个或多个责任成员 MR；跨仓证据可以引用其它成员，但不能替代责任归属。
-- webhook 与 ReviewSet 必须共用同一发布门槛。默认自动回写 `severity` 为 `minjor`、`major` 或 `fatal` 且 `confidence=HIGH` 的 finding；severity 固定按 `suggestion < minjor < major < fatal` 排序，confidence 固定按 `LOW < MEDIUM < HIGH` 排序。部署侧可以分别配置最低值，非法枚举必须在启动时失败。
+- webhook 与 ReviewSet 必须共用同一发布门槛。默认自动回写 `severity` 为 `minor`、`major` 或 `fatal` 且 `confidence=HIGH` 的 finding；severity 固定按 `suggestion < minor < major < fatal` 排序，confidence 固定按 `LOW < MEDIUM < HIGH` 排序。部署侧可以分别配置最低值，非法枚举必须在启动时失败。
 - 能映射到责任 MR diff 行时，发布 inline discussion；`position=null` 或语法合法但无法映射到当前 diff 时，发布普通 MR note。新增行必须使用 `old_line=-1, new_line=N`，删除行使用 `old_line=N, new_line=-1`，上下文行同时提供同一位置匹配的两侧行号；两字段不是范围起止位置。未知成员、越界路径、非法行号或自相矛盾的两侧行号不得回退发布。
 - 一个问题需要多个 MR 分别修改时，在各责任 MR 发布定点意见，并使用同一个稳定 finding key 派生各 target marker；不得向每个 MR 复制完整聚合报告。
 - 所有其它 finding 只保留在聚合报告中；发布门槛不得过滤聚合报告 findings。
 - 发布前按 ReviewSet、成员 head SHA、规则和目标位置生成稳定 marker，重复消息不得产生重复评论。
 - `MR_REVIEWER_REVIEW_SET_POST_COMMENT` 独立于 webhook 发布开关且默认 `true`；关闭时仍生成聚合报告并将候选标为 `disabled`。开关开启但 `MR_REVIEWER_AGENT_MODEL_NAME` 为空时不发布，任务标为 `success_with_warnings`。
-- `MR_REVIEWER_PUBLISH_MIN_SEVERITY` 与 `MR_REVIEWER_PUBLISH_MIN_CONFIDENCE` 同时作用于 webhook 和 ReviewSet，默认分别为 `minjor` 与 `HIGH`；`healthcheck` 必须输出实际生效值。
+- `MR_REVIEWER_PUBLISH_MIN_SEVERITY` 与 `MR_REVIEWER_PUBLISH_MIN_CONFIDENCE` 同时作用于 webhook 和 ReviewSet，默认分别为 `minor` 与 `HIGH`；`healthcheck` 必须输出实际生效值。
 - 任务状态限定为 `rejected`、`failed`、`success`、`success_with_warnings`。拒绝与运行失败都会安全回复并终结原消息，重新执行必须发送新消息。
 
 ## 5. 场景二：单 MR 的内部依赖上下文

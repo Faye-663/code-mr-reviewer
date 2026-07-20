@@ -260,7 +260,7 @@ spike 必须证明：
 目标：一次联合任务生成一份报告，并把可发布意见送到责任 MR。
 
 - 扩展 Markdown renderer，按 ReviewSet、跨仓 issue 和责任 MR 展示。
-- 复用现有 GitLab diff refs 和严格位置校验；满足共享发布门槛的 finding 优先 inline，`position=null` 或合法位置无法映射当前 diff 时发布普通 note，非法位置不发布。默认门槛为 `minjor+HIGH`，由 `MR_REVIEWER_PUBLISH_MIN_SEVERITY` 与 `MR_REVIEWER_PUBLISH_MIN_CONFIDENCE` 同时控制 webhook 和 ReviewSet。
+- 复用现有 GitLab diff refs 和严格位置校验；满足共享发布门槛的 finding 优先 inline，`position=null` 或合法位置无法映射当前 diff 时发布普通 note，非法位置不发布。默认门槛为 `minor+HIGH`，由 `MR_REVIEWER_PUBLISH_MIN_SEVERITY` 与 `MR_REVIEWER_PUBLISH_MIN_CONFIDENCE` 同时控制 webhook 和 ReviewSet。
 - marker 由 ReviewSet ID（已包含成员 head SHA）、规范化 evidence、rule 和 target 计算，跨新消息保持幂等。
 - 发布采用“先校验全部候选，再逐条提交”；Agent/解析/目标校验失败时零评论。单条 API POST 失败记录并继续其它已校验 target。
 - IM 仍上传一个聚合 Markdown 到 OneBox，并通知文件名和发布统计。

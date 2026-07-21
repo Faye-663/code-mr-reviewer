@@ -102,6 +102,10 @@ flowchart TD
 
 自动入口要求 Agent 只输出 JSON，不输出 Markdown 或代码围栏。普通 MR 直接生成下面的结构化 finding。Deep Review 第一阶段严格生成 `change_intent`、`critical_paths`、`external_contracts`、`state_invariants`、`transaction_async_boundaries`、`test_risks`、`open_questions`；第二阶段把计划视为待验证线索，必须重新验证、允许推翻并覆盖计划遗漏。计划进入本地 JSON/Markdown 报告，但不进入 GitLab comment/discussion。
 
+`structured_output.py` 是模型输出的统一信任边界。单 MR plan/result 与 ReviewSet plan/result 都先对完整输出执行 `json.loads`；完整 JSON 的 Schema 校验失败时立即拒绝，不扫描其内部对象。只有整段发生 `JSONDecodeError` 时，解析器才用 `JSONDecoder.raw_decode` 枚举外层 JSON object，并以调用方原有完整契约逐个校验：恰好一个有效对象时恢复，没有有效对象或多个有效对象时拒绝。该边界不修复单引号、尾逗号、截断 JSON、字段、类型或枚举，也不触发 Agent retry，因此 one-step、Deep Review 和 ReviewSet 的调用次数不变。恢复日志只记录输出类型、前后缀字符数和候选数；`structured_parse_status` 仍只有 `success` / `failed`。
+
+便携式 `gitlab-mr-review` skill 不能依赖项目安装，因此脚本内保留等价的自包含解析与完整契约校验。恢复后的 review 会重新序列化为纯 JSON 再提交 Notes API，本地 Markdown 也只从已校验对象渲染；无效或歧义输出在 comment 提交前 fail-closed。
+
 顶层结构：
 
 ```json
@@ -166,7 +170,7 @@ log/webhook-reports/20260709T120000Z-team_project-mr-7-webhook-abc123.md
 
 - 审查计划生成或校验失败：停止第二步，写 `failure_stage=review_plan` 的失败态报告。
 - Deep Review 第二次 Agent 调用失败：保留已完成计划，写 `failure_stage=review` 的失败态报告。
-- JSON parse failed：不发布 inline discussion，写 `parse_failed` 报告，并在 Markdown 中保留脱敏后的原始输出。
+- JSON 无法解析、没有契约有效对象或存在多个契约有效对象：不发布 inline discussion，写 `parse_failed` 报告，并在 Markdown 中保留脱敏后的原始输出。
 - finding 全部被过滤：不发布 inline discussion，写成功态本地报告。
 - 读取远端 discussions 失败：不发布新 discussion，避免失去幂等后刷屏。
 - 单条 discussion POST 失败：记录该 finding failed，继续处理其它 finding。
@@ -187,6 +191,6 @@ MR Web URL 与 REST API root 是两个独立边界：`MR_REVIEWER_GITLAB_BASE_UR
 - `review_set.py`：ReviewSet 预检、ReqID/refs 信任边界、确定性 manifest 与多成员 workspace。
 - `review_set_result.py` / `review_set_publish.py` / `review_set_report.py`：联合 plan/result 严格解析、责任 target 校验/幂等发布和聚合 Markdown。
 - `reviewer.py`：共用 review core，串联 GitLab、Git 和 Agent；ReviewSet 固定两次调用并共享任务剩余超时预算。
-- `review_result.py` / `inline_review.py` / `publication_policy.py` / `markdown_report.py`：审查计划与 review JSON 解析、finding 行定位校验、共享发布门槛、GitLab inline 发布结果整理和本地 Markdown 报告渲染。
+- `structured_output.py` / `review_result.py` / `inline_review.py` / `publication_policy.py` / `markdown_report.py`：结构化输出恢复边界、审查计划与 review JSON 契约校验、finding 行定位校验、共享发布门槛、GitLab inline 发布结果整理和本地 Markdown 报告渲染。
 - `opencode.py`：AgentRunner protocol、OpenCode/Claude Code adapter、debug 参数和 prompt 日志脱敏。
 - `state.py`：IM poll 的本地去重状态文件，避免重复处理同一条 IM 消息。

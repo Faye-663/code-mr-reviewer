@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 
 import mr_reviewer.review_result as review_result_module
@@ -21,6 +23,21 @@ def test_parse_review_plan_accepts_strict_contract_and_dollar_text():
 
     assert plan["change_intent"] == ["support $HOME token refresh"]
     assert plan["critical_paths"][0]["verify"] == ["refresh remains atomic"]
+
+
+def test_parse_review_plan_recovers_single_contract_object_from_wrapped_output(caplog):
+    raw = f"我将按要求生成审查计划。\n```json\n{_valid_review_plan()}\n```\n生成完成。"
+
+    with caplog.at_level(logging.WARNING, logger="mr_reviewer"):
+        plan = review_result_module.parse_review_plan(raw)
+
+    assert plan["change_intent"] == ["support $HOME token refresh"]
+    assert "output=review_plan" in caplog.text
+    assert "status=recovered" in caplog.text
+    assert "prefix_chars=" in caplog.text
+    assert "suffix_chars=" in caplog.text
+    assert "candidate_count=" in caplog.text
+    assert "我将按要求" not in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -81,6 +98,67 @@ def test_parse_structured_review_result_accepts_minor_severity():
     result = parse_structured_review_result(_structured_payload(severity="minor"))
 
     assert result.findings[0].severity == "minor"
+
+
+@pytest.mark.parametrize(
+    ("prefix", "suffix"),
+    [
+        ("我将按要求进行 review。\n", ""),
+        ("", "\nreview 完成。"),
+        ("```json\n", "\n```"),
+        ("说明中的无效花括号 {not-json}\n", ""),
+    ],
+)
+def test_parse_structured_review_result_recovers_single_contract_object(prefix: str, suffix: str):
+    raw = prefix + _structured_payload() + suffix
+
+    result = parse_structured_review_result(raw)
+
+    assert result.findings[0].rule_id == "SQL_PERFORMANCE"
+
+
+def test_parse_structured_review_result_accepts_only_contract_valid_candidate():
+    raw = '{"message":"metadata"}\n' + _structured_payload()
+
+    result = parse_structured_review_result(raw)
+
+    assert result.findings[0].rule_id == "SQL_PERFORMANCE"
+
+
+def test_parse_structured_review_result_rejects_multiple_contract_valid_candidates():
+    raw = _structured_payload() + "\n" + _structured_payload()
+
+    with pytest.raises(StructuredReviewParseError, match="multiple valid JSON objects"):
+        parse_structured_review_result(raw)
+
+
+def test_parse_structured_review_result_rejects_wrapped_invalid_contract():
+    raw = "review result:\n" + _structured_payload(severity="BLOCKER")
+
+    with pytest.raises(StructuredReviewParseError, match="severity"):
+        parse_structured_review_result(raw)
+
+
+def test_parse_structured_review_result_rejects_wrapped_truncated_json():
+    raw = "review result:\n" + _structured_payload().rstrip()[:-1]
+
+    with pytest.raises(StructuredReviewParseError):
+        parse_structured_review_result(raw)
+
+
+def test_parse_structured_review_result_preserves_braces_inside_json_strings():
+    raw = "review result:\n" + _structured_payload(impact="错误会污染 {cache} 状态")
+
+    result = parse_structured_review_result(raw)
+
+    assert result.findings[0].impact == "错误会污染 {cache} 状态"
+
+
+def test_parse_structured_review_result_does_not_log_recovery_for_strict_json(caplog):
+    with caplog.at_level(logging.WARNING, logger="mr_reviewer"):
+        parse_structured_review_result(_structured_payload())
+
+    assert "status=recovered" not in caplog.text
 
 
 def test_parse_structured_review_result_rejects_invalid_json():

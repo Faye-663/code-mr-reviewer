@@ -111,7 +111,7 @@ diff --git a/src/example.py b/src/example.py
     assert decisions[3].reason == "line_not_in_diff"
 
 
-def test_validate_review_findings_rejects_conflicting_changed_sides():
+def test_validate_review_findings_normalizes_same_line_replacement_to_new_side():
     position_map = DiffPositionMap.from_unified_diff(
         """
 diff --git a/src/example.py b/src/example.py
@@ -131,9 +131,30 @@ diff --git a/src/example.py b/src/example.py
 
     decisions = validate_review_findings(review, position_map)
 
-    assert decisions[0].status == "invalid"
-    assert decisions[0].reason == "inconsistent_line_sides"
-    assert decisions[0].position is None
+    assert decisions[0].status == "publishable"
+    assert decisions[0].reason == ""
+    assert decisions[0].position is not None
+    assert decisions[0].position.old_line == -1
+    assert decisions[0].position.new_line == 119
+
+
+def test_diff_position_map_keeps_same_line_replacement_strict_by_default():
+    position_map = DiffPositionMap.from_unified_diff(
+        """
+diff --git a/src/example.py b/src/example.py
+--- a/src/example.py
++++ b/src/example.py
+@@ -119,1 +119,1 @@
+-old
++replacement
+""".strip(),
+        DiffRefs(base_sha="base-sha", start_sha="start-sha", head_sha="head-sha"),
+    )
+
+    resolution = position_map.resolve("src/example.py", "src/example.py", 119, 119)
+
+    assert resolution.position is None
+    assert resolution.reason == "inconsistent_line_sides"
 
 
 def test_validate_review_findings_does_not_fallback_when_new_side_is_invalid():

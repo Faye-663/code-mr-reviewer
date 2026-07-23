@@ -157,6 +157,25 @@ class DiffPositionMap:
             return DiffPositionResolution(None, "inconsistent_line_sides")
         return DiffPositionResolution(None, "line_not_in_diff")
 
+    def resolve_single_review_finding(
+            self,
+            old_path: str,
+            new_path: str,
+            old_line: int,
+            new_line: int,
+    ) -> DiffPositionResolution:
+        resolution = self.resolve(old_path, new_path, old_line, new_line)
+        if resolution.position is not None or resolution.reason != "inconsistent_line_sides":
+            return resolution
+        # 单 MR 的较弱模型可能把同一替换行误写成 (N, N)；仅在两侧都精确命中时规范为新侧，
+        # 避免把新文件范围或无效新侧坐标纠正到其它位置。
+        if old_line == new_line:
+            old_position = self._deleted_positions.get((old_path, old_line))
+            new_position = self._added_positions.get((new_path, new_line))
+            if old_position is not None and new_position is not None:
+                return DiffPositionResolution(new_position, "")
+        return resolution
+
 
 def validate_review_findings(
         review: StructuredReviewResult,
@@ -165,7 +184,7 @@ def validate_review_findings(
 ) -> list[FindingValidationDecision]:
     decisions = []
     for finding in review.findings:
-        resolution = position_map.resolve(
+        resolution = position_map.resolve_single_review_finding(
             finding.old_path,
             finding.new_path,
             finding.old_line,

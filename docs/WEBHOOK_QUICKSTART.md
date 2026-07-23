@@ -54,7 +54,7 @@ MR_REVIEWER_REPORT_DIR=log/webhook-reports
 - `MR_REVIEWER_LOG_LEVEL` 默认 `OFF`，不会输出项目日志或创建 debug 文件。设为 `INFO` 时只记录 API、Agent 调用元数据；设为 `DEBUG` 时会把脱敏后的请求、响应、prompt 和 Agent 输出写到 `MR_REVIEWER_DEBUG_DIR/YYYYMMDD/<task_id>/`。常规 webhook 审计仍使用 `MR_REVIEWER_REPORT_DIR`，它不受日志级别影响。
 - review/review-plan/deep-review prompt 只使用本项目随 Git 发布的包内模板，不支持部署侧覆盖。webhook JSON 审计报告会记录实际使用阶段的模板 ID 与内容哈希版本；DEBUG 的 Agent `request.json` 也会记录对应版本。
 
-Agent 的 `old_line` / `new_line` 不是范围起止行。新增行必须使用 `old_line=-1, new_line=N`，删除行使用 `old_line=N, new_line=-1`，未修改的上下文行同时提供同一位置匹配的两侧行号。非法或自相矛盾的组合不会发布；合法但不在当前 diff 的 finding 只保留在本地报告，webhook 不会改用邻近行或普通 note。
+Agent 的 `old_line` / `new_line` 不是范围起止行。新增行必须使用 `old_line=-1, new_line=N`，删除行使用 `old_line=N, new_line=-1`，未修改的上下文行同时提供同一位置匹配的两侧行号。对于更新文件中的同号替换行，若 Agent 误报 `old_line=new_line=N`，且 diff 两侧精确存在旧侧删除行和新侧新增行，Python 会规范为新侧位置；该容错不适用于新文件或范围式行号。其它非法或自相矛盾的组合不会发布；合法但不在当前 diff 的 finding 只保留在本地报告，webhook 不会改用邻近行或普通 note。
 
 启动前可以运行 `uv run mr-reviewer healthcheck`；输出中的 `publish_min_severity` 与 `publish_min_confidence` 是实际生效门槛。
 

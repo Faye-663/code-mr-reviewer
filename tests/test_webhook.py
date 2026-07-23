@@ -331,8 +331,18 @@ def test_webhook_worker_posts_inline_discussion_from_python(tmp_path: Path):
     assert posted["severity"] == "major"
     assert posted["position"]["old_line"] == -1
     assert posted["position"]["new_line"] == 2
-    assert "【🤖AI Review-GLM5】[major]批量查询缺少数量限制" in posted["body"]
-    assert "- **影响**: 大请求可能导致数据库资源耗尽。" in posted["body"]
+    assert "**🤖 AI Review｜批量查询缺少数量限制**" in posted["body"]
+    assert "[major]" not in posted["body"]
+    assert "**判断依据**\n\n本次变更新增 IN 查询，但未限制集合大小。" in posted["body"]
+    assert "**影响**\n\n大请求可能导致数据库资源耗尽。" in posted["body"]
+    assert (
+        "**建议**\n\n限制集合大小或拆批查询：\n\n"
+        "```java\nfindUsers(Lists.partition(userIds, 500));\n```"
+    ) in posted["body"]
+    assert "<details>\n<summary>审查信息</summary>" in posted["body"]
+    assert "- 置信度：`HIGH`" in posted["body"]
+    assert "- 规则：`SQL_PERFORMANCE`" in posted["body"]
+    assert "- 来源：`AI Review · GLM5`" in posted["body"]
     assert "<!-- ai-cr:finding:team/project:7:head-sha:SQL_PERFORMANCE:src/example.py:src/example.py:-1:2 -->" in posted["body"]
     report = json.loads(next(tmp_path.glob("*.json")).read_text(encoding="utf-8"))
     assert report["submission_owner"] == "python"
@@ -638,7 +648,10 @@ class _RecordingReviewService:
                         "title": "批量查询缺少数量限制",
                         "evidence": "本次变更新增 IN 查询，但未限制集合大小。",
                         "impact": "大请求可能导致数据库资源耗尽。",
-                        "suggestion": "限制集合大小或拆批查询。",
+                        "suggestion": (
+                            "限制集合大小或拆批查询：\n\n"
+                            "```java\nfindUsers(Lists.partition(userIds, 500));\n```"
+                        ),
                     }
                 ],
                 "notes": [],

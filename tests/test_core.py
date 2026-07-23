@@ -128,11 +128,17 @@ def test_prompt_templates_are_portable_and_render_identically(tmp_path: Path):
     assert "覆盖计划未列出的" in main_review
     assert "不是范围的起止行" in main_review
     assert "禁止伪造或借用邻近 diff 行" in main_review
+    assert "suggestion 字符串内" in main_review
+    assert "Markdown fenced code block" in main_review
+    assert "GitLab suggestion block" in main_review
     assert "minor" in main_review
     assert ("min" + "jor") not in main_review
     review_set_template = Path("src/mr_reviewer/prompt_templates/review-set-review.md").read_text(encoding="utf-8")
     assert "不是范围的起止行" in review_set_template
     assert "position 必须为 null" in review_set_template
+    assert "suggestion 字符串内" in review_set_template
+    assert "Markdown fenced code block" in review_set_template
+    assert "GitLab suggestion block" in review_set_template
     assert "minor" in review_set_template
     assert ("min" + "jor") not in review_set_template
     assert len(main_review.template_version) == 12

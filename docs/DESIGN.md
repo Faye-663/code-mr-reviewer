@@ -100,7 +100,7 @@ flowchart TD
 
 ## 结构化 Review 契约
 
-自动入口要求 Agent 只输出 JSON，不输出 Markdown 或代码围栏。普通 MR 直接生成下面的结构化 finding。Deep Review 第一阶段严格生成 `change_intent`、`critical_paths`、`external_contracts`、`state_invariants`、`transaction_async_boundaries`、`test_risks`、`open_questions`；第二阶段把计划视为待验证线索，必须重新验证、允许推翻并覆盖计划遗漏。计划进入本地 JSON/Markdown 报告，但不进入 GitLab comment/discussion。
+自动入口要求 Agent 的整体输出是一个 JSON 对象，不得用 Markdown 或代码围栏包裹 JSON。普通 MR 直接生成下面的结构化 finding。Deep Review 第一阶段严格生成 `change_intent`、`critical_paths`、`external_contracts`、`state_invariants`、`transaction_async_boundaries`、`test_risks`、`open_questions`；第二阶段把计划视为待验证线索，必须重新验证、允许推翻并覆盖计划遗漏。计划进入本地 JSON/Markdown 报告，但不进入 GitLab comment/discussion。仅当 suggestion 包含可靠的具体代码时，允许在该 JSON 字符串内部使用带语言标识的普通 Markdown fenced code block；当前契约不生成需要精确替换范围的 GitLab `suggestion` block。
 
 `structured_output.py` 是模型输出的统一信任边界。单 MR plan/result 与 ReviewSet plan/result 都先对完整输出执行 `json.loads`；完整 JSON 的 Schema 校验失败时立即拒绝，不扫描其内部对象。只有整段发生 `JSONDecodeError` 时，解析器才用 `JSONDecoder.raw_decode` 枚举外层 JSON object，并以调用方原有完整契约逐个校验：恰好一个有效对象时恢复，没有有效对象或多个有效对象时拒绝。该边界不修复单引号、尾逗号、截断 JSON、字段、类型或枚举，也不触发 Agent retry，因此 one-step、Deep Review 和 ReviewSet 的调用次数不变。恢复日志只记录输出类型、前后缀字符数和候选数；`structured_parse_status` 仍只有 `success` / `failed`。
 
@@ -138,6 +138,16 @@ flowchart TD
 - 两个行号表示一个 GitLab diff 位置，不是范围的开始与结束。`0`、小于 `-1`、双 `-1`，以及任一侧命中 diff 但两侧无法对应同一个上下文位置的组合均非法，不发布也不回退普通 note。
 - `old_path` / `new_path` 使用 GitLab diff 中的路径；重命名时分别填旧路径和新路径。
 - `evidence` 和 `suggestion` 必须非空，否则 finding 不进入发布候选。
+
+## Discussion 展示契约
+
+普通单 MR 与 ReviewSet 发布共用“证据优先”的信息层级：
+
+1. 标题以 `🤖 AI Review` 标识来源；ReviewSet 额外标明类型。标题不重复平台已经展示的 severity，也不展示模型名。
+2. 正文依次展示“判断依据”“影响”“建议”。单 MR 直接展示 finding evidence；ReviewSet 按成员、文件和行区间分项展示 evidence refs。
+3. suggestion 中的普通 Markdown fenced code block 原样交给 GitLab 渲染。
+4. confidence、rule、模型名以及 ReviewSet issue/type 放入 `<details>` 的“审查信息”折叠区。
+5. Python 生成的幂等 marker 继续作为不可见 HTML comment 放在正文末尾，其计算和去重语义不受展示格式影响。
 
 ## Inline 发布规则
 

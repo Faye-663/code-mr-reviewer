@@ -136,6 +136,8 @@ ReqID 缺失或不一致属于 `rejected`；预检、Agent 或结果解析失败
 
 Agent JSON 中的 `old_line` / `new_line` 表示同一个 GitLab diff 位置，不是范围起止行：新增行使用 `old_line=-1, new_line=N`，删除行使用 `old_line=N, new_line=-1`，未修改的上下文行同时提供该位置匹配的两侧行号。`0`、小于 `-1`、双 `-1` 或两侧无法对应同一个上下文位置均为非法。webhook 对无法映射到当前 diff 的 finding 只保留本地，不借用邻近行；ReviewSet 仅对语法合法但无法映射的位置保留现有普通 note fallback。
 
+GitLab discussion 使用统一的证据优先格式：标题保留 `🤖 AI Review` 来源标识，但不重复平台已经展示的 severity；正文依次展示判断依据、影响和建议，并把 confidence、rule、模型名及 ReviewSet issue 等元数据折叠到“审查信息”。ReviewSet 证据按成员、文件和行号分项展示。suggestion 包含可靠的具体代码时，Agent 可以在 JSON 字符串内输出带语言标识的普通 Markdown fenced code block；当前不生成可一键应用的 GitLab `suggestion` block。
+
 ## Agent skill 直接使用
 
 除了现有自动入口，也可以把 `.skill/gitlab-mr-review` 和 `.skill/code-review` 复制到 OpenCode 或 Claude Code 的 skill 配置目录后按需使用。这个能力不替代现有 WeLink 自动轮询模式；它适合人工触发单个 GitLab MR 检视，并可把 Markdown 报告评论到现有 MR。

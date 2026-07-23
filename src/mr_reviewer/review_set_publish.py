@@ -294,15 +294,23 @@ def _extract_markers(discussions: list[dict]) -> set[str]:
 
 def _comment_body(decision: _TargetDecision, model_name: str) -> str:
     finding = decision.finding
-    evidence = "；".join(
-        f"{item.member_id}:{item.path}:{item.start_line}-{item.end_line} {item.detail}"
+    evidence = "\n".join(
+        f"- `{item.member_id} · {item.path}:{item.start_line}-{item.end_line}`：{item.detail}"
         for item in finding.evidence_refs
     )
     return (
-        f"【🤖AI Review-{model_name}】[{finding.severity}][ReviewSet]{finding.title}\n"
-        f"- **影响**: {finding.impact}\n"
-        f"- **证据**: {evidence}\n"
-        f"- **建议**: {decision.target.suggestion}\n\n"
+        f"**🤖 AI Review · ReviewSet｜{finding.title}**\n\n"
+        f"**判断依据**\n\n{evidence}\n\n"
+        f"**影响**\n\n{finding.impact}\n\n"
+        f"**建议**\n\n{decision.target.suggestion}\n\n"
+        "<details>\n"
+        "<summary>审查信息</summary>\n\n"
+        "- 类型：`ReviewSet`\n"
+        f"- 置信度：`{finding.confidence}`\n"
+        f"- 规则：`{finding.rule_id}`\n"
+        f"- Issue：`{finding.issue_id}`\n"
+        f"- 来源：`AI Review · {model_name}`\n\n"
+        "</details>\n\n"
         f"{decision.marker}"
     )
 

@@ -135,7 +135,7 @@ flowchart TD
 - `confidence` 只能是 `HIGH`、`MEDIUM`、`LOW`。
 - 新增行使用 `old_line=-1, new_line=N`；删除行使用 `old_line=N, new_line=-1`。
 - diff 中未修改的上下文行同时提供该位置匹配的 `old_line` 和 `new_line`；两者必须命中同一个上下文位置。
-- 两个行号表示一个 GitLab diff 位置，不是范围的开始与结束。`0`、小于 `-1`、双 `-1`，以及任一侧命中 diff 但两侧无法对应同一个上下文位置的组合均非法，不发布也不回退普通 note。
+- 两个行号表示一个 GitLab diff 位置，不是范围的开始与结束。`0`、小于 `-1`、双 `-1`，以及任一侧命中 diff 但两侧无法对应同一个上下文位置的组合通常均非法，不发布也不回退普通 note。单 MR webhook 仅兼容一种已知模型误报：更新文件的 `old_line=new_line=N` 同时精确命中旧侧删除行和新侧新增行时，规范为新侧位置 `old_line=-1, new_line=N`。该容错不改变 Agent 输出契约，也不用于新文件、范围式行号或 ReviewSet。
 - `old_path` / `new_path` 使用 GitLab diff 中的路径；重命名时分别填旧路径和新路径。
 - `evidence` 和 `suggestion` 必须非空，否则 finding 不进入发布候选。
 

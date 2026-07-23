@@ -37,7 +37,7 @@ Accepted（场景一 Implemented；场景二 Deferred）
 - 联合检视固定 two-step：先建立跨仓审查计划，再重新验证所有成员 diff；覆盖每个 MR 自身问题和组合问题。
 - 生成一个聚合报告。满足共享发布门槛的 finding 按 targets 回写责任 MR：可定位时使用 inline discussion；未提供位置或位置语法合法但无法映射当前 diff 时使用普通 note；未知成员、越界路径、非法行号或自相矛盾的两侧行号不发布。默认门槛为 severity 至少 `minor` 且 confidence 至少 `HIGH`，部署侧可通过受现有枚举约束的 `MR_REVIEWER_PUBLISH_MIN_SEVERITY` 与 `MR_REVIEWER_PUBLISH_MIN_CONFIDENCE` 调整。
 
-项目信息、`isource` MR 详情和 `ReqID` 契约已由 `gitlab_mr_api.txt` 确认。实现不得从 MR URL 猜测 `project_id`，不得读取相近字段、猜测需求关联，或使用 `e2e_issues` 后续元素替代首元素。
+项目信息、`isource` MR 详情和 `ReqID` 契约已在 [GitLab API 说明](../GITLAB_API.md) 中确认。实现不得从 MR URL 猜测 `project_id`，不得读取相近字段、猜测需求关联，或使用 `e2e_issues` 后续元素替代首元素。
 
 ### 2. 单 MR 使用确定性的 Dependency Context Resolver
 

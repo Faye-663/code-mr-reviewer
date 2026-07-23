@@ -1,6 +1,6 @@
 # 配置说明
 
-本文是主程序 `mr-reviewer` 的完整配置参考。`.env.example` 保持为可直接复制的部署模板；README 和各模式的 Quickstart 只保留最小示例。仓库内便携式 `gitlab-mr-review` skill 使用另一组环境变量，其配置见 README 的“Agent skill 直接使用”。
+本文是主程序 `mr-reviewer` 的完整配置参考。`.env.example` 保持为可直接复制的部署模板；README 和各模式的 Quickstart 只保留最小示例。仓库内便携式 `gitlab-mr-review` skill 使用另一组环境变量，其配置见 README 的“Agent skill 直接使用”和 [GitLab API 说明](GITLAB_API.md)。
 
 ## 加载规则
 
@@ -49,6 +49,8 @@
 | `MR_REVIEWER_GITLAB_BASE_URL` | 空 | 所有 review 模式 | GitLab Web 根地址，用于校验 MR URL host、解析 project path，并作为默认 API root 的来源；启动后移除尾部 `/`。 |
 | `MR_REVIEWER_GITLAB_API_BASE_URL` | `<GITLAB_BASE_URL>/api/v4` | 需要 REST API 的模式 | 完整 REST API 根地址。适配独立 API 域名或额外前缀时必须显式设置；启动后移除尾部 `/`。 |
 | `MR_REVIEWER_GITLAB_TOKEN` | 空 | 所有 review 模式 | 作为 REST `PRIVATE-TOKEN`，也用于 HTTPS clone/fetch。不得写入 prompt、普通日志或报告。 |
+
+Web 根地址、API 根地址和各模式的具体接口调用范围见 [GitLab API 说明](GITLAB_API.md)。
 
 ## WeLink IM
 

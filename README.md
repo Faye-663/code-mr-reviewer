@@ -7,6 +7,8 @@ GitLab MR Review 助手。项目支持两种触发入口：
 
 单 MR 的两个入口共用同一条 title 路由规则：普通 MR 默认 one-step，Agent 直接生成结构化 review JSON；title 去除前导空白后以 `【Deep-Review】` 或 `[Deep-Review]` 开头时（忽略大小写）执行 two-step，先生成严格审查计划，再携带计划执行 Deep Review。两种完整括号不能混用，命中的规范 marker 会写入审计结果。第二步必须重新验证计划、允许推翻计划并覆盖计划未列出的风险。ReviewSet 不读取 title 路由标记，始终固定 two-step。两种模式都先 clone GitLab target 仓库并 checkout MR head；完整 diff 不写入 prompt。仅修改 title 不会触发 webhook review。
 
+部署变量按工作模式的完整说明见 [配置说明](docs/CONFIGURATION.md)；GitLab/CodeHub 接口、消费字段与模式调用矩阵见 [GitLab API 说明](docs/GITLAB_API.md)。
+
 ## 项目优势
 
 - 在本地 clone 完整代码仓，对比 target/source 两个分支，可以读取更多代码上下文与代码仓的 skill，提升 review 质量。
@@ -165,7 +167,6 @@ $env:MR_REVIEW_SUBMIT_COMMENT = "false"
 - `MR_REVIEWER_AGENT_TYPE`：`opencode` 或 `claude-code`，默认 `opencode`。
 - `MR_REVIEWER_AGENT_COMMAND`：Agent 可执行命令；为空时根据类型使用 `opencode` 或 `claude`。
 - review/review-plan/deep-review prompt 使用随 Git 发布的包内模板；部署侧不能通过环境变量或目录覆盖。模板版本是其 UTF-8 内容的 SHA-256 前 12 位，会写入 Agent 调用元数据、DEBUG `request.json` 和 webhook 审计报告，便于复现问题。
-- `MR_REVIEWER_AGENT_MODEL_NAME`：webhook inline discussion 必填的展示模型名，例如 `GLM5`。为空时仍会生成本地报告，但不会提交任何 inline discussion，报告状态为 `model_not_configured`；不会从 Agent 输出中猜测模型名。
 - `MR_REVIEW_WORK_DIR`：临时 clone 和报告输出目录，默认系统临时目录下的 `gitlab-mr-review`。
 - `MR_REVIEW_SUBMIT_COMMENT`：默认 `true`；设置为 `false` 时只输出本地 Markdown 报告路径。
 

@@ -190,7 +190,7 @@ log/webhook-reports/20260709T120000Z-team_project-mr-7-webhook-abc123.md
 
 ## 模块边界
 
-MR Web URL 与 REST API root 是两个独立边界：`MR_REVIEWER_GITLAB_BASE_URL` 只用于 URL host 校验，`MR_REVIEWER_GITLAB_API_BASE_URL` 持有包含版本前缀的完整 API root；`GitLabClient` 只追加 `/projects/...` 资源路径。
+MR Web URL 与 REST API root 是两个独立边界：`MR_REVIEWER_GITLAB_BASE_URL` 只用于 URL host 校验，`MR_REVIEWER_GITLAB_API_BASE_URL` 持有包含版本前缀的完整 API root；`GitLabClient` 只追加 `/projects/...` 资源路径。完整接口目录、消费字段和模式调用矩阵见 [GitLab API 说明](GITLAB_API.md)。
 
 - `cli.py`：命令入口、轮询循环和 review service 装配。
 - `welink.py`：WeLink poll/reply 命令执行、OneBox 上传与群通知编排。

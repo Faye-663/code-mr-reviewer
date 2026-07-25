@@ -227,7 +227,7 @@ spike 必须证明：
 
 目标：在修改业务流程前消除两个高风险未知项。
 
-- 根据 `gitlab_mr_api.txt` 实现并测试两段式查询与唯一 `ReqID` accessor：project path 查询只提供 `project_id`，MR `iid` 取自 URL，详情使用 `/projects/{project_id}/isource/merge_requests/{iid}`；只读取 `e2e_issues[0].issue_num`，缺失、空数组、null、空字符串和错误类型均返回明确校验错误。
+- 根据 [GitLab API 说明](GITLAB_API.md) 实现并测试两段式查询与唯一 `ReqID` accessor：project path 查询只提供 `project_id`，MR `iid` 取自 URL，详情使用 `/projects/{project_id}/isource/merge_requests/{iid}`；只读取 `e2e_issues[0].issue_num`，缺失、空数组、null、空字符串和错误类型均返回明确校验错误。
 - 通过自动化契约测试覆盖 OpenCode/Claude Code 的 cwd、提示隔离和多成员路径；本机已安装的 Claude Code 完成 sibling repo live smoke，本机未安装 OpenCode，生产环境由 healthcheck 验证实际 adapter。
 - 冻结 ReviewSet manifest、联合 review JSON 和中央目录 schema v1。
 
@@ -265,7 +265,7 @@ spike 必须证明：
 - 发布采用“先校验全部候选，再逐条提交”；Agent/解析/目标校验失败时零评论。单条 API POST 失败记录并继续其它已校验 target。
 - IM 仍上传一个聚合 Markdown 到 OneBox，并通知文件名和发布统计。
 
-GitLab 位置与普通评论能力以官方 [Discussions API](https://docs.gitlab.com/api/discussions/)、[Notes API](https://docs.gitlab.com/api/notes/) 和仓库内 `gitlab_mr_api.txt` 为准。
+GitLab 位置与普通评论能力以官方 [Discussions API](https://docs.gitlab.com/api/discussions/)、[Notes API](https://docs.gitlab.com/api/notes/) 和仓库内 [GitLab API 说明](GITLAB_API.md) 保存的平台扩展契约为准。
 
 验收：多 target 正确拆分；合法但不可定位的 finding 使用普通 note；重复 ReviewSet 不重复发布；聚合报告记录每个 target 状态。
 
@@ -325,7 +325,7 @@ GitLab 位置与普通评论能力以官方 [Discussions API](https://docs.gitla
 
 ### Commit 1：`docs(cross-repo): lock ReviewSet contract`（Complete，`a9e56ee`）
 
-- 范围：`gitlab_mr_api.txt`、两份跨仓临时文档和 ADR-002。
+- 范围：当时的 `gitlab_mr_api.txt`、两份跨仓临时文档和 ADR-002；原始 API 样例现已完整整合至 [GitLab API 说明](GITLAB_API.md) 后删除。
 - 完成标志：project path -> `project_id` -> isource MR、`e2e_issues[0].issue_num` 契约锁定，ADR 转为 Accepted。
 - 下次开始条件：已满足；文档和用户提供 API 样例独立提交。
 

@@ -10,6 +10,8 @@
 
 ## 最小配置
 
+完整的配置加载规则、模式矩阵和变量参考见 [配置说明](CONFIGURATION.md)。本节只列出 webhook 的最小部署示例。
+
 先复制配置文件：
 
 ```powershell
@@ -56,7 +58,7 @@ MR_REVIEWER_REPORT_DIR=log/webhook-reports
 
 Agent 的 `old_line` / `new_line` 不是范围起止行。新增行必须使用 `old_line=-1, new_line=N`，删除行使用 `old_line=N, new_line=-1`，未修改的上下文行同时提供同一位置匹配的两侧行号。对于更新文件中的同号替换行，若 Agent 误报 `old_line=new_line=N`，且 diff 两侧精确存在旧侧删除行和新侧新增行，Python 会规范为新侧位置；该容错不适用于新文件或范围式行号。其它非法或自相矛盾的组合不会发布；合法但不在当前 diff 的 finding 只保留在本地报告，webhook 不会改用邻近行或普通 note。
 
-启动前可以运行 `uv run mr-reviewer healthcheck`；输出中的 `publish_min_severity` 与 `publish_min_confidence` 是实际生效门槛。
+启动前可以运行 `uv run mr-reviewer healthcheck`；输出中的 `publish_min_severity` 与 `publish_min_confidence` 是实际生效门槛。当前 healthcheck 是全局检查，会同时要求 WeLink poll/reply、群和 OneBox 配置；只部署 webhook 时，这些缺失项会让命令返回非零，但不表示 webhook 最小配置本身不可运行。
 
 ## 启动服务
 

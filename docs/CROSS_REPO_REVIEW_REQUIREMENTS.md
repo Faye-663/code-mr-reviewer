@@ -190,7 +190,7 @@ Maven 官方依赖能力和术语参考：[Apache Maven Dependency Plugin](https
 
 ## 10. 外部前置条件
 
-- GitLab 项目信息 API 必须按 project path 提供 `project_id`，MR 详情 API `GET /projects/{project_id}/isource/merge_requests/{iid}` 必须继续提供精确 `diff_refs` 和 `e2e_issues[0].issue_num` 非空字符串；示例响应见仓库根目录 `gitlab_mr_api.txt`。
+- GitLab 项目信息 API 必须按 project path 提供 `project_id`，MR 详情 API `GET /projects/{project_id}/isource/merge_requests/{iid}` 必须继续提供精确 `diff_refs` 和 `e2e_issues[0].issue_num` 非空字符串；接口、信任边界和示例响应见 [GitLab API 说明](GITLAB_API.md)。
 - 生产启用的 Agent adapter 必须通过 healthcheck。自动化契约测试覆盖 OpenCode/Claude Code 的 ReviewSet cwd 与提示隔离；本机 Claude Code sibling repo live smoke 已通过，本机未安装 OpenCode，因此未执行其 live smoke。
 - 场景一首次生产验证必须先设置 `MR_REVIEWER_REVIEW_SET_POST_COMMENT=false` 对历史正反样本 dry-run，人工复核后再受控开启评论。
 - 场景二开始前，部署方需要建立并维护中央 GAV 源码目录，保证 tag template 能解析到不可变源码 ref。

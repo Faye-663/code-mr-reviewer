@@ -7,6 +7,8 @@ GitLab MR Review 助手。项目支持两种触发入口：
 
 单 MR 的两个入口共用同一条 title 路由规则：普通 MR 默认 one-step，Agent 直接生成结构化 review JSON；title 去除前导空白后以 `【Deep-Review】` 或 `[Deep-Review]` 开头时（忽略大小写）执行 two-step，先生成严格审查计划，再携带计划执行 Deep Review。两种完整括号不能混用，命中的规范 marker 会写入审计结果。第二步必须重新验证计划、允许推翻计划并覆盖计划未列出的风险。ReviewSet 不读取 title 路由标记，始终固定 two-step。两种模式都先 clone GitLab target 仓库并 checkout MR head；完整 diff 不写入 prompt。仅修改 title 不会触发 webhook review。
 
+部署变量按工作模式的完整说明见 [配置说明](docs/CONFIGURATION.md)；GitLab/CodeHub 接口、消费字段与模式调用矩阵见 [GitLab API 说明](docs/GITLAB_API.md)。
+
 ## 项目优势
 
 - 在本地 clone 完整代码仓，对比 target/source 两个分支，可以读取更多代码上下文与代码仓的 skill，提升 review 质量。
@@ -165,7 +167,6 @@ $env:MR_REVIEW_SUBMIT_COMMENT = "false"
 - `MR_REVIEWER_AGENT_TYPE`：`opencode` 或 `claude-code`，默认 `opencode`。
 - `MR_REVIEWER_AGENT_COMMAND`：Agent 可执行命令；为空时根据类型使用 `opencode` 或 `claude`。
 - review/review-plan/deep-review prompt 使用随 Git 发布的包内模板；部署侧不能通过环境变量或目录覆盖。模板版本是其 UTF-8 内容的 SHA-256 前 12 位，会写入 Agent 调用元数据、DEBUG `request.json` 和 webhook 审计报告，便于复现问题。
-- `MR_REVIEWER_AGENT_MODEL_NAME`：webhook inline discussion 必填的展示模型名，例如 `GLM5`。为空时仍会生成本地报告，但不会提交任何 inline discussion，报告状态为 `model_not_configured`；不会从 Agent 输出中猜测模型名。
 - `MR_REVIEW_WORK_DIR`：临时 clone 和报告输出目录，默认系统临时目录下的 `gitlab-mr-review`。
 - `MR_REVIEW_SUBMIT_COMMENT`：默认 `true`；设置为 `false` 时只输出本地 Markdown 报告路径。
 
@@ -173,44 +174,16 @@ Agent 的 provider/model 仍由 OpenCode 或 Claude Code 自身配置、登录�
 
 ## 配置
 
-复制 `.env.example` 为 `.env`，按需配置：
+复制 `.env.example` 为 `.env`，再按准备运行的模式配置。完整的加载优先级、模式最小配置矩阵、全部变量、默认值、兼容关系和测试专用变量见 [配置说明](docs/CONFIGURATION.md)。
 
-- `MR_REVIEWER_GITLAB_BASE_URL`：GitLab 根地址，例如 `https://gitlab.example.com`。
-- `MR_REVIEWER_GITLAB_API_BASE_URL`：完整 GitLab REST API 根地址，例如 CodeHub 的 `https://api.example.com/api/api/v4`。为空时回退为 `<MR_REVIEWER_GITLAB_BASE_URL>/api/v4`。
-- `MR_REVIEWER_GITLAB_TOKEN`：GitLab token，用于 MR API 和 HTTPS clone。
-- `MR_REVIEWER_IM_POLL_COMMAND`：轮询 WeLink 群历史消息的基础命令，例如 `welink-cli im query-history-message --query-count 20`；程序会追加 `--group-id <MR_REVIEWER_WELINK_GROUP_ID>`。
-- `MR_REVIEWER_IM_REPLY_COMMAND`：发送 WeLink 群通知的基础命令，例如 `welink-cli im send-to-group`；程序会追加 `--group-id <MR_REVIEWER_WELINK_GROUP_ID> --text <文件名通知>`。
-- `MR_REVIEWER_WELINK_GROUP_ID`：当前唯一支持的 WeLink 群 ID，轮询历史消息和发送群通知都会使用这个值。
-- `MR_REVIEWER_WELINK_ONEBOX_SPACE_ID`：WeLink OneBox 上传目标 `space-id`。
-- `MR_REVIEWER_WELINK_ONEBOX_PARENT_ID`：WeLink OneBox 上传目标 `parent` 目录 ID。若 `space-id` 或 `parent` 不存在、无权限或未配置，程序会向群里提示 OneBox 上传失败，但不会把当前 review 任务标记为失败。
-- `MR_REVIEWER_BOT_MENTION`：触发用的 bot mention，默认 `@Bot`。
-- `MR_REVIEWER_BOT_ACCOUNT`：WeLink bot 账号 ID；配置后会用 `atAccountList` 精确判断是否 @ 了机器人。
-- `MR_REVIEWER_ALLOWED_GROUPS`、`MR_REVIEWER_ALLOWED_USERS`、`MR_REVIEWER_ALLOWED_REPOS`：逗号分隔白名单；为空表示不限制。
-- `MR_REVIEWER_AGENT_TYPE`：`opencode` 或 `claude-code`，默认 `opencode`。
-- `MR_REVIEWER_AGENT_COMMAND`：Agent 可执行命令；为空时根据类型使用 `opencode` 或 `claude`。
-- `MR_REVIEWER_AGENT_MODEL_NAME`：webhook inline discussion 和 IM ReviewSet GitLab 评论使用的展示模型名，例如 `GLM5`。为空时仍会生成报告，但不会提交评论；ReviewSet 状态为 `success_with_warnings`，不会从 Agent 输出中猜测模型名。
-- `MR_REVIEWER_LOG_LEVEL`：全局日志级别，取值 `OFF`、`INFO`、`DEBUG`，默认 `OFF`。`INFO` 只记录 API、Agent 和 WeLink 调用的任务、操作、耗时、状态码/返回码和内容长度；`DEBUG` 额外开启 Agent CLI 的 debug 参数并保存脱敏的本地诊断内容。
-- `MR_REVIEWER_DEBUG_DIR`：`DEBUG` 本地诊断根目录，默认 `log/debug`。按 `YYYYMMDD/<task_id>/api`、`agent`、`im` 分目录保存；Agent 调用包含 `prompt.md`、`request.json`、`stdout.md`、`stderr.log`、`result.json`，API 内容写入独立 JSON。所有文件都会脱敏 GitLab token、`PRIVATE-TOKEN`、Authorization 和 Basic 凭据。
-- `MR_REVIEWER_AGENT_DEBUG`、`MR_REVIEWER_AGENT_DIAGNOSTIC_DIR`：旧兼容配置。仅在未设置新变量时生效：`AGENT_DEBUG=true` 映射为 `MR_REVIEWER_LOG_LEVEL=DEBUG`，旧诊断目录映射为 `MR_REVIEWER_DEBUG_DIR`。
-- `MR_REVIEWER_COMMENT_SKILL`：可选。配置后 prompt 会显式指定该 Agent skill 检视 MR；未配置时使用默认 `code-review` skill。自动入口要求该 skill 只输出结构化 JSON，不应自行提交评论。
-- 旧 `MR_REVIEWER_OPENCODE_COMMAND`、`MR_REVIEWER_OPENCODE_DEBUG` 和 `MR_REVIEWER_OPENCODE_DIAGNOSTIC_DIR` 仅在 OpenCode 模式且未配置对应通用变量时作为兼容 fallback。
-- `MR_REVIEWER_WEBHOOK_HOST`、`MR_REVIEWER_WEBHOOK_PORT`、`MR_REVIEWER_WEBHOOK_PATH`：webhook 服务监听地址，默认 `127.0.0.1:8080/webhook/gitlab`。本机自测使用 `127.0.0.1`；GitLab 从其他机器访问 `http://本机IP:8080/webhook/gitlab` 时，需要把 host 改为 `0.0.0.0` 或实际网卡 IP。路径是精确匹配，`/webhook/gitlab/` 会返回 404。完整配置见 [Webhook 快速开始](docs/WEBHOOK_QUICKSTART.md)。
-- `MR_REVIEWER_WEBHOOK_SECRET`：可选。配置后校验 webhook secret header；未配置时允许请求但会输出 warning 日志。
-- `MR_REVIEWER_WEBHOOK_SECRET_HEADER`：webhook secret header 名，默认 `X-Gitlab-Token`。CodeHub 等平台可改为实际 header，例如 `X-CodeHub-Token`。
-- `MR_REVIEWER_WEBHOOK_POST_COMMENT`：是否由 Python 侧发布 GitLab inline discussion，默认 `true`；设为 `false` 时只写本地 JSON 和 Markdown 报告。
-- `MR_REVIEWER_REVIEW_SET_POST_COMMENT`：是否由 Python 侧发布 IM ReviewSet 的 GitLab inline discussion/普通 note，默认 `true`，与 webhook 开关相互独立。设为 `false` 时仍生成并上传聚合报告，所有发布候选标记为 `disabled`。生产首次验证建议先设为 `false`，用历史正反样本 dry-run 后再显式开启。
-- `MR_REVIEWER_PUBLISH_MIN_SEVERITY`：webhook 与 ReviewSet 共用的最低自动发布 severity，默认 `minor`；可选值按 `suggestion < minor < major < fatal` 排序。配置必须使用这些精确枚举，旧错误拼写会导致启动失败。
-- `MR_REVIEWER_PUBLISH_MIN_CONFIDENCE`：webhook 与 ReviewSet 共用的最低自动发布 confidence，默认 `HIGH`；可选值按 `LOW < MEDIUM < HIGH` 排序。两个门槛只控制 GitLab 发布候选，不过滤本地 JSON、Markdown 或 ReviewSet 聚合报告中的 findings；非法值会导致程序启动失败。
-- `MR_REVIEWER_REPORT_DIR`：webhook 本地监视报告目录，默认 `log/webhook-reports`。
-- Agent 的 provider 不由本项目传参控制；具体 provider 由目标机器上的 OpenCode 或 Claude Code 配置、登录状态和环境变量决定。模型展示名只使用 `MR_REVIEWER_AGENT_MODEL_NAME`。
-- `MR_REVIEWER_WORK_DIR`：任务临时目录；为空时使用系统临时目录下的 `code-review`。
-- `MR_REVIEWER_STATE_PATH`：本地状态文件路径，用于记录已处理消息。
-- `MR_REVIEWER_MAX_FILES`：最大变更文件数，默认 `50`。
-- `MR_REVIEWER_MAX_DIFF_LINES`：最大 diff 行数，默认 `2000`。
-- `MR_REVIEWER_TASK_TIMEOUT_SECONDS`：单个 review 任务超时，默认 `900`。
-- `MR_REVIEWER_POLL_INTERVAL_SECONDS`：常驻轮询间隔，默认 `15`。
+需要优先确认的边界：
 
-默认 `MR_REVIEWER_LOG_LEVEL=OFF` 时不输出项目日志，也不会创建 `MR_REVIEWER_DEBUG_DIR`。`MR_REVIEWER_REPORT_DIR` 保存的是 webhook 业务审计结果、审查计划、finding 发布状态和失败阶段，不受日志级别影响；它与仅用于排障的 debug 目录职责不同。
+- `MR_REVIEWER_GITLAB_BASE_URL` 是 GitLab Web 根地址；`MR_REVIEWER_GITLAB_API_BASE_URL` 是完整 REST API 根地址，留空时从 Web 根地址派生。
+- `MR_REVIEWER_GITLAB_TOKEN` 同时用于 REST API 与 HTTPS clone/fetch，不得进入 prompt、普通日志或报告。
+- `MR_REVIEWER_AGENT_MODEL_NAME` 只提供 GitLab 评论中的展示名；Agent provider、实际模型、API Key 和登录状态仍由 OpenCode 或 Claude Code 管理。
+- `MR_REVIEWER_WEBHOOK_POST_COMMENT` 与 `MR_REVIEWER_REVIEW_SET_POST_COMMENT` 相互独立；共享 severity/confidence 门槛只控制 GitLab 发布，不过滤本地或聚合报告。
+- 默认 `MR_REVIEWER_LOG_LEVEL=OFF` 时不输出项目日志，也不会创建 `MR_REVIEWER_DEBUG_DIR`。`MR_REVIEWER_REPORT_DIR` 是 webhook 业务审计目录，不受日志级别影响。
+- 当前 `healthcheck` 会统一检查 WeLink 配置；只部署 webhook 时可能因缺少 IM 配置返回非零，详见配置说明。
 
 WeLink poll 命令 stdout 需要返回 `query-history-message` 的原始 JSON，程序会读取 `respData.chatInfo`：
 

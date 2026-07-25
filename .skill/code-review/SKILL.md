@@ -125,7 +125,7 @@ git diff <base_sha>...<head_sha>
 
 字段约束：
 
-- `severity` 只能是 `suggestion`、`minjor`、`major`、`fatal`。
+- `severity` 只能是 `suggestion`、`minor`、`major`、`fatal`。
 - `confidence` 只能是 `HIGH`、`MEDIUM`、`LOW`。
 - 新增行使用 `old_line: -1`，删除行使用 `new_line: -1`。
 - `old_path` 和 `new_path` 使用 GitLab diff 中的路径；重命名时分别填旧路径和新路径。
@@ -139,10 +139,10 @@ git diff <base_sha>...<head_sha>
 
 ## 批准标准
 
-* **通过**：没有 `fatal`、`major`、`minjor` 问题
+* **通过**：没有 `fatal`、`major`、`minor` 问题
 * **提醒**：只有 `suggestion` 问题，可以作为建议处理
 * **阻止**：发现 `fatal` 问题，必须在合并前修复
-* **需修改**：发现 `major` 或 `minjor` 问题，应在合并前解决
+* **需修改**：发现 `major` 或 `minor` 问题，应在合并前解决
 
 ## 项目特定指南
 

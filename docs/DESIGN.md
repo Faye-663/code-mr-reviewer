@@ -1,6 +1,6 @@
 # 设计方案图
 
-本项目有两类触发入口：WeLink IM poll 和 GitLab webhook。入口负责接收事件、过滤不可处理请求，然后把 GitLab MR 信息交给共用的 review core。单 MR review core 负责 clone/fetch/checkout、生成 diff，并根据最新 MR title 与可选项目依赖目录路由：普通 MR 固定单仓 one-step；`【Deep-Review】` 无映射时单仓 two-step，完整准备 1–3 个依赖时执行依赖联合 two-step，目录/数量/准备异常时降级为单仓 one-step。WeLink IM 还支持显式提交 2–3 个不同项目 MR 的 ReviewSet；该路径固定 two-step，不读取项目依赖目录。Python 侧负责信任边界校验、GitLab 发布和 Markdown 渲染。
+本项目有两类触发入口：WeLink IM poll 和 GitLab webhook。入口负责接收事件、过滤不可处理请求，然后把 GitLab MR 信息交给共用的 review core。单 MR review core 负责 clone/fetch/checkout、生成 diff，并根据最新 MR title 与可选项目依赖目录路由：普通 MR 固定单仓 one-step；`【Deep-Review】` 或 `[Deep-Review]` 完整前缀无映射时单仓 two-step，完整准备 1–3 个依赖时执行依赖联合 two-step，目录、数量或准备异常时降级为单仓 one-step。匹配会去除 title 前导空白并忽略大小写，但不接受混合括号；`routing_marker` 记录命中形式对应的规范 marker。WeLink IM 还支持显式提交 2–3 个不同项目 MR 的 ReviewSet；该路径固定 two-step，不读取项目依赖目录。Python 侧负责信任边界校验、GitLab 发布和 Markdown 渲染。
 
 ## 总体结构
 
@@ -78,7 +78,7 @@ ReviewSet 根目录固定为：
 
 Agent 的第一阶段输出 `review-set-plan/v1`，第二阶段输出 `review-set-review/v1`。最终 finding 可以引用多个成员证据和多个责任 target，但 Agent 不能提供可信 URL、project id、SHA 或 marker。Python 在发布前校验全部 evidence/target：未知成员、越界路径或非法行号记为 `invalid`；合法位置不在当前 diff 时回退为普通 MR note。
 
-只有 HIGH 且 major/fatal 的 target 自动发布。marker 由 ReviewSet ID、规范化 evidence、rule 和 target 计算；分页读取 discussions 时，individual note 也参与去重。单目标 POST 失败不回滚其它已发布目标，状态转为 `success_with_warnings`。`MR_REVIEWER_REVIEW_SET_POST_COMMENT=false` 时只生成报告并把候选记为 `disabled`；开关开启但 `MR_REVIEWER_AGENT_MODEL_NAME` 为空时不发布，状态为 `success_with_warnings`。
+webhook 与 ReviewSet 共用 `FindingPublicationPolicy`。默认发布 `minor` 及以上且 `confidence=HIGH` 的 target；部署侧可通过 `MR_REVIEWER_PUBLISH_MIN_SEVERITY` 与 `MR_REVIEWER_PUBLISH_MIN_CONFIDENCE` 调整，门槛只影响发布候选，不过滤报告 findings。marker 由 ReviewSet ID、规范化 evidence、rule 和 target 计算；分页读取 discussions 时，individual note 也参与去重。单目标 POST 失败不回滚其它已发布目标，状态转为 `success_with_warnings`。`MR_REVIEWER_REVIEW_SET_POST_COMMENT=false` 时只生成报告并把候选记为 `disabled`；开关开启但 `MR_REVIEWER_AGENT_MODEL_NAME` 为空时不发布，状态为 `success_with_warnings`。
 
 聚合报告 basename 固定为 `review-set-<review_set_id 前 12 位>.md`，包含 ReqID、成员 refs、计划、关系结论、所有 findings、证据、责任位置和逐 target 发布状态。任务状态限定为 `rejected`、`failed`、`success` 或 `success_with_warnings`；拒绝和运行失败都以安全 IM 文案终结原消息，不自动重试。
 
@@ -86,7 +86,7 @@ Agent 的第一阶段输出 `review-set-plan/v1`，第二阶段输出 `review-se
 
 部署侧通过可选 `MR_REVIEWER_REPOSITORY_DEPENDENCY_CATALOG` 提供严格 JSON 目录，schema 为 `schema_version=1` 和 `repositories[]`。每项只包含唯一 `project_path` 与去重、非自身的直接 `dependencies[]`；不解析 Maven/POM/GAV/version，也不递归依赖仓映射。
 
-只有 `【Deep-Review】` 单 MR 读取目录。1–3 个依赖形成联合候选；超过 3 个、目录不可读/schema 非法或任一依赖 project/branch/checkout 失败时，删除全部依赖上下文并执行单仓 one-step。未配置目录或当前项目无映射不是失败，继续单仓 two-step。普通 MR 和 ReviewSet 均不读取目录。
+只有 `【Deep-Review】` 或 `[Deep-Review]` 单 MR 读取目录。1–3 个依赖形成联合候选；超过 3 个、目录不可读/schema 非法或任一依赖 project/branch/checkout 失败时，删除全部依赖上下文并执行单仓 one-step。未配置目录或当前项目无映射不是失败，继续单仓 two-step。普通 MR 和 ReviewSet 均不读取目录。
 
 依赖 project path 先通过 GitLab project API 转为不含凭据的 HTTPS clone URL。每个依赖 workspace 从空仓开始，只 fetch `refs/heads/<主 MR target_branch>` 到固定本地 ref，使用 `--no-tags --no-recurse-submodules --refmap=`，再 detached checkout 解析出的 commit SHA；不得 fallback source branch、默认分支、tag 或近似 ref。全部成功后写入 `dependency-review/v1` manifest，`context_id` 由主 MR head SHA 与排序后的依赖 project/commit 计算。
 
@@ -115,7 +115,11 @@ flowchart TD
 
 ## 结构化 Review 契约
 
-自动入口要求 Agent 只输出 JSON，不输出 Markdown 或代码围栏。普通 MR 和单仓 Deep Review 沿用下面的单 MR finding；单仓 Deep 第一阶段严格生成 `change_intent`、`critical_paths`、`external_contracts`、`state_invariants`、`transaction_async_boundaries`、`test_risks`、`open_questions`。依赖联合 Deep 使用独立 `dependency-review-plan/v1` / `dependency-review-result/v1`，允许 evidence 引用 manifest 中主仓或依赖仓，但 position 与唯一责任目标只能是主 MR。两类 second step 都必须重新验证、允许推翻并覆盖计划遗漏。计划进入本地 JSON/Markdown 报告，但不进入 GitLab comment/discussion。
+自动入口要求 Agent 的整体输出是一个 JSON 对象，不得用 Markdown 或代码围栏包裹 JSON。普通 MR 和单仓 Deep Review 沿用单 MR finding；依赖联合 Deep 使用独立 `dependency-review-plan/v1` / `dependency-review-result/v1`，允许 evidence 引用 manifest 中主仓或依赖仓，但 position 与唯一责任目标只能是主 MR。两类 Deep Review 的第一阶段生成严格计划，第二阶段必须重新验证、允许推翻并覆盖计划遗漏。计划进入本地 JSON/Markdown 报告，但不进入 GitLab comment/discussion。仅当 suggestion 包含可靠的具体代码时，允许在 JSON 字符串内部使用带语言标识的普通 Markdown fenced code block；当前契约不生成需要精确替换范围的 GitLab `suggestion` block。
+
+`structured_output.py` 是模型输出的统一信任边界。单 MR、ReviewSet 与 dependency review 的 plan/result 都先对完整输出执行 `json.loads`；完整 JSON 的 schema 校验失败时立即拒绝，不扫描其内部对象。只有整段发生 `JSONDecodeError` 时，解析器才用 `JSONDecoder.raw_decode` 枚举外层 JSON object，并以调用方原有完整契约逐个校验：恰好一个有效对象时恢复，没有有效对象或多个有效对象时拒绝。该边界不修复单引号、尾逗号、截断 JSON、字段、类型或枚举，也不触发 Agent retry，因此各 review 模式的调用次数不变。恢复日志只记录输出类型、前后缀字符数和候选数；`structured_parse_status` 仍只有 `success` / `failed`。
+
+便携式 `gitlab-mr-review` skill 不能依赖项目安装，因此脚本内保留等价的自包含解析与完整契约校验。恢复后的 review 会重新序列化为纯 JSON 再提交 Notes API，本地 Markdown 也只从已校验对象渲染；无效或歧义输出在 comment 提交前 fail-closed。
 
 顶层结构：
 
@@ -142,17 +146,31 @@ flowchart TD
 
 字段约束：
 
-- `severity` 使用 GitLab discussions API 枚举：`suggestion`、`minjor`、`major`、`fatal`。
+- `severity` 使用 GitLab discussions API 枚举：`suggestion`、`minor`、`major`、`fatal`。
 - `confidence` 只能是 `HIGH`、`MEDIUM`、`LOW`。
-- 新增行使用 `old_line=-1`；删除行使用 `new_line=-1`。
+- 新增行使用 `old_line=-1, new_line=N`；删除行使用 `old_line=N, new_line=-1`。
+- diff 中未修改的上下文行同时提供该位置匹配的 `old_line` 和 `new_line`；两者必须命中同一个上下文位置。
+- 两个行号表示一个 GitLab diff 位置，不是范围的开始与结束。`0`、小于 `-1`、双 `-1`，以及任一侧命中 diff 但两侧无法对应同一个上下文位置的组合通常均非法，不发布也不回退普通 note。单 MR webhook 仅兼容一种已知模型误报：更新文件的 `old_line=new_line=N` 同时精确命中旧侧删除行和新侧新增行时，规范为新侧位置 `old_line=-1, new_line=N`。该容错不改变 Agent 输出契约，也不用于新文件、范围式行号或 ReviewSet。
 - `old_path` / `new_path` 使用 GitLab diff 中的路径；重命名时分别填旧路径和新路径。
 - `evidence` 和 `suggestion` 必须非空，否则 finding 不进入发布候选。
+
+## Discussion 展示契约
+
+普通单 MR 与 ReviewSet 发布共用“证据优先”的信息层级：
+
+1. 标题以 `🤖 AI Review` 标识来源；ReviewSet 额外标明类型。标题不重复平台已经展示的 severity，也不展示模型名。
+2. 正文依次展示“判断依据”“影响”“建议”。单 MR 直接展示 finding evidence；ReviewSet 按成员、文件和行区间分项展示 evidence refs。
+3. suggestion 中的普通 Markdown fenced code block 原样交给 GitLab 渲染。
+4. confidence、rule、模型名以及 ReviewSet issue/type 放入 `<details>` 的“审查信息”折叠区。
+5. Python 生成的幂等 marker 继续作为不可见 HTML comment 放在正文末尾，其计算和去重语义不受展示格式影响。
 
 ## Inline 发布规则
 
 webhook 发布前会读取 GitLab MR 详情 API 的 `diff_refs.base_sha`、`diff_refs.start_sha`、`diff_refs.head_sha`，并基于 MR diff 构建可评论行集合。本地 `merge-base` 只用于 clone/diff fallback，不作为 inline discussion position 的权威来源。
 
-默认只发布 `fatal` / `major` 且 `confidence=HIGH` 的 finding。其它 finding、无法映射到 diff 行的 finding、缺少证据或建议的 finding，只进入本地 JSON / Markdown 报告。
+发布门槛按固定顺序比较：severity 为 `suggestion < minor < major < fatal`，confidence 为 `LOW < MEDIUM < HIGH`；默认最低值分别是 `minor` 和 `HIGH`。配置值必须使用现有枚举，非法值在 `Config` 初始化时失败。`healthcheck` 输出实际门槛。低于任一门槛的 finding 分别标记 `below_min_severity` 或 `below_min_confidence`。
+
+webhook 仅发布同时满足门槛并能映射到规范 diff 位置的 finding。低于门槛、无法映射到 diff 行、缺少证据或建议的 finding 只进入本地 JSON / Markdown 报告；不会为了发布而借用邻近变更行。ReviewSet 对语法合法但不在当前 diff 的位置继续回退普通 note，自相矛盾或非法位置不回退。
 
 发布前会读取远端 discussions 中的 marker，避免重复 webhook 触发时刷屏。marker 格式：
 
@@ -161,6 +179,8 @@ webhook 发布前会读取 GitLab MR 详情 API 的 `diff_refs.base_sha`、`diff
 ```
 
 `MR_REVIEWER_WEBHOOK_POST_COMMENT=false` 时不发布 inline discussion，但仍生成本地报告。webhook 不再通过 notes API 提交整段 Markdown note。
+
+已知限制：webhook 的高风险、高置信非 diff finding 当前仍只保留本地。未来可以评估将其回退为普通 MR note，但本次设计未开放 Notes API，也未承诺具体启用条件。
 
 ## 本地报告与失败策略
 
@@ -177,7 +197,7 @@ log/webhook-reports/20260709T120000Z-team_project-mr-7-webhook-abc123.md
 - Deep Review 第二次 Agent 调用失败：保留已完成计划，写 `failure_stage=review` 的失败态报告。
 - 依赖联合计划或 review 失败：分别写 `failure_stage=dependency_review_plan` / `dependency_review`，保留 `requested_review_mode`、实际 `review_mode`、依赖 project/branch/commit 与准备耗时，并清理整个任务目录。
 - 依赖目录、数量或准备失败：不属于任务失败；报告 `dependency_context_status=degraded` 和稳定 reason，明确“未执行依赖联合检视”，再执行单仓 one-step。
-- JSON parse failed：不发布 inline discussion，写 `parse_failed` 报告，并在 Markdown 中保留脱敏后的原始输出。
+- JSON 无法解析、没有契约有效对象或存在多个契约有效对象：不发布 inline discussion，写 `parse_failed` 报告，并在 Markdown 中保留脱敏后的原始输出。
 - finding 全部被过滤：不发布 inline discussion，写成功态本地报告。
 - 读取远端 discussions 失败：不发布新 discussion，避免失去幂等后刷屏。
 - 单条 discussion POST 失败：记录该 finding failed，继续处理其它 finding。
@@ -187,7 +207,7 @@ log/webhook-reports/20260709T120000Z-team_project-mr-7-webhook-abc123.md
 
 ## 模块边界
 
-MR Web URL 与 REST API root 是两个独立边界：`MR_REVIEWER_GITLAB_BASE_URL` 只用于 URL host 校验，`MR_REVIEWER_GITLAB_API_BASE_URL` 持有包含版本前缀的完整 API root；`GitLabClient` 只追加 `/projects/...` 资源路径。
+MR Web URL 与 REST API root 是两个独立边界：`MR_REVIEWER_GITLAB_BASE_URL` 只用于 URL host 校验，`MR_REVIEWER_GITLAB_API_BASE_URL` 持有包含版本前缀的完整 API root；`GitLabClient` 只追加 `/projects/...` 资源路径。完整接口目录、消费字段和模式调用矩阵见 [GitLab API 说明](GITLAB_API.md)。
 
 - `cli.py`：命令入口、轮询循环和 review service 装配。
 - `welink.py`：WeLink poll/reply 命令执行、OneBox 上传与群通知编排。
@@ -201,6 +221,6 @@ MR Web URL 与 REST API root 是两个独立边界：`MR_REVIEWER_GITLAB_BASE_UR
 - `review_set.py`：ReviewSet 预检、ReqID/refs 信任边界、确定性 manifest 与多成员 workspace。
 - `review_set_result.py` / `review_set_publish.py` / `review_set_report.py`：联合 plan/result 严格解析、责任 target 校验/幂等发布和聚合 Markdown。
 - `reviewer.py`：共用 review core，串联 GitLab、Git 和 Agent；单仓 Deep、依赖联合 Deep 与 ReviewSet 的 two-step 均共享各自任务剩余超时预算。
-- `review_result.py` / `inline_review.py` / `markdown_report.py`：审查计划与 review JSON 解析、finding 行定位校验、GitLab inline 发布结果整理和本地 Markdown 报告渲染。
+- `structured_output.py` / `review_result.py` / `inline_review.py` / `publication_policy.py` / `markdown_report.py`：结构化输出恢复边界、审查计划与 review JSON 契约校验、finding 行定位校验、共享发布门槛、GitLab inline 发布结果整理和本地 Markdown 报告渲染。
 - `opencode.py`：AgentRunner protocol、OpenCode/Claude Code adapter、debug 参数和 prompt 日志脱敏。
 - `state.py`：IM poll 的本地去重状态文件，避免重复处理同一条 IM 消息。

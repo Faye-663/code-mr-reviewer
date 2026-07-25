@@ -12,7 +12,9 @@ Accepted（场景一与场景二均已 Implemented；场景二由 ADR-003 修订
 
 场景一已实现 IM 显式 ReviewSet、project path 到 `project_id` 再到 isource MR 的预检链路、精确多成员 checkout、固定 two-step、聚合报告和按责任 MR 幂等发布。场景二也已实现；其 Maven/tag 方案已由 [ADR-003](ADR-003-dependency-review-by-repository-map.md) 修订为项目依赖映射、同名 target branch 联合检视以及全有或全无的 one-step 降级。
 
-生产首次启用场景一时，应以 `MR_REVIEWER_REVIEW_SET_POST_COMMENT=false` 运行历史正反样本 dry-run；这属于 rollout 验收，不改变架构决策状态。
+生产首次启用场景一时，应以 `MR_REVIEWER_REVIEW_SET_POST_COMMENT=false` 运行历史正反样本 dry-run；这属于 rollout 验收，不改变架构决策状态。webhook 与 ReviewSet 后续统一使用共享 `FindingPublicationPolicy`，默认门槛为 `minor+HIGH`，发布门槛不改变聚合报告 findings 收录。
+
+2026-07-20 修订：severity 的低等级枚举统一为 `minor`；旧错误拼写不再作为兼容输入接受。这是对既有枚举契约的纠错，不新增 ADR。
 
 ## Context
 
@@ -33,16 +35,16 @@ Accepted（场景一与场景二均已 Implemented；场景二由 ADR-003 修订
 - 系统先按 MR URL 中的 project path 查询 `project_id`，再以 URL 中的 `iid` 调用 `GET /projects/{project_id}/isource/merge_requests/{iid}`；只读取该响应的 `e2e_issues[0].issue_num`，要求其为去除首尾空白后的非空字符串，并仅在全部成员值相同时继续。
 - webhook 保持单 MR 事件处理，不增加聚合状态、等待窗口或“变更集完整”推断。
 - 联合检视固定 two-step：先建立跨仓审查计划，再重新验证所有成员 diff；覆盖每个 MR 自身问题和组合问题。
-- 生成一个聚合报告。HIGH major/fatal finding 按 targets 回写责任 MR：可定位时使用 inline discussion；未提供位置或位置语法合法但无法映射当前 diff 时使用普通 note；未知成员、越界路径或非法行号不发布。
+- 生成一个聚合报告。满足共享发布门槛的 finding 按 targets 回写责任 MR：可定位时使用 inline discussion；未提供位置或位置语法合法但无法映射当前 diff 时使用普通 note；未知成员、越界路径、非法行号或自相矛盾的两侧行号不发布。默认门槛为 severity 至少 `minor` 且 confidence 至少 `HIGH`，部署侧可通过受现有枚举约束的 `MR_REVIEWER_PUBLISH_MIN_SEVERITY` 与 `MR_REVIEWER_PUBLISH_MIN_CONFIDENCE` 调整。
 
-项目信息、`isource` MR 详情和 `ReqID` 契约已由 `gitlab_mr_api.txt` 确认。实现不得从 MR URL 猜测 `project_id`，不得读取相近字段、猜测需求关联，或使用 `e2e_issues` 后续元素替代首元素。
+项目信息、`isource` MR 详情和 `ReqID` 契约已在 [GitLab API 说明](../GITLAB_API.md) 中确认。实现不得从 MR URL 猜测 `project_id`，不得读取相近字段、猜测需求关联，或使用 `e2e_issues` 后续元素替代首元素。
 
 ### 2. 单 MR 依赖上下文由 ADR-003 修订
 
 本 ADR 原先选择静态 Maven resolver、GAV/tag 映射和精确版本源码。实施前确认该方案不符合组织内实际源码协作方式，ADR-003 已改为：
 
 - 部署侧目录显式维护主项目到最多 3 个直接依赖项目的关系。
-- 只有 `【Deep-Review】` 单 MR 才读取目录；所有依赖完整准备后执行依赖联合 two-step。
+- 只有 `【Deep-Review】` 或 `[Deep-Review]` 单 MR 才读取目录；所有依赖完整准备后执行依赖联合 two-step。
 - 依赖仓使用与主 MR target branch 同名的分支，并记录任务实际 commit SHA。
 - 数量超限、目录无效或任一依赖失败时不使用部分上下文，降级为单仓 one-step。
 

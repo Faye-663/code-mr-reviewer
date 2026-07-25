@@ -13,6 +13,7 @@ from mr_reviewer.observability import task_context
 from mr_reviewer.prompting import PromptTemplateError, build_review_plan_prompt, build_review_prompt
 from mr_reviewer.process import prepare_command
 from mr_reviewer.review_result import parse_review_plan, parse_structured_review_result
+from mr_reviewer.review_routing import resolve_review_routing
 from mr_reviewer.state import StateStore
 
 
@@ -42,7 +43,8 @@ def test_code_review_skill_targets_gitlab_mr_range():
     assert '"findings"' in skill
     assert '"severity"' in skill
     assert "suggestion" in skill
-    assert "minjor" in skill
+    assert "minor" in skill
+    assert ("min" + "jor") not in skill
     assert "major" in skill
     assert "fatal" in skill
     assert "JSDoc" not in skill
@@ -124,6 +126,21 @@ def test_prompt_templates_are_portable_and_render_identically(tmp_path: Path):
     assert "待验证线索" in main_review
     assert "允许推翻" in main_review
     assert "覆盖计划未列出的" in main_review
+    assert "不是范围的起止行" in main_review
+    assert "禁止伪造或借用邻近 diff 行" in main_review
+    assert "suggestion 字符串内" in main_review
+    assert "Markdown fenced code block" in main_review
+    assert "GitLab suggestion block" in main_review
+    assert "minor" in main_review
+    assert ("min" + "jor") not in main_review
+    review_set_template = Path("src/mr_reviewer/prompt_templates/review-set-review.md").read_text(encoding="utf-8")
+    assert "不是范围的起止行" in review_set_template
+    assert "position 必须为 null" in review_set_template
+    assert "suggestion 字符串内" in review_set_template
+    assert "Markdown fenced code block" in review_set_template
+    assert "GitLab suggestion block" in review_set_template
+    assert "minor" in review_set_template
+    assert ("min" + "jor") not in review_set_template
     assert len(main_review.template_version) == 12
     assert Path("src/mr_reviewer/prompt_templates/review-plan.md").read_bytes() == (
         Path(".skill/gitlab-mr-review/prompt_templates/review-plan.md").read_bytes()
@@ -136,6 +153,30 @@ def test_prompt_templates_are_portable_and_render_identically(tmp_path: Path):
     )
     parse_review_plan(main_summary.split("JSON 结构为：\n", 1)[1].split("\ncritical_paths", 1)[0])
     parse_structured_review_result(main_review.split("JSON 结构为：\n", 1)[1].split("\nseverity", 1)[0])
+
+
+@pytest.mark.parametrize(
+    ("title", "review_mode", "routing_marker"),
+    [
+        ("  【deep-review】 change", "two-step", "【Deep-Review】"),
+        ("  [deep-review] change", "two-step", "[Deep-Review]"),
+        ("【Deep-Review] change", "one-step", ""),
+        ("prefix [Deep-Review] change", "one-step", ""),
+    ],
+)
+def test_portable_skill_routing_matches_main_program(title: str, review_mode: str, routing_marker: str):
+    script = _load_gitlab_mr_review_script()
+
+    main = resolve_review_routing(title)
+    portable = script.resolve_review_routing(title)
+
+    assert (main.review_mode, main.routing_reason, main.routing_marker) == (
+        portable.review_mode,
+        portable.routing_reason,
+        portable.routing_marker,
+    )
+    assert main.review_mode == review_mode
+    assert main.routing_marker == routing_marker
 
 
 def test_prompt_renderer_rejects_missing_or_unresolved_template_values():
@@ -221,13 +262,13 @@ def test_gitlab_mr_review_skill_uses_shared_title_routing(title: str, expected_m
     assert script.resolve_review_routing(title).review_mode == expected_mode
 
 
-def test_gitlab_mr_review_skill_runs_one_step_without_summary(monkeypatch, tmp_path: Path):
+def test_gitlab_mr_review_skill_runs_one_step_without_summary(monkeypatch, tmp_path: Path, capsys):
     script = _load_gitlab_mr_review_script()
     prompts = []
 
     def fake_run(agent_type, command, prompt, repo_path):
         prompts.append(prompt)
-        return '{"findings":[],"notes":[],"test_gaps":[]}'
+        return 'DO-NOT-LOG 我将按要求进行 review。\n{"findings":[],"notes":[],"test_gaps":[]}'
 
     monkeypatch.setattr(script, "run_agent_review", fake_run)
     routing = script.resolve_review_routing("Fix auth")
@@ -241,6 +282,42 @@ def test_gitlab_mr_review_skill_runs_one_step_without_summary(monkeypatch, tmp_p
     assert result["summary"] is None
     assert result["agent_call_count"] == 1
     assert "one-step（default）" in result["local_report"]
+    assert json.loads(result["comment_body"]) == {"findings": [], "notes": [], "test_gaps": []}
+    stderr = capsys.readouterr().err
+    assert "status=recovered" in stderr
+    assert "DO-NOT-LOG" not in stderr
+
+
+def test_gitlab_mr_review_skill_report_counts_minor_severity():
+    script = _load_gitlab_mr_review_script()
+    review = json.dumps(
+        {
+            "findings": [
+                {
+                    "rule_id": "BOUNDARY",
+                    "severity": "minor",
+                    "confidence": "HIGH",
+                    "old_path": "src/example.py",
+                    "title": "边界条件未覆盖",
+                    "new_path": "src/example.py",
+                    "old_line": -1,
+                    "new_line": 42,
+                    "evidence": "新增分支没有相应测试。",
+                    "impact": "边界输入可能回归。",
+                    "suggestion": "补充边界测试。",
+                }
+            ],
+            "good": [],
+            "notes": [],
+            "test_gaps": [],
+        },
+        ensure_ascii=False,
+    )
+
+    report = script.render_local_report(None, review, "base", "head")
+
+    assert "| minor | 1 | 警告 |" in report
+    assert ("min" + "jor") not in report
 
 
 def test_gitlab_mr_review_script_reads_independent_api_base_url(monkeypatch):
@@ -359,7 +436,7 @@ def test_gitlab_mr_review_script_runs_plan_before_review_and_keeps_plan_local(mo
     prompts = []
     responses = iter(
         [
-            json.dumps(
+            "计划如下：\n" + json.dumps(
                 {
                     "change_intent": ["修复认证流程"],
                     "critical_paths": [{"path": "auth", "reason": "刷新token", "verify": ["并发刷新"]}],
@@ -371,7 +448,7 @@ def test_gitlab_mr_review_script_runs_plan_before_review_and_keeps_plan_local(mo
                 },
                 ensure_ascii=False,
             ),
-            "# Review\n\nOnly review findings.",
+            'review 结果：\n{"findings":[],"notes":[],"test_gaps":[]}',
         ]
     )
 
@@ -395,8 +472,27 @@ def test_gitlab_mr_review_script_runs_plan_before_review_and_keeps_plan_local(mo
     assert "生成严格的审查计划" in prompts[0]
     assert '"change_intent": [' in prompts[1]
     assert "修复认证流程" in result["local_report"]
-    assert result["comment_body"] == "# Review\n\nOnly review findings."
+    assert json.loads(result["comment_body"]) == {"findings": [], "notes": [], "test_gaps": []}
+    assert "review 结果" not in result["comment_body"]
     assert "修复认证流程" not in result["comment_body"]
+
+
+def test_gitlab_mr_review_skill_rejects_invalid_review_before_comment(monkeypatch, tmp_path: Path):
+    script = _load_gitlab_mr_review_script()
+    monkeypatch.setattr(script, "run_agent_review", lambda *args: "review 结果：\nnot json")
+
+    with pytest.raises(ValueError, match="valid JSON"):
+        script.run_review(
+            "opencode",
+            "opencode",
+            "https://gitlab.example.com/team/project/merge_requests/7",
+            "base",
+            "head",
+            ["auth.py"],
+            tmp_path,
+            "Fix auth",
+            script.resolve_review_routing("Fix auth"),
+        )
 
 
 def test_config_treats_empty_dotenv_values_as_defaults(tmp_path: Path, monkeypatch):

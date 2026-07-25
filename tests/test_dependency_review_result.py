@@ -135,6 +135,19 @@ def test_parse_dependency_plan_accepts_manifest_relationships():
     assert plan["relationships"][0]["evidence_refs"][0]["repo_id"] == "p202"
 
 
+def test_parse_dependency_plan_recovers_one_contract_valid_wrapped_object():
+    module = _result_module()
+    raw_output = (
+        "计划如下：\n```json\n"
+        + json.dumps(_plan_payload(), ensure_ascii=False)
+        + "\n```\n请继续。"
+    )
+
+    plan = module.parse_dependency_review_plan(raw_output, _manifest())
+
+    assert plan["schema_version"] == "dependency-review-plan/v1"
+
+
 def test_parse_dependency_plan_allows_no_proven_relationship():
     module = _result_module()
     payload = _plan_payload()
@@ -177,6 +190,26 @@ def test_parse_dependency_result_accepts_dependency_evidence_and_primary_positio
     assert finding.position is not None
     assert finding.position.new_line == 57
     assert result.relationship_summary == ["主仓调用 SDK，空值契约不一致。"]
+
+
+def test_parse_dependency_result_recovers_one_contract_valid_wrapped_object():
+    module = _result_module()
+    raw_output = "review result:\n" + json.dumps(_result_payload(), ensure_ascii=False) + "\nend"
+
+    result = module.parse_structured_dependency_review_result(raw_output, _manifest())
+
+    assert result.findings[0].issue_id == "CONTRACT_NULLABILITY_001"
+
+
+def test_parse_dependency_result_rejects_multiple_contract_valid_objects():
+    module = _result_module()
+    encoded = json.dumps(_result_payload(), ensure_ascii=False)
+
+    with pytest.raises(
+        module.StructuredDependencyReviewParseError,
+        match="multiple valid JSON objects",
+    ):
+        module.parse_structured_dependency_review_result(f"{encoded}\n{encoded}", _manifest())
 
 
 def test_parse_dependency_result_accepts_null_primary_position():

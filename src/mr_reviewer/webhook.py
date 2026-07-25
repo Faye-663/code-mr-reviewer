@@ -283,7 +283,11 @@ class WebhookReviewQueue:
         detail = self.gitlab.get_mr_detail_for_discussion_position(event.target)
         refs = _diff_refs_from_detail(detail)
         position_map = DiffPositionMap.from_unified_diff(report.diff, refs)
-        decisions = validate_review_findings(structured, position_map)
+        decisions = validate_review_findings(
+            structured,
+            position_map,
+            self.config.publication_policy,
+        )
         publish_results = DiscussionPublisher(self.gitlab, self.config.agent_model_name).publish(event.target, decisions)
         status = "failed" if any(item["status"] == "failed" for item in publish_results) else "posted"
         return replace(
@@ -566,9 +570,16 @@ def _finding_marker(target: MergeRequestReviewTarget, decision: FindingValidatio
 def _discussion_body(decision: FindingValidationDecision, marker: str, model_name: str) -> str:
     finding = decision.finding
     return (
-        f"【🤖AI Review-{model_name}】[{finding.severity}]{finding.title}\n"
-        f"- **影响**: {finding.impact}\n"
-        f"- **建议**: {finding.suggestion}\n\n"
+        f"**🤖 AI Review｜{finding.title}**\n\n"
+        f"**判断依据**\n\n{finding.evidence}\n\n"
+        f"**影响**\n\n{finding.impact}\n\n"
+        f"**建议**\n\n{finding.suggestion}\n\n"
+        "<details>\n"
+        "<summary>审查信息</summary>\n\n"
+        f"- 置信度：`{finding.confidence}`\n"
+        f"- 规则：`{finding.rule_id}`\n"
+        f"- 来源：`AI Review · {model_name}`\n\n"
+        "</details>\n\n"
         f"{marker}"
     )
 

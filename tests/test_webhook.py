@@ -331,8 +331,18 @@ def test_webhook_worker_posts_inline_discussion_from_python(tmp_path: Path):
     assert posted["severity"] == "major"
     assert posted["position"]["old_line"] == -1
     assert posted["position"]["new_line"] == 2
-    assert "【🤖AI Review-GLM5】[major]批量查询缺少数量限制" in posted["body"]
-    assert "- **影响**: 大请求可能导致数据库资源耗尽。" in posted["body"]
+    assert "**🤖 AI Review｜批量查询缺少数量限制**" in posted["body"]
+    assert "[major]" not in posted["body"]
+    assert "**判断依据**\n\n本次变更新增 IN 查询，但未限制集合大小。" in posted["body"]
+    assert "**影响**\n\n大请求可能导致数据库资源耗尽。" in posted["body"]
+    assert (
+        "**建议**\n\n限制集合大小或拆批查询：\n\n"
+        "```java\nfindUsers(Lists.partition(userIds, 500));\n```"
+    ) in posted["body"]
+    assert "<details>\n<summary>审查信息</summary>" in posted["body"]
+    assert "- 置信度：`HIGH`" in posted["body"]
+    assert "- 规则：`SQL_PERFORMANCE`" in posted["body"]
+    assert "- 来源：`AI Review · GLM5`" in posted["body"]
     assert "<!-- ai-cr:finding:team/project:7:head-sha:SQL_PERFORMANCE:src/example.py:src/example.py:-1:2 -->" in posted["body"]
     report = json.loads(next(tmp_path.glob("*.json")).read_text(encoding="utf-8"))
     assert report["submission_owner"] == "python"
@@ -349,6 +359,126 @@ def test_webhook_worker_posts_inline_discussion_from_python(tmp_path: Path):
     assert report["review_plan"]["change_intent"] == ["修复认证流程"]
     assert "## Discoveries" in markdown_report
     assert "修复认证流程" not in posted["body"]
+
+
+def test_webhook_worker_posts_from_wrapped_structured_output(tmp_path: Path):
+    event = parse_gitlab_merge_request_event(
+        _merge_request_payload(),
+        Config(gitlab_base_url="https://gitlab.example.com"),
+    )
+    assert event is not None
+    strict_output = _RecordingReviewService().markdown
+    service = _RecordingReviewService(f"我将按要求进行 review。\n```json\n{strict_output}\n```")
+    gitlab = _RecordingGitLabClient()
+    queue = WebhookReviewQueue(
+        service,
+        gitlab,
+        Config(
+            gitlab_base_url="https://gitlab.example.com",
+            gitlab_token="secret-token",
+            report_dir=tmp_path,
+            webhook_post_comment=True,
+            agent_model_name="GLM5",
+        ),
+    )
+    queue.start()
+
+    queue.enqueue(event)
+    queue._queue.join()
+
+    assert len(gitlab.discussions) == 1
+    report = json.loads(next(tmp_path.glob("*.json")).read_text(encoding="utf-8"))
+    assert report["submission_status"] == "posted"
+    assert report["structured_parse_status"] == "success"
+    assert report["agent_call_count"] == 0
+    assert service.targets == [event.target]
+
+
+def test_webhook_worker_uses_custom_publication_policy(tmp_path: Path):
+    event = parse_gitlab_merge_request_event(
+        _merge_request_payload(),
+        Config(gitlab_base_url="https://gitlab.example.com"),
+    )
+    assert event is not None
+    payload = json.loads(_RecordingReviewService().markdown)
+    payload["findings"][0]["severity"] = "suggestion"
+    payload["findings"][0]["confidence"] = "MEDIUM"
+    service = _RecordingReviewService(json.dumps(payload, ensure_ascii=False))
+    gitlab = _RecordingGitLabClient()
+    config = Config(
+        gitlab_base_url="https://gitlab.example.com",
+        gitlab_token="secret-token",
+        report_dir=tmp_path,
+        webhook_post_comment=True,
+        agent_model_name="GLM5",
+        publish_min_severity="suggestion",
+        publish_min_confidence="MEDIUM",
+    )
+    queue = WebhookReviewQueue(service, gitlab, config)
+    queue.start()
+
+    queue.enqueue(event)
+    queue._queue.join()
+
+    assert len(gitlab.discussions) == 1
+    assert gitlab.discussions[0]["severity"] == "suggestion"
+
+
+def test_webhook_worker_uses_default_minor_high_policy(tmp_path: Path):
+    event = parse_gitlab_merge_request_event(
+        _merge_request_payload(),
+        Config(gitlab_base_url="https://gitlab.example.com"),
+    )
+    assert event is not None
+    payload = json.loads(_RecordingReviewService().markdown)
+    payload["findings"][0]["severity"] = "minor"
+    service = _RecordingReviewService(json.dumps(payload, ensure_ascii=False))
+    gitlab = _RecordingGitLabClient()
+    config = Config(
+        gitlab_base_url="https://gitlab.example.com",
+        gitlab_token="secret-token",
+        report_dir=tmp_path,
+        webhook_post_comment=True,
+        agent_model_name="GLM5",
+    )
+    queue = WebhookReviewQueue(service, gitlab, config)
+    queue.start()
+
+    queue.enqueue(event)
+    queue._queue.join()
+
+    assert len(gitlab.discussions) == 1
+    assert gitlab.discussions[0]["severity"] == "minor"
+
+
+def test_webhook_worker_keeps_non_diff_finding_local(tmp_path: Path):
+    event = parse_gitlab_merge_request_event(
+        _merge_request_payload(),
+        Config(gitlab_base_url="https://gitlab.example.com"),
+    )
+    assert event is not None
+    payload = json.loads(_RecordingReviewService().markdown)
+    payload["findings"][0]["new_line"] = 99
+    service = _RecordingReviewService(json.dumps(payload, ensure_ascii=False))
+    gitlab = _RecordingGitLabClient()
+    config = Config(
+        gitlab_base_url="https://gitlab.example.com",
+        gitlab_token="secret-token",
+        report_dir=tmp_path,
+        webhook_post_comment=True,
+        agent_model_name="GLM5",
+    )
+    queue = WebhookReviewQueue(service, gitlab, config)
+    queue.start()
+
+    queue.enqueue(event)
+    queue._queue.join()
+
+    assert gitlab.comments == []
+    assert gitlab.discussions == []
+    report = json.loads(next(tmp_path.glob("*.json")).read_text(encoding="utf-8"))
+    assert report["finding_results"][0]["status"] == "invalid"
+    assert report["finding_results"][0]["reason"] == "line_not_in_diff"
 
 
 def test_webhook_worker_can_skip_python_comment(tmp_path: Path):
@@ -542,7 +672,10 @@ class _RecordingReviewService:
                         "title": "批量查询缺少数量限制",
                         "evidence": "本次变更新增 IN 查询，但未限制集合大小。",
                         "impact": "大请求可能导致数据库资源耗尽。",
-                        "suggestion": "限制集合大小或拆批查询。",
+                        "suggestion": (
+                            "限制集合大小或拆批查询：\n\n"
+                            "```java\nfindUsers(Lists.partition(userIds, 500));\n```"
+                        ),
                     }
                 ],
                 "notes": [],

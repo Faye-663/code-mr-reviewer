@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 
 from mr_reviewer.review_result import ALLOWED_CONFIDENCES, ALLOWED_SEVERITIES
+from mr_reviewer.structured_output import parse_json_object_output
 
 PLAN_SCHEMA_VERSION = "review-set-plan/v1"
 RESULT_SCHEMA_VERSION = "review-set-review/v1"
@@ -64,7 +64,17 @@ class StructuredReviewSetResult:
 
 
 def parse_review_set_plan(raw_output: str, member_ids: set[str]) -> dict[str, object]:
-    payload = _load_object(raw_output, ReviewSetPlanParseError, "review set plan")
+    return parse_json_object_output(
+        raw_output,
+        output_type="review_set_plan",
+        error_label="review set plan",
+        error_type=ReviewSetPlanParseError,
+        parse_object=lambda payload: _parse_review_set_plan_object(payload, member_ids),
+    )
+
+
+def _parse_review_set_plan_object(payload: object, member_ids: set[str]) -> dict[str, object]:
+    payload = _require_object(payload, ReviewSetPlanParseError, "review set plan")
     _exact_fields(
         payload,
         {"schema_version", "member_focus", "relationships", "open_questions"},
@@ -93,7 +103,17 @@ def parse_review_set_plan(raw_output: str, member_ids: set[str]) -> dict[str, ob
 
 
 def parse_structured_review_set_result(raw_output: str) -> StructuredReviewSetResult:
-    payload = _load_object(raw_output, StructuredReviewSetParseError, "review set result")
+    return parse_json_object_output(
+        raw_output,
+        output_type="review_set_result",
+        error_label="review set result",
+        error_type=StructuredReviewSetParseError,
+        parse_object=_parse_structured_review_set_object,
+    )
+
+
+def _parse_structured_review_set_object(payload: object) -> StructuredReviewSetResult:
+    payload = _require_object(payload, StructuredReviewSetParseError, "review set result")
     _exact_fields(
         payload,
         {"schema_version", "findings", "relationship_summary", "notes", "test_gaps", "good"},
@@ -258,14 +278,6 @@ def _parse_position(value: object, parent: str) -> ReviewSetTargetPosition:
         old_line=_integer(item, "old_line", StructuredReviewSetParseError, context),
         new_line=_integer(item, "new_line", StructuredReviewSetParseError, context),
     )
-
-
-def _load_object(raw_output: str, error_type, label: str) -> dict:
-    try:
-        payload = json.loads(raw_output)
-    except json.JSONDecodeError as exc:
-        raise error_type(f"{label} output must be valid JSON: {exc}") from exc
-    return _require_object(payload, error_type, label)
 
 
 def _require_object(value: object, error_type, context: str) -> dict:

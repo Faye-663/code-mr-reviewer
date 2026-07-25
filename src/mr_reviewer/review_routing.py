@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 
 DEEP_REVIEW_MARKER = "【Deep-Review】"
+DEEP_REVIEW_MARKERS = (DEEP_REVIEW_MARKER, "[Deep-Review]")
 
 
 @dataclass(frozen=True, slots=True)
@@ -15,6 +16,7 @@ class ReviewRoutingDecision:
 
 def resolve_review_routing(title: str) -> ReviewRoutingDecision:
     normalized = title.lstrip().casefold()
-    if normalized.startswith(DEEP_REVIEW_MARKER.casefold()):
-        return ReviewRoutingDecision("two-step", "title_prefix", DEEP_REVIEW_MARKER)
+    for marker in DEEP_REVIEW_MARKERS:
+        if normalized.startswith(marker.casefold()):
+            return ReviewRoutingDecision("two-step", "title_prefix", marker)
     return ReviewRoutingDecision("one-step", "default", "")

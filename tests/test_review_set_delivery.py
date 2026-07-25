@@ -7,6 +7,7 @@ from mr_reviewer.cli import healthcheck, poll
 from mr_reviewer.config import Config
 from mr_reviewer.gitlab import GitLabClient, GitLabMrUrl
 from mr_reviewer.im import ImMessage
+from mr_reviewer.publication_policy import FindingPublicationPolicy
 from mr_reviewer.review_set import (
     PreparedReviewSetMember,
     ReviewSetManifest,
@@ -83,7 +84,10 @@ def _result_payload() -> dict:
                             "old_line": -1,
                             "new_line": 57,
                         },
-                        "suggestion": "解引用前处理 null。",
+                        "suggestion": (
+                            "解引用前处理 null：\n\n"
+                            "```java\nObjects.requireNonNull(user);\n```"
+                        ),
                     },
                     {
                         "member_id": "p202-mr8",
@@ -166,9 +170,60 @@ def test_review_set_publisher_posts_inline_and_note_targets():
     assert gitlab.inline_posts[0]["project"] == "team/app"
     assert gitlab.inline_posts[0]["position"]["new_line"] == 57
     assert gitlab.note_posts[0]["project"] == "team/sdk"
+    inline_body = gitlab.inline_posts[0]["body"]
+    note_body = gitlab.note_posts[0]["body"]
+    assert "**🤖 AI Review · ReviewSet｜调用方未处理 SDK 空返回**" in inline_body
+    assert "[major]" not in inline_body
+    assert (
+        "**判断依据**\n\n"
+        "- `p202-mr8 · src/sdk.py:40-42`：SDK 可以返回 null。"
+    ) in inline_body
+    assert "**影响**\n\n生产请求可能触发空指针异常。" in inline_body
+    assert (
+        "**建议**\n\n解引用前处理 null：\n\n"
+        "```java\nObjects.requireNonNull(user);\n```"
+    ) in inline_body
+    assert "<details>\n<summary>审查信息</summary>" in inline_body
+    assert "- 类型：`ReviewSet`" in inline_body
+    assert "- 置信度：`HIGH`" in inline_body
+    assert "- 规则：`CONTRACT_NULLABILITY`" in inline_body
+    assert "- Issue：`CONTRACT_NULLABILITY_001`" in inline_body
+    assert "- 来源：`AI Review · GLM5`" in inline_body
+    assert "**🤖 AI Review · ReviewSet｜调用方未处理 SDK 空返回**" in note_body
+    assert "**建议**\n\n在 SDK 契约中明确空值语义。" in note_body
     assert publication.counts["posted_inline"] == 1
     assert publication.counts["posted_note"] == 1
     assert all("<!-- ai-cr:review-set:" in item["marker"] for item in publication.results)
+
+
+def test_review_set_publisher_uses_default_minor_high_policy():
+    payload = _result_payload()
+    payload["findings"][0]["severity"] = "minor"
+    payload["findings"][0]["targets"] = payload["findings"][0]["targets"][:1]
+    gitlab = _PublishingGitLab()
+
+    publication = ReviewSetPublisher(gitlab).publish(
+        _report(payload), enabled=True, model_name="GLM5"
+    )
+
+    assert publication.results[0]["status"] == "posted_inline"
+    assert gitlab.inline_posts[0]["severity"] == "minor"
+
+
+def test_review_set_publisher_uses_custom_publication_policy():
+    payload = _result_payload()
+    payload["findings"][0]["severity"] = "suggestion"
+    payload["findings"][0]["confidence"] = "MEDIUM"
+    payload["findings"][0]["targets"] = payload["findings"][0]["targets"][:1]
+    gitlab = _PublishingGitLab()
+    policy = FindingPublicationPolicy("suggestion", "MEDIUM")
+
+    publication = ReviewSetPublisher(gitlab, policy).publish(
+        _report(payload), enabled=True, model_name="GLM5"
+    )
+
+    assert publication.results[0]["status"] == "posted_inline"
+    assert gitlab.inline_posts[0]["severity"] == "suggestion"
 
 
 def test_review_set_publisher_skips_duplicate_markers_on_repeat():
@@ -222,6 +277,30 @@ def test_review_set_publisher_falls_back_to_note_when_valid_position_is_not_in_d
     assert gitlab.inline_posts == []
     assert gitlab.note_posts[0]["project"] == "team/app"
     assert publication.results[0]["reason"] == "position_not_in_diff"
+
+
+def test_review_set_publisher_does_not_fallback_for_inconsistent_line_sides():
+    payload = _result_payload()
+    payload["findings"][0]["targets"] = [
+        {
+            "member_id": "p101-mr7",
+            "position": {
+                "old_path": "src/caller.py",
+                "new_path": "src/caller.py",
+                "old_line": 56,
+                "new_line": 57,
+            },
+            "suggestion": "修复调用方。",
+        }
+    ]
+    gitlab = _PublishingGitLab()
+
+    publication = ReviewSetPublisher(gitlab).publish(_report(payload), enabled=True, model_name="GLM5")
+
+    assert publication.results[0]["status"] == "invalid"
+    assert publication.results[0]["reason"] == "inconsistent_line_sides"
+    assert gitlab.inline_posts == []
+    assert gitlab.note_posts == []
 
 
 def test_review_set_publisher_rejects_unknown_target_without_blocking_valid_target():
@@ -436,7 +515,10 @@ def test_healthcheck_prints_review_set_publish_switch(capsys, monkeypatch, tmp_p
     config.welink_onebox_parent_id = "parent"
 
     assert healthcheck(config) == 0
-    assert "review_set_post_comment: enabled" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "review_set_post_comment: enabled" in output
+    assert "publish_min_severity: minor" in output
+    assert "publish_min_confidence: HIGH" in output
 
 
 def test_poll_delivers_successful_review_set_report(tmp_path: Path, monkeypatch):

@@ -18,13 +18,13 @@ Accepted（Implemented）
 
 ADR-002 原计划通过静态 Maven 解析和精确版本 tag 为单 MR 补充内部依赖源码。实际部署中，项目间源码关系由研发团队维护，制品版本与源码 tag 并不总能稳定对应；继续实现 Maven/POM/GAV/version 解析会增加复杂度，却不能保证得到更接近当前协作分支的源码。
 
-项目已经使用 MR title 前缀 `【Deep-Review】` 显式选择高成本 two-step。场景二应只在该显式入口中扩大上下文，并在上下文不完整时给出确定、保守的降级结果。
+项目已经使用 MR title 前缀 `【Deep-Review】` 或 `[Deep-Review]` 显式选择高成本 two-step。场景二应只在该显式入口中扩大上下文，并在上下文不完整时给出确定、保守的降级结果。
 
 ## Decision
 
 - 部署侧只读 JSON 目录显式维护 `主项目 -> 直接依赖项目`，不解析 Maven、POM、GAV 或 dependency version，也不递归展开依赖关系。
-- 普通单 MR 始终维持 one-step，不读取依赖目录。`【Deep-Review】` MR 未配置依赖时维持现有单仓 two-step。
-- `【Deep-Review】` MR 配置 1–3 个依赖时，只有所有依赖仓都成功 checkout 后才执行联合 two-step；Agent 读取主 MR changed files，自行判断哪些依赖关系与本次变更相关。
+- 普通单 MR 始终维持 one-step，不读取依赖目录。`【Deep-Review】` 或 `[Deep-Review]` MR 未配置依赖时维持现有单仓 two-step。
+- `【Deep-Review】` 或 `[Deep-Review]` MR 配置 1–3 个依赖时，只有所有依赖仓都成功 checkout 后才执行联合 two-step；Agent 读取主 MR changed files，自行判断哪些依赖关系与本次变更相关。
 - 依赖超过 3 个、目录无效或任一依赖准备失败时，不使用部分上下文，降级为单仓 one-step，并记录请求模式、实际模式和稳定降级原因。
 - 每个依赖仓只 fetch 与主 MR `target_branch` 同名的分支，并 detached checkout 任务开始时解析出的 commit SHA；不得 fallback source branch、默认分支、tag 或近似 ref。
 - 依赖仓只提供证据，finding 的唯一责任目标是主 MR；不得评论依赖仓或把其历史问题作为独立 finding。
@@ -54,5 +54,5 @@ ADR-002 原计划通过静态 Maven 解析和精确版本 tag 为单 MR 补充�
 - 场景二无需执行构建工具，也不新增 Maven 解析与版本映射代码。
 - 同名 branch 是可变 ref；任务报告必须记录实际 commit SHA，且不能宣称它等同于制品版本源码。
 - 显式维护的依赖目录成为联合上下文范围的事实来源，需要部署方负责审查和更新。
-- `【Deep-Review】` 在依赖上下文异常时会从请求的 two-step 降级为实际 one-step，报告必须同时保留 `requested_review_mode` 和实际 `review_mode`，避免路由信息失真。
+- 两种 Deep Review marker 在依赖上下文异常时都会从请求的 two-step 降级为实际 one-step，报告必须同时保留 `requested_review_mode` 和实际 `review_mode`，避免路由信息失真。
 - ADR-002 的 ReviewSet 决策继续有效；其场景二 Maven/tag 决策由本 ADR 修订。

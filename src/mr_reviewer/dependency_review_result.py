@@ -7,6 +7,7 @@ from pathlib import PurePosixPath
 
 from mr_reviewer.dependency_review import DependencyReviewManifest
 from mr_reviewer.review_result import ALLOWED_CONFIDENCES, ALLOWED_SEVERITIES
+from mr_reviewer.structured_output import parse_json_object_output
 
 
 PLAN_SCHEMA_VERSION = "dependency-review-plan/v1"
@@ -63,7 +64,20 @@ class StructuredDependencyReviewResult:
 
 
 def parse_dependency_review_plan(raw_output: str, manifest: DependencyReviewManifest) -> dict[str, object]:
-    payload = _load_object(raw_output, DependencyReviewPlanParseError, "dependency review plan")
+    return parse_json_object_output(
+        raw_output,
+        output_type="dependency_review_plan",
+        error_label="dependency review plan",
+        error_type=DependencyReviewPlanParseError,
+        parse_object=lambda payload: _parse_dependency_review_plan_object(payload, manifest),
+    )
+
+
+def _parse_dependency_review_plan_object(
+    payload: object,
+    manifest: DependencyReviewManifest,
+) -> dict[str, object]:
+    payload = _object(payload, DependencyReviewPlanParseError, "dependency review plan")
     _exact_fields(
         payload,
         {"schema_version", "primary_focus", "relationships", "open_questions"},
@@ -91,7 +105,20 @@ def parse_structured_dependency_review_result(
     raw_output: str,
     manifest: DependencyReviewManifest,
 ) -> StructuredDependencyReviewResult:
-    payload = _load_object(raw_output, StructuredDependencyReviewParseError, "dependency review result")
+    return parse_json_object_output(
+        raw_output,
+        output_type="dependency_review_result",
+        error_label="dependency review result",
+        error_type=StructuredDependencyReviewParseError,
+        parse_object=lambda payload: _parse_dependency_review_result_object(payload, manifest),
+    )
+
+
+def _parse_dependency_review_result_object(
+    payload: object,
+    manifest: DependencyReviewManifest,
+) -> StructuredDependencyReviewResult:
+    payload = _object(payload, StructuredDependencyReviewParseError, "dependency review result")
     _exact_fields(
         payload,
         {"schema_version", "findings", "relationship_summary", "notes", "test_gaps", "good"},
@@ -302,14 +329,6 @@ def _safe_path(value: str, error_type, context: str) -> str:
     ):
         raise error_type(f"{context}.path must be a safe relative path")
     return value
-
-
-def _load_object(raw_output: str, error_type, label: str) -> dict:
-    try:
-        payload = json.loads(raw_output)
-    except json.JSONDecodeError as exc:
-        raise error_type(f"{label} output must be valid JSON: {exc}") from exc
-    return _object(payload, error_type, label)
 
 
 def _object(value: object, error_type, context: str) -> dict:

@@ -126,7 +126,8 @@ def test_deep_review_without_mapping_keeps_single_repository_two_step(tmp_path: 
     assert selection.degradation_reason == ""
 
 
-def test_deep_review_with_three_dependencies_selects_joint_review(tmp_path: Path):
+@pytest.mark.parametrize("marker", ["【Deep-Review】", "[Deep-Review]"])
+def test_deep_review_with_three_dependencies_selects_joint_review(tmp_path: Path, marker: str):
     module = _dependencies_module()
     catalog = module.load_repository_dependency_catalog(
         _write_catalog(
@@ -141,7 +142,7 @@ def test_deep_review_with_three_dependencies_selects_joint_review(tmp_path: Path
     )
 
     selection = module.select_dependency_review(
-        resolve_review_routing("【Deep-Review】 Validate auth"),
+        resolve_review_routing(f"{marker} Validate auth"),
         "team/repo-a",
         catalog,
     )

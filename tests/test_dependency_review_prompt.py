@@ -67,6 +67,8 @@ def test_dependency_review_prompts_use_independent_skill_and_schemas():
     assert "context-123" in plan_prompt
     assert "dependency-review-plan/v1" in plan_prompt
     assert "dependency-review-result/v1" in review_prompt
+    assert "suggestion、minor、major、fatal" in review_prompt
+    assert "minjor" not in review_prompt
     assert "保留 $HOME 文本" in review_prompt
     assert "cross-repo-code-review" not in plan_prompt
     assert "review-set.json" not in review_prompt

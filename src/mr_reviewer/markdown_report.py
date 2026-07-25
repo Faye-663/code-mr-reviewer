@@ -101,24 +101,76 @@ def _discoveries(
         f"- MR：{repo}!{mr_iid}" if mr_iid is not None else "- MR：<unknown>",
         f"- 标题：{report.title or '<unknown>'}",
         f"- URL：{mr_url or '<unknown>'}",
-        f"- 审查范围：Base SHA = {base_sha or '<unknown>'}，Head SHA = {head_sha or '<unknown>'}",
-        f"- 审查模式：{report.review_mode or '<unknown>'}（{report.routing_reason or 'unknown'}）",
+        f"- 提交范围：Base SHA = {base_sha or '<unknown>'}，Head SHA = {head_sha or '<unknown>'}",
+        f"- 目标分支：{report.target_branch or '<unknown>'}",
+        f"- 请求模式：{report.requested_review_mode or report.review_mode or '<unknown>'}；"
+        f"实际模式：{report.review_mode or '<unknown>'}；路由原因：{report.routing_reason or 'unknown'}",
+        f"- 审查范围：{report.review_scope or 'single'}",
         f"- 变更文件：{len(changed_files)} 个",
     ]
     if changed_files:
         lines.append(f"- 文件列表：{'；'.join(changed_files)}")
+    lines.extend(_dependency_context_lines(report))
     plan = report.review_plan
     if not plan:
         return lines
     lines.append("- 审查计划：")
-    for field, label in (("change_intent", "变更意图"), ("external_contracts", "外部契约"), ("state_invariants", "状态不变量"), ("transaction_async_boundaries", "事务/异步边界"), ("test_risks", "测试风险"), ("open_questions", "待确认问题")):
-        values = plan.get(field, [])
+    if plan.get("schema_version") == "dependency-review-plan/v1":
+        focus = plan.get("primary_focus", {})
+        fields = (("change_intent", "变更意图"), ("test_risks", "测试风险"))
+        critical_paths = focus.get("critical_paths", [])
+    else:
+        focus = plan
+        fields = (
+            ("change_intent", "变更意图"),
+            ("external_contracts", "外部契约"),
+            ("state_invariants", "状态不变量"),
+            ("transaction_async_boundaries", "事务/异步边界"),
+            ("test_risks", "测试风险"),
+            ("open_questions", "待确认问题"),
+        )
+        critical_paths = plan.get("critical_paths", [])
+    for field, label in fields:
+        values = focus.get(field, [])
         text = "；".join(str(value) for value in values) if values else "无"
         lines.append(f"  - {label}：{text}")
-    for path in plan.get("critical_paths", []):
+    for path in critical_paths:
         lines.append(
             f"  - 关键路径：{path['path']} — {path['reason']}；验证：{'；'.join(path['verify'])}"
         )
+    return lines
+
+
+def _dependency_context_lines(report: ReviewReport) -> list[str]:
+    if report.dependency_context_status == "degraded":
+        lines = [
+            "- 依赖联合检视：未执行依赖联合检视；"
+            f"降级原因={report.dependency_degradation_reason or '<unknown>'}"
+        ]
+        if report.dependency_failed_project:
+            lines.append(f"- 失败依赖项目：{report.dependency_failed_project}")
+        if report.dependency_preparation_seconds is not None:
+            lines.append(f"- 依赖准备耗时：{report.dependency_preparation_seconds:.3f}s")
+        return lines
+    if report.dependency_context_status != "complete":
+        return ["- 依赖上下文：not_applicable"]
+
+    lines = [
+        "- 依赖联合检视：已完成",
+        f"- Dependency Context ID：{report.dependency_context_id or '<unknown>'}",
+    ]
+    if report.dependency_preparation_seconds is not None:
+        lines.append(f"- 依赖准备总耗时：{report.dependency_preparation_seconds:.3f}s")
+    for repository in report.dependency_repositories or []:
+        lines.append(
+            "- 依赖项目："
+            f"{repository.get('project_path', '<unknown>')}；"
+            f"branch={repository.get('branch', '<unknown>')}；"
+            f"commit={repository.get('commit_sha', '<unknown>')}；"
+            f"准备耗时={float(repository.get('preparation_seconds', 0.0)):.3f}s"
+        )
+    for summary in report.dependency_relationship_summary or []:
+        lines.append(f"- 依赖关系结论：{summary}")
     return lines
 
 

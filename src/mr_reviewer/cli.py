@@ -19,6 +19,10 @@ from mr_reviewer.review_set import ReviewSetValidationError
 from mr_reviewer.review_set_publish import ReviewSetPublisher
 from mr_reviewer.review_set_report import render_review_set_report
 from mr_reviewer.reviewer import ReviewService
+from mr_reviewer.repository_dependencies import (
+    RepositoryDependencyCatalogError,
+    load_repository_dependency_catalog,
+)
 from mr_reviewer.state import StateStore
 from mr_reviewer.webhook import run_webhook_server
 from mr_reviewer.welink import poll_messages, reply, reply_review_set, send_text
@@ -57,13 +61,30 @@ def healthcheck(config: Config) -> int:
     }
     for name, ok in checks.items():
         print(f"{name}: {'ok' if ok else 'missing'}")
+    catalog_ok = True
+    if config.repository_dependency_catalog is None:
+        print("repository_dependency_catalog: optional")
+    else:
+        try:
+            catalog = load_repository_dependency_catalog(config.repository_dependency_catalog)
+        except RepositoryDependencyCatalogError as exc:
+            catalog_ok = False
+            print(
+                "repository_dependency_catalog: "
+                f"invalid ({exc.reason_code}) path={config.repository_dependency_catalog}"
+            )
+        else:
+            print(
+                "repository_dependency_catalog: "
+                f"ok (repositories={len(catalog.repositories)}) path={config.repository_dependency_catalog}"
+            )
     print(f"webhook_endpoint: {config.webhook_host}:{config.webhook_port}{config.webhook_path}")
     print(f"webhook_secret: {'ok' if config.webhook_secret else 'optional'}")
     print(f"webhook_post_comment: {'enabled' if config.webhook_post_comment else 'disabled'}")
     print(f"review_set_post_comment: {'enabled' if config.review_set_post_comment else 'disabled'}")
     print(f"publish_min_severity: {config.publish_min_severity}")
     print(f"publish_min_confidence: {config.publish_min_confidence}")
-    return 0 if all(checks.values()) else 1
+    return 0 if all(checks.values()) and catalog_ok else 1
 
 
 def run_once(config: Config, mr_url: str) -> int:

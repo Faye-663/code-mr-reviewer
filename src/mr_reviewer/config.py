@@ -87,6 +87,7 @@ class Config:
     task_timeout_seconds: int = 900
     poll_interval_seconds: int = 15
     test_gitlab_responses: Path | None = None
+    repository_dependency_catalog: Path | None = None
 
     def __post_init__(self) -> None:
         self.gitlab_base_url = self.gitlab_base_url.rstrip("/")
@@ -118,6 +119,7 @@ class Config:
             return bool(os.environ.get(env_name, dotenv_values.get(env_name, "")))
 
         test_gitlab_responses = get("TEST_GITLAB_RESPONSES")
+        repository_dependency_catalog = get("REPOSITORY_DEPENDENCY_CATALOG")
         opencode_diagnostic_dir = get("OPENCODE_DIAGNOSTIC_DIR")
         opencode_prompt_transport = get("OPENCODE_PROMPT_TRANSPORT", "argument").lower()
         agent_type = get("AGENT_TYPE", "opencode").lower()
@@ -183,4 +185,7 @@ class Config:
             task_timeout_seconds=int(get("TASK_TIMEOUT_SECONDS", "900")),
             poll_interval_seconds=int(get("POLL_INTERVAL_SECONDS", "15")),
             test_gitlab_responses=Path(test_gitlab_responses) if test_gitlab_responses else None,
+            repository_dependency_catalog=(
+                Path(repository_dependency_catalog) if repository_dependency_catalog else None
+            ),
         )

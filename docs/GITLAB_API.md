@@ -44,10 +44,10 @@ clone/fetch 不经过 `GitLabClient`。项目 API 或 webhook payload 提供 tar
 | 工作模式 | 元数据读取 | 发布前读取 | GitLab 写入 |
 |---|---|---|---|
 | `healthcheck` | 无；只检查配置和本地命令 | 无 | 无 |
-| `run-once` | 标准 MR；按 target/source project id 各取 clone URL | 无 | 无 |
+| `run-once` | 标准 MR；按 target/source project id 各取 clone URL；映射命中的 Deep Review 还按 path 查询依赖项目 | 无 | 无 |
 | IM 单 MR | 与 `run-once` 相同 | 无 | 无；结果上传 OneBox 并通知 WeLink |
-| webhook 仅报告 | 无 REST 读取；checkout 信息来自 webhook payload | 无 | 无 |
-| webhook 自动发布 | checkout 信息来自 payload；结构化输出有效、发布开关开启且模型名存在后读取标准 MR `diff_refs` | 分页读取当前 MR discussions 做 marker 去重 | 仅对满足门槛且可定位的 finding POST inline discussion；不回退 note |
+| webhook 仅报告 | 主仓 checkout 信息来自 webhook payload；映射命中的 Deep Review 按 path 查询依赖项目 | 无 | 无 |
+| webhook 自动发布 | 主仓 checkout 信息来自 payload；映射命中的 Deep Review 按 path 查询依赖项目；结构化输出有效、发布开关开启且模型名存在后读取标准 MR `diff_refs` | 分页读取当前 MR discussions 做 marker 去重 | 仅对满足门槛且可定位的 finding POST inline discussion；不回退 note |
 | IM ReviewSet | 每个成员依次读取 project id、平台 isource MR、标准 MR、target/source clone URL | 只为至少一个可发布 target 的成员分页读取 discussions | 可定位 target POST discussion；未提供位置或合法位置不在 diff 时 POST note |
 | 便携式 skill | 标准 MR；按 target/source project id 各取 clone URL | 无去重读取 | `MR_REVIEW_SUBMIT_COMMENT=true` 时 POST 一条普通 note |
 
@@ -87,9 +87,12 @@ GET /projects/{url_encoded_project_path}
 
 主程序方法：`get_project()`。
 
-只用于 ReviewSet。它只信任响应中的整数 `id` 作为 `project_id`，随后以该 ID 调用平台 isource MR 接口。MR URL 只提供 project path 和 iid，不能代替该查询或提供猜测的 project id。
+用于 ReviewSet 和映射命中的单 MR Dependency Review：
 
-响应不是 JSON object、`id` 缺失或类型错误时，ReviewSet 预检失败；此时尚未产生 clone、Agent 或 GitLab 写入副作用。
+- ReviewSet 只信任响应中的整数 `id` 作为 `project_id`，随后以该 ID 调用平台 isource MR 接口。MR URL 只提供 project path 和 iid，不能代替该查询或提供猜测的 project id。
+- Dependency Review 对目录列出的每个依赖项目校验正整数 `id`、与目录完全相等的 `path_with_namespace`，以及非空 `http_url_to_repo`。clone URL 必须是没有用户名、密码、query 或 fragment 的 HTTPS URL。
+
+响应不是 JSON object 或对应调用方所需字段无效时，ReviewSet 整组预检失败，或 Dependency Review 丢弃全部依赖上下文并降级为单仓 one-step。两者都不会使用部分项目元数据继续联合检视。
 
 原始平台样例中的编码过程和成功响应：
 
@@ -108,7 +111,7 @@ URL encoded: d001010%2Fcode-mr-reviewer
 }
 ```
 
-当前 ReviewSet 只消费 `id`；其它字段保留为平台响应上下文，不能替代 `id`。
+ReviewSet 当前只消费 `id`；Dependency Review 消费 `id`、`path_with_namespace` 和 `http_url_to_repo`。其它字段保留为平台响应上下文，不能替代这些必需字段。
 
 ### 3. 获取平台 isource MR 详情
 
@@ -158,7 +161,9 @@ GET /projects/{project_id}
 
 主程序方法：`get_project_http_url()`。
 
-消费唯一字段 `http_url_to_repo`，用于 target/source HTTPS clone。单 MR 和 ReviewSet 都会分别查询 `target_project_id` 与 `source_project_id`；两者相同时当前实现仍会发起两次查询。字段为空时 review 终止。
+消费唯一字段 `http_url_to_repo`，用于主 MR 或 ReviewSet 成员的 target/source HTTPS clone。单 MR 和 ReviewSet 都会分别查询 `target_project_id` 与 `source_project_id`；两者相同时当前实现仍会发起两次查询。字段为空时 review 终止。
+
+Dependency Review 不调用这个按 id 查询的 helper；它直接使用上一节按 path 查询且完成信任边界校验的 `http_url_to_repo`。
 
 ### 5. 分页读取 MR discussions
 
@@ -281,6 +286,17 @@ body=<comment body>
 - 对存在发布候选的责任成员，每个成员分页读取一次 discussions。
 - 可定位位置 POST discussion；无位置或合法但不在 diff 的位置 POST note。
 - 某成员去重读取失败时只阻止该成员发布；单 target POST 失败不回滚其它结果。
+
+## Dependency Review 调用顺序
+
+只有完整 `【Deep-Review】` 或 `[Deep-Review]` marker 命中且部署侧目录为主项目配置了 1–3 个直接依赖时，才在主 MR checkout 之外准备依赖源码：
+
+1. 对目录中排序后的每个依赖 path 调用 `GET /projects/{project_path}`。
+2. 校验正整数 project id、精确 `path_with_namespace` 和无凭据 HTTPS clone URL。
+3. 只 fetch 与主 MR `target_branch` 同名的 `refs/heads/<branch>`，解析并 detached checkout 得到的确定 commit SHA。
+4. 所有依赖成功后才写入不含 token 或外部 URL 的 `dependency-review.json`，并执行固定 two-step 联合检视。
+
+依赖分支缺失时不得 fallback source branch、默认分支、tag 或近似 ref；任一查询、分支或 checkout 失败时清理所有已准备依赖，并执行单仓 one-step。依赖仓没有 MR range，不调用其 MR/discussions/notes 接口，也不是评论目标。若主 MR finding 通过共享发布门槛，仍只向主 MR 发布。
 
 ## 便携式 skill
 

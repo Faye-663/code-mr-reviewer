@@ -5,7 +5,7 @@ GitLab MR Review 助手。项目支持两种触发入口：
 - **WeLink IM poll**：轮询 WeLink 群历史消息。一个唯一 MR URL 继续按 MR title 选择单仓审查模式；2–3 个不同项目的 MR URL 会显式形成 ReviewSet，固定执行 two-step 联合检视，并上传一份聚合报告。
 - **GitLab webhook**：接收 GitLab Merge Request Hook，后台执行 review，把 JSON 监视报告和 Markdown review 报告写入 `MR_REVIEWER_REPORT_DIR`，并可由 Python 侧发布 GitLab inline discussion。只使用 webhook 的用户可直接阅读 [Webhook 快速开始](docs/WEBHOOK_QUICKSTART.md)。
 
-单 MR 的两个入口共用同一条 title 路由规则：普通 MR 默认 one-step，Agent 直接生成结构化 review JSON；title 去除前导空白后以 `【Deep-Review】` 或 `[Deep-Review]` 开头时（忽略大小写）执行 two-step，先生成严格审查计划，再携带计划执行 Deep Review。两种完整括号不能混用，命中的规范 marker 会写入审计结果。第二步必须重新验证计划、允许推翻计划并覆盖计划未列出的风险。ReviewSet 不读取 title 路由标记，始终固定 two-step。两种模式都先 clone GitLab target 仓库并 checkout MR head；完整 diff 不写入 prompt。仅修改 title 不会触发 webhook review。
+单 MR 的两个入口共用同一 review core。title 去除前导空白后以 `【Deep-Review】` 或 `[Deep-Review]` 开头时（忽略大小写）请求 Deep Review；两种完整括号不能混用，命中的规范 marker 会写入审计结果。普通 MR 固定单仓 one-step 且不读取依赖目录；Deep Review 无依赖映射时执行单仓 two-step，完整准备 1–3 个直接依赖时执行“主 MR + 只读依赖仓”的联合 two-step。依赖超过 3 个、目录无效或任一依赖准备失败时，丢弃全部依赖上下文并降级为单仓 one-step，不做部分联合检视。两类 two-step 的第二步都必须重新验证计划、允许推翻计划并覆盖计划未列出的风险。ReviewSet 不读取 title 或项目依赖目录，始终固定 two-step。仅修改 title 不会触发 webhook review。
 
 部署变量按工作模式的完整说明见 [配置说明](docs/CONFIGURATION.md)；GitLab/CodeHub 接口、消费字段与模式调用矩阵见 [GitLab API 说明](docs/GITLAB_API.md)。
 
@@ -23,7 +23,7 @@ GitLab MR Review 助手。项目支持两种触发入口：
 - `git`，用于 clone 目标 GitLab 仓库、fetch MR 分支和生成 diff。
 - 可访问目标 GitLab 的网络环境，以及具备读取 MR API 和 HTTPS clone 权限的 GitLab Token。
 - OpenCode 或 Claude Code CLI：必须已安装并可在 PATH 中找到；也可以通过 `MR_REVIEWER_AGENT_COMMAND` 指定可执行命令。
-- 所选 Agent 已安装 `code-review` skill；启用 IM ReviewSet 时还需安装 `cross-repo-code-review` skill。仓库内的中立源文件位于 `.skill`，使用方需要复制到自己的 Agent skill 配置目录。
+- 所选 Agent 已安装 `code-review` skill；启用 IM ReviewSet 时还需安装 `cross-repo-code-review` skill；启用项目依赖联合检视时还需安装 `dependency-code-review` skill。仓库内的中立源文件位于 `.skill`，使用方需要复制到自己的 Agent skill 配置目录。
 - 使用 WeLink IM poll 时，还需要 `welink-cli` 已安装并完成登录或授权，且当前账号需要能调用 `im query-history-message`、`im send-to-group` 和 `onebox file-upload`。
 
 ## Quick Start
@@ -113,13 +113,36 @@ uv run mr-reviewer poll
 4. fetch source branch。
 5. checkout GitLab MR head SHA。
 6. 生成 MR range diff：`run-once` 使用 GitLab MR `diff_refs.base_sha...diff_refs.head_sha`；webhook payload 只提供 head 时，使用 target branch 与 head 的 `merge-base...head`。
-7. 普通 MR 直接调用 Agent review；Deep Review 第一次调用只生成严格结构化审查计划。
-8. Deep Review 第二次调用同一 Agent，把计划作为待验证线索，要求所选 `code-review` skill 重新验证并输出严格结构化 review JSON。两次调用共享 `MR_REVIEWER_TASK_TIMEOUT_SECONDS` 的总时间预算。
-9. Python 校验实际阶段的输出。本地 JSON/Markdown 报告保留 Deep Review 计划；GitLab 线上只发布 review finding，不发布计划。
+7. 普通 MR 直接调用 Agent review；`【Deep-Review】` 或 `[Deep-Review]` MR 才读取可选项目依赖目录并选择单仓或依赖联合路径。
+8. 无依赖映射的 Deep Review 使用 `code-review` skill 固定调用两次；完整准备 1–3 个依赖的 Deep Review 使用 `dependency-code-review` skill 固定调用两次。两种 two-step 都先生成严格计划，再把计划作为待验证线索执行 review，共享 `MR_REVIEWER_TASK_TIMEOUT_SECONDS` 的总时间预算。
+9. 数量超限、目录无效或任一依赖失败时，清理全部依赖 checkout，执行单仓 one-step 且只调用一次 Agent。
+10. Python 校验实际阶段的输出。本地 JSON/Markdown 报告保留计划、`requested_review_mode`、实际 `review_mode`、依赖 commit 与降级原因；GitLab 线上只向主 MR 发布 review finding，不发布计划。
 
 Prompt 仍要求 Agent 只输出严格 JSON。解析器先校验完整输出；仅当完整输出不是合法 JSON 时，才从外层说明文字或 Markdown 代码围栏中恢复唯一一个通过完整 plan/result 契约的 JSON 对象。完整输出本身是合法 JSON 但 Schema 错误时不会扫描内部对象；没有有效对象或存在多个有效对象时均 fail-closed，不修复 JSON，也不会重试 Agent 或增加调用次数。
 
 当前 `run-once` URL 解析以 `/merge_requests/` 为分隔符，示例使用不带 `/-/` 的形式；如果直接粘贴 GitLab Web 页面常见的 `/-/merge_requests/7`，当前版本会把 `-` 解析进项目路径。
+
+### 单 MR 项目依赖联合检视
+
+部署侧可通过 `MR_REVIEWER_REPOSITORY_DEPENDENCY_CATALOG` 指向一个只读 UTF-8 JSON 文件。目录只表达直接项目关系，不解析 Maven/POM/GAV/version，也不递归展开依赖：
+
+```json
+{
+  "schema_version": 1,
+  "repositories": [
+    {
+      "project_path": "team/repo-a",
+      "dependencies": ["team/repo-b", "team/repo-c"]
+    }
+  ]
+}
+```
+
+目录要求主项目唯一，project/dependency path 非空，依赖不重复且不能指向自身。目录可以列出超过 3 个依赖，但对应 Deep Review 会整组降级，不能截取“前 3 个”。普通 MR 不读取目录；未配置目录或当前项目无映射不属于失败。
+
+联合候选会通过 GitLab project API 把每个 project path 转为 HTTPS clone URL，只 fetch 与主 MR `target_branch` 同名的 `refs/heads/<branch>`，再 detached checkout 实际 commit SHA。不会尝试 source branch、默认分支、tag 或近似 ref。所有依赖成功后才生成 `dependency-review.json`；任一失败都会删除已准备依赖并执行单仓 one-step。
+
+Agent 读取主 MR changed files 后自行判断哪些依赖契约相关；Python 不根据 package、import、FQCN 或 path 预筛选。依赖仓没有 MR range，不执行 diff，也不能成为 finding 责任目标。报告会记录依赖 project、branch、commit SHA、准备耗时、关系结论与降级 reason code；同名 branch 只是近似上下文，审计证据以报告中的 commit SHA 为准。
 
 ### IM 多 MR 联合检视
 
@@ -182,6 +205,7 @@ Agent 的 provider/model 仍由 OpenCode 或 Claude Code 自身配置、登录�
 - `MR_REVIEWER_GITLAB_TOKEN` 同时用于 REST API 与 HTTPS clone/fetch，不得进入 prompt、普通日志或报告。
 - `MR_REVIEWER_AGENT_MODEL_NAME` 只提供 GitLab 评论中的展示名；Agent provider、实际模型、API Key 和登录状态仍由 OpenCode 或 Claude Code 管理。
 - `MR_REVIEWER_WEBHOOK_POST_COMMENT` 与 `MR_REVIEWER_REVIEW_SET_POST_COMMENT` 相互独立；共享 severity/confidence 门槛只控制 GitLab 发布，不过滤本地或聚合报告。
+- `MR_REVIEWER_REPOSITORY_DEPENDENCY_CATALOG` 只供两种完整 Deep Review marker 的单 MR 路由读取；普通 one-step 和 ReviewSet 均忽略。`MR_REVIEWER_COMMENT_SKILL` 只覆盖单仓 prompt，依赖联合检视固定使用 `dependency-code-review`。
 - 默认 `MR_REVIEWER_LOG_LEVEL=OFF` 时不输出项目日志，也不会创建 `MR_REVIEWER_DEBUG_DIR`。`MR_REVIEWER_REPORT_DIR` 是 webhook 业务审计目录，不受日志级别影响。
 - 当前 `healthcheck` 会统一检查 WeLink 配置；只部署 webhook 时可能因缺少 IM 配置返回非零，详见配置说明。
 
@@ -233,6 +257,9 @@ welink-cli im send-to-group --group-id "group-example" --text "代码审查报�
 - `stage=gitlab_fetch` / `stage=gitlab_ready`：获取 MR 元数据和仓库地址。
 - `stage=diff_ready`：diff 已生成，会记录文件数和 diff 行数。
 - `stage=review_plan`：仅 Deep Review 第一次调用 Agent 并校验结构化审查计划。
+- `stage=review_routing`：记录 `requested_review_mode`、实际 `review_mode`、`review_scope`、`dependency_context_status` 和稳定降级原因。
+- `stage=dependency_prepare`：依赖联合候选记录每个 project、同名 target branch、实际 commit SHA 和准备耗时；任一失败记录失败 project 与 reason，并清理全部依赖上下文。
+- `stage=dependency_review_plan` / `stage=dependency_review`：依赖联合检视固定的两次 Agent 调用。
 - `stage=structured_output_normalize status=recovered`：从外层文字中恢复了唯一契约有效 JSON 对象；只记录输出类型、前后缀字符数和候选数，不记录说明文字、finding 或完整模型输出。监视报告中的 `structured_parse_status` 仍只使用 `success` / `failed`。
 - `review_scope=review-set`、`review_set_id`、`req_id`：IM 联合检视的任务边界和稳定标识；`stage=prepared`、`review_set_plan`、`review_set_review`、`publish` 和 `cleanup` 用于定位联合任务阶段。
 - `stage=opencode_review` / `stage=report_ready`：调用 Agent review 并得到结构化 JSON；Deep Review 会注入待验证计划，`run-once` 和 WeLink poll 继续由 Python 渲染为 Markdown。
@@ -250,7 +277,7 @@ welink-cli im send-to-group --group-id "group-example" --text "代码审查报�
 - WeLink 历史消息是否需要基于 `maxMsgId` 增量查询；当前依赖本地状态文件去重。
 - WeLink CLI 可以发送私聊消息，但当前只实现群聊回发。
 - webhook 不再提交整段 Markdown note；无法发布为 inline discussion 的 finding 只保留在本地 JSON 和 Markdown 报告中。未来可以评估把高风险、高置信的非 diff finding 降级为普通 MR note，但当前未开放该行为。
-- 场景二“单 MR 自动读取内部 Maven 二方依赖源码”尚未实现；开源三方件、Gradle、JAR 下载/反编译和 webhook 多 MR 聚合也不在当前范围内。
+- 项目依赖目录只表达直接源码仓关系，不证明制品版本；开源三方件、Maven/Gradle 解析、JAR 下载/反编译和 webhook 多 MR 聚合不在当前范围内。
 
 ## 排障
 
@@ -260,6 +287,8 @@ welink-cli im send-to-group --group-id "group-example" --text "代码审查报�
 - `GitLab API request failed`：检查 `MR_REVIEWER_GITLAB_API_BASE_URL` 是否包含完整 API 前缀、token 权限是否正确；MR Web URL 校验仍使用 `MR_REVIEWER_GITLAB_BASE_URL`。
 - GitLab webhook 返回 404：先确认请求 URL 没有尾部 `/`，并确认服务启动日志里的 `host`、`port`、`path` 与 GitLab 配置一致。如果 GitLab 配置的是 `http://本机IP:8080/webhook/gitlab`，不要使用默认 `MR_REVIEWER_WEBHOOK_HOST=127.0.0.1`，改为 `0.0.0.0` 或实际网卡 IP 后重启。
 - `git command failed`：检查 token 是否能 clone 目标仓库，以及 MR 的 base/head SHA 是否存在。
+- `healthcheck` 显示 `repository_dependency_catalog: invalid`：按括号内 reason 检查文件可读性、JSON 和严格 schema；目录无效时 Deep Review 会降级为单仓 one-step。
+- Deep Review 报告显示“未执行依赖联合检视”：查看 `dependency_degradation_reason` 和 `dependency_failed_project`。数量超限、目录错误、同名 target branch 缺失或任一 checkout 失败都不会使用部分依赖上下文。
 - 多 MR 消息被拒绝：确认消息只含 2–3 个不同项目的唯一 MR，所有仓库均在白名单内，且每个 isource MR 响应的 `e2e_issues[0].issue_num` 为相同非空字符串。
 - ReviewSet 报告存在 finding 但没有 GitLab 评论：检查 `MR_REVIEWER_REVIEW_SET_POST_COMMENT` 和 `MR_REVIEWER_AGENT_MODEL_NAME`，再查看报告中的逐目标 `status`/`reason`。
 - 重复处理同一条消息：检查 `MR_REVIEWER_STATE_PATH` 是否可写、是否被删除。

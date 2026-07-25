@@ -36,6 +36,7 @@
 | ReviewSet 发布开关 | 展示 | 不使用 | 不使用 | 可选 | 不使用 | 不使用 |
 | webhook 监听、secret、发布开关 | 展示 | 不使用 | 不使用 | 不使用 | 必需/可选 | 必需/可选 |
 | 发布 severity/confidence 门槛 | 展示并校验 | 启动时校验 | 启动时校验 | 发布时使用 | 启动时校验 | 发布时使用 |
+| 项目依赖目录 | 展示并校验 | Deep Review 条件使用 | Deep Review 条件使用 | 不使用 | Deep Review 条件使用 | Deep Review 条件使用 |
 | work/state/report 路径 | 不检查 | `WORK_DIR` | `WORK_DIR`、`STATE_PATH` | `WORK_DIR`、`STATE_PATH` | `WORK_DIR`、`REPORT_DIR` | `WORK_DIR`、`REPORT_DIR` |
 | 资源限制和超时 | 不检查 | 使用 | 使用 | 使用 | 使用 | 使用 |
 | 日志和 debug 目录 | 不检查 | 可选 | 可选 | 可选 | 可选 | 可选 |
@@ -51,6 +52,18 @@
 | `MR_REVIEWER_GITLAB_TOKEN` | 空 | 所有 review 模式 | 作为 REST `PRIVATE-TOKEN`，也用于 HTTPS clone/fetch。不得写入 prompt、普通日志或报告。 |
 
 Web 根地址、API 根地址和各模式的具体接口调用范围见 [GitLab API 说明](GITLAB_API.md)。
+
+## 项目依赖目录
+
+| 配置 | 默认值 | 适用模式 | 行为与关联 |
+|---|---|---|---|
+| `MR_REVIEWER_REPOSITORY_DEPENDENCY_CATALOG` | 空 | `run-once`、IM 单 MR、webhook 的 Deep Review | 指向部署侧只读 UTF-8 JSON。空值或当前主项目无映射时维持单仓 Deep Review；普通单仓 one-step 和 ReviewSet 不读取。 |
+
+目录使用 `schema_version=1` 和 `repositories[]`，每项包含唯一、非空的 `project_path` 以及去重、非自身的直接 `dependencies[]`。目录只表达项目关系，不解析 Maven/POM/GAV/version，也不递归展开依赖仓自己的映射。
+
+title 去除前导空白后，只有以完整 `【Deep-Review】` 或 `[Deep-Review]` 开头（忽略大小写）的单 MR 才读取目录。映射包含 1–3 个依赖且全部同名 target branch 准备成功时执行依赖联合 two-step；超过 3 个、目录不可读/schema 非法或任一依赖准备失败时，丢弃全部依赖上下文并降级为单仓 one-step。
+
+`healthcheck` 在未配置时显示 `optional`；配置有效时显示路径和项目数；不可读或 schema 非法时显示稳定 reason code 并返回非零。具体 project 查询、HTTPS clone URL 校验和分支审计边界见 [GitLab API 说明](GITLAB_API.md)。
 
 ## WeLink IM
 
@@ -74,7 +87,7 @@ Web 根地址、API 根地址和各模式的具体接口调用范围见 [GitLab 
 | `MR_REVIEWER_AGENT_TYPE` | `opencode` | `opencode`、`claude-code` | 其它值启动失败。 |
 | `MR_REVIEWER_AGENT_COMMAND` | 按类型选择 `opencode` 或 `claude` | 可执行命令及参数 | 非空时优先于旧 `OPENCODE_COMMAND`。命令解析后首个可执行文件必须可用。 |
 | `MR_REVIEWER_AGENT_MODEL_NAME` | 空 | 任意展示名称 | 只用于 webhook inline discussion 和 ReviewSet GitLab 评论。为空时仍生成报告，但不发布 GitLab 评论；不会从 Agent 输出猜测。 |
-| `MR_REVIEWER_COMMENT_SKILL` | 空（有效默认 `code-review`） | skill 名称 | 指定自动入口 prompt 使用的 review skill；该 skill 必须只返回结构化 JSON，不得自行发布评论。 |
+| `MR_REVIEWER_COMMENT_SKILL` | 空（有效默认 `code-review`） | skill 名称 | 指定自动入口的单仓 review prompt skill；依赖联合检视固定使用 `dependency-code-review`，不受该配置覆盖。skill 必须只返回结构化 JSON，不得自行发布评论。 |
 
 Agent 的 provider、API Key、实际模型和登录状态由 OpenCode 或 Claude Code 自身管理，本项目只选择 adapter、命令和 GitLab 评论中的展示名。review/review-plan/deep-review prompt 使用包内版本化模板，不支持部署侧覆盖。
 
@@ -121,7 +134,7 @@ Agent 的 provider、API Key、实际模型和登录状态由 OpenCode 或 Claud
 | `MR_REVIEWER_STATE_PATH` | `.mr-reviewer-state.json` | `poll` | 已处理 IM message ID 的本地状态文件。删除或不可写会影响去重。 |
 | `MR_REVIEWER_MAX_FILES` | `50` | 所有 review | 单个成员允许的最大 changed files 数。 |
 | `MR_REVIEWER_MAX_DIFF_LINES` | `2000` | 所有 review | 单个成员允许的最大 diff 行数。 |
-| `MR_REVIEWER_TASK_TIMEOUT_SECONDS` | `900` | 所有 review | 单 MR one-step/Deep Review 或 ReviewSet 两次 Agent 调用共享的总时间预算。 |
+| `MR_REVIEWER_TASK_TIMEOUT_SECONDS` | `900` | 所有 review | 单仓 one-step、单仓/依赖联合 Deep Review 或 ReviewSet 共享的任务总时间预算；two-step 的两次 Agent 调用共享该预算。 |
 | `MR_REVIEWER_POLL_INTERVAL_SECONDS` | `15` | 常驻 `poll` | 两轮 WeLink 查询间隔；`poll --once` 不等待下一轮。 |
 
 ## 旧兼容配置

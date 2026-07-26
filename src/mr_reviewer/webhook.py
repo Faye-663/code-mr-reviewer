@@ -19,7 +19,11 @@ from mr_reviewer.gitlab import GitLabClient
 from mr_reviewer.inline_review import DiffPositionMap, DiffRefs, FindingValidationDecision, validate_review_findings
 from mr_reviewer.markdown_report import render_markdown_review_report
 from mr_reviewer.observability import task_context
-from mr_reviewer.review_result import StructuredReviewParseError, parse_structured_review_result
+from mr_reviewer.review_result import (
+    StructuredReviewParseError,
+    StructuredReviewResult,
+    parse_structured_review_result,
+)
 from mr_reviewer.review_routing import resolve_review_routing
 from mr_reviewer.reviewer import MergeRequestReviewTarget, ReviewReport, ReviewService, ReviewStageError
 
@@ -42,24 +46,54 @@ class WebhookResponse:
     body: dict
 
 
+@dataclass(frozen=True, slots=True)
+class _RepositoryMetadata:
+    project_path: str
+    project: dict
+    source: dict
+    target_project: dict
+
+
 def parse_gitlab_merge_request_event(payload: dict, config: Config) -> WebhookReviewEvent | None:
-    if payload.get("object_kind") != "merge_request":
+    attrs = _eligible_merge_request_attributes(payload)
+    if attrs is None:
         return None
 
+    metadata = _parse_repository_metadata(payload, attrs, config)
+    if metadata is None:
+        return None
+    target = _build_review_target(attrs, metadata, config)
+    action = str(attrs.get("action") or "")
+    update_reason = str(attrs.get("update_reason") or "")
+    return WebhookReviewEvent(
+        event_id=f"{target.project_path}!{target.mr_iid}:{target.head_sha}",
+        action=action,
+        update_reason=update_reason,
+        oldrev=str(attrs.get("oldrev") or ""),
+        manual_build=bool(payload.get("manual_build", False)),
+        target=target,
+    )
+
+
+def _eligible_merge_request_attributes(payload: dict) -> dict | None:
+    if payload.get("object_kind") != "merge_request":
+        return None
     attrs = _require_dict(payload, "object_attributes")
     action = str(attrs.get("action") or "")
     update_reason = str(attrs.get("update_reason") or "")
-    if not (
-        action in {"open", "reopen"}
-        or (
-            action == "update"
-            and update_reason == "source update"
-        )
-    ):
+    eligible = action in {"open", "reopen"} or (
+        action == "update" and update_reason == "source update"
+    )
+    if not eligible or attrs.get("conflict") is True:
         return None
-    if attrs.get("conflict") is True:
-        return None
+    return attrs
 
+
+def _parse_repository_metadata(
+        payload: dict,
+        attrs: dict,
+        config: Config,
+) -> _RepositoryMetadata | None:
     project = _optional_dict(payload.get("project"))
     source = _optional_dict(attrs.get("source"))
     target_project = _optional_dict(attrs.get("target"))
@@ -73,6 +107,19 @@ def parse_gitlab_merge_request_event(payload: dict, config: Config) -> WebhookRe
     if config.allowed_repos and project_path not in config.allowed_repos:
         return None
 
+    return _RepositoryMetadata(
+        project_path=project_path,
+        project=project,
+        source=source,
+        target_project=target_project,
+    )
+
+
+def _build_review_target(
+        attrs: dict,
+        metadata: _RepositoryMetadata,
+        config: Config,
+) -> MergeRequestReviewTarget:
     mr_iid = _require_int(attrs, "iid")
     source_branch = _require_text(attrs, "source_branch")
     target_branch = _require_text(attrs, "target_branch")
@@ -80,25 +127,27 @@ def parse_gitlab_merge_request_event(payload: dict, config: Config) -> WebhookRe
     last_commit = _require_dict(attrs, "last_commit")
     head_sha = _require_text(last_commit, "id")
     target_repo_url = _first_text(
-        target_project.get("http_url"),
-        target_project.get("git_http_url"),
-        project.get("http_url"),
-        project.get("git_http_url"),
+        metadata.target_project.get("http_url"),
+        metadata.target_project.get("git_http_url"),
+        metadata.project.get("http_url"),
+        metadata.project.get("git_http_url"),
     )
     if not target_repo_url:
         raise ValueError("webhook payload missing target repository http_url")
     source_repo_url = _first_text(
-        source.get("http_url"),
-        source.get("git_http_url"),
+        metadata.source.get("http_url"),
+        metadata.source.get("git_http_url"),
         target_repo_url,
     )
-    mr_url = _first_text(attrs.get("url"), _build_mr_url(project.get("web_url"), mr_iid))
+    mr_url = _first_text(
+        attrs.get("url"),
+        _build_mr_url(metadata.project.get("web_url"), mr_iid),
+    )
     if not mr_url:
         raise ValueError("webhook payload missing MR url")
-
-    target = MergeRequestReviewTarget(
+    return MergeRequestReviewTarget(
         base_url=config.gitlab_base_url.rstrip("/"),
-        project_path=project_path,
+        project_path=metadata.project_path,
         mr_iid=mr_iid,
         mr_url=mr_url,
         target_repo_url=target_repo_url,
@@ -108,14 +157,6 @@ def parse_gitlab_merge_request_event(payload: dict, config: Config) -> WebhookRe
         base_sha=None,
         head_sha=head_sha,
         title=title,
-    )
-    return WebhookReviewEvent(
-        event_id=f"{project_path}!{mr_iid}:{head_sha}",
-        action=action,
-        update_reason=update_reason,
-        oldrev=str(attrs.get("oldrev") or ""),
-        manual_build=bool(payload.get("manual_build", False)),
-        target=target,
     )
 
 
@@ -196,38 +237,7 @@ class WebhookReviewQueue:
                     LOG.info("task=%s stage=webhook_report path=%s status=success", task_id, path)
             except Exception as exc:  # noqa: BLE001 - webhook 后台任务必须记录失败并继续处理队列。
                 LOG.error("task=%s stage=webhook_review status=failed error=%s", task_id, _redact(str(exc), self.config))
-                review_plan = exc.review_plan if isinstance(exc, ReviewStageError) else None
-                failure_stage = exc.stage if isinstance(exc, ReviewStageError) else ""
-                agent_call_count = exc.agent_call_count if isinstance(exc, ReviewStageError) else 0
-                routing = resolve_review_routing(event.target.title)
-                report_context = exc.report_context if isinstance(exc, ReviewStageError) else {}
-                failure_report = ReviewReport(
-                    markdown="",
-                    summary=None,
-                    review_plan=review_plan,
-                    head_sha=event.target.head_sha,
-                    changed_files=[],
-                    submission_owner="python",
-                    submission_status="failed",
-                    failure_stage=failure_stage,
-                    title=event.target.title,
-                    requested_review_mode=str(report_context.get("requested_review_mode") or routing.review_mode),
-                    review_mode=str(report_context.get("review_mode") or routing.review_mode),
-                    review_scope=str(report_context.get("review_scope") or "single"),
-                    routing_reason=routing.routing_reason,
-                    routing_marker=routing.routing_marker,
-                    dependency_context_status=str(
-                        report_context.get("dependency_context_status") or "not_applicable"
-                    ),
-                    dependency_degradation_reason=str(
-                        report_context.get("dependency_degradation_reason") or ""
-                    ),
-                    dependency_failed_project=str(report_context.get("dependency_failed_project") or ""),
-                    dependency_context_id=str(report_context.get("dependency_context_id") or ""),
-                    dependency_repositories=list(report_context.get("dependency_repositories") or []),
-                    dependency_preparation_seconds=report_context.get("dependency_preparation_seconds"),
-                    agent_call_count=agent_call_count,
-                )
+                failure_report = _build_failure_review_report(event, exc)
                 try:
                     write_webhook_monitor_report(event, failure_report, self.config, task_id, "failed", str(exc))
                 except Exception as report_exc:  # noqa: BLE001 - 记录失败不能让 worker 线程退出。
@@ -254,30 +264,20 @@ class WebhookReviewQueue:
 
         if not self.config.webhook_post_comment:
             results = [_unpublished_finding_result(finding, "disabled", "webhook_post_comment_disabled") for finding in structured.findings]
-            return replace(
+            return _with_structured_submission(
                 report,
-                submission_owner="python",
-                submission_status="disabled",
-                structured_parse_status="success",
-                finding_counts=_finding_counts(results),
-                finding_results=results,
-                good=structured.good,
-                notes=structured.notes,
-                test_gaps=structured.test_gaps,
+                structured,
+                "disabled",
+                results,
             )
 
         if not self.config.agent_model_name:
             results = [_unpublished_finding_result(finding, "model_not_configured", "agent_model_name_missing") for finding in structured.findings]
-            return replace(
+            return _with_structured_submission(
                 report,
-                submission_owner="python",
-                submission_status="model_not_configured",
-                structured_parse_status="success",
-                finding_counts=_finding_counts(results),
-                finding_results=results,
-                good=structured.good,
-                notes=structured.notes,
-                test_gaps=structured.test_gaps,
+                structured,
+                "model_not_configured",
+                results,
             )
 
         detail = self.gitlab.get_mr_detail_for_discussion_position(event.target)
@@ -290,16 +290,11 @@ class WebhookReviewQueue:
         )
         publish_results = DiscussionPublisher(self.gitlab, self.config.agent_model_name).publish(event.target, decisions)
         status = "failed" if any(item["status"] == "failed" for item in publish_results) else "posted"
-        return replace(
+        return _with_structured_submission(
             report,
-            submission_owner="python",
-            submission_status=status,
-            structured_parse_status="success",
-            finding_counts=_finding_counts(publish_results),
-            finding_results=publish_results,
-            good=structured.good,
-            notes=structured.notes,
-            test_gaps=structured.test_gaps,
+            structured,
+            status,
+            publish_results,
         )
 
 
@@ -372,6 +367,26 @@ def write_webhook_monitor_report(
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     repo_name = _safe_filename(event.target.project_path)
     path = config.report_dir / f"{timestamp}-{repo_name}-mr-{event.target.mr_iid}-{task_id}.json"
+    data = _build_webhook_monitor_payload(event, report, task_id, status)
+    redacted_error = _redact(error, config) if error else None
+    markdown_path = path.with_suffix(".md")
+    markdown_path.write_text(
+        render_markdown_review_report(event, report, status, redacted_error),
+        encoding="utf-8",
+    )
+    data["markdown_report_path"] = str(markdown_path)
+    if error:
+        data["error"] = redacted_error
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    return path
+
+
+def _build_webhook_monitor_payload(
+        event: WebhookReviewEvent,
+        report: ReviewReport,
+        task_id: str,
+        status: str,
+) -> dict[str, object]:
     changed_files = report.changed_files or []
     data = {
         "task_id": task_id,
@@ -423,17 +438,7 @@ def write_webhook_monitor_report(
         data["finding_results"] = report.finding_results
     if report.failure_stage:
         data["failure_stage"] = report.failure_stage
-    redacted_error = _redact(error, config) if error else None
-    markdown_path = path.with_suffix(".md")
-    markdown_path.write_text(
-        render_markdown_review_report(event, report, status, redacted_error),
-        encoding="utf-8",
-    )
-    data["markdown_report_path"] = str(markdown_path)
-    if error:
-        data["error"] = redacted_error
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
-    return path
+    return data
 
 
 def make_webhook_handler(config: Config, enqueue: Callable[[WebhookReviewEvent], None]):
@@ -623,6 +628,63 @@ def _finding_counts(results: list[dict]) -> dict[str, int]:
         if status in counts:
             counts[status] += 1
     return counts
+
+
+def _with_structured_submission(
+        report: ReviewReport,
+        structured: StructuredReviewResult,
+        status: str,
+        results: list[dict],
+) -> ReviewReport:
+    return replace(
+        report,
+        submission_owner="python",
+        submission_status=status,
+        structured_parse_status="success",
+        finding_counts=_finding_counts(results),
+        finding_results=results,
+        good=structured.good,
+        notes=structured.notes,
+        test_gaps=structured.test_gaps,
+    )
+
+
+def _build_failure_review_report(
+        event: WebhookReviewEvent,
+        error: Exception,
+) -> ReviewReport:
+    review_plan = error.review_plan if isinstance(error, ReviewStageError) else None
+    failure_stage = error.stage if isinstance(error, ReviewStageError) else ""
+    agent_call_count = error.agent_call_count if isinstance(error, ReviewStageError) else 0
+    report_context = error.report_context if isinstance(error, ReviewStageError) else {}
+    routing = resolve_review_routing(event.target.title)
+    return ReviewReport(
+        markdown="",
+        summary=None,
+        review_plan=review_plan,
+        head_sha=event.target.head_sha,
+        changed_files=[],
+        submission_owner="python",
+        submission_status="failed",
+        failure_stage=failure_stage,
+        title=event.target.title,
+        requested_review_mode=str(report_context.get("requested_review_mode") or routing.review_mode),
+        review_mode=str(report_context.get("review_mode") or routing.review_mode),
+        review_scope=str(report_context.get("review_scope") or "single"),
+        routing_reason=routing.routing_reason,
+        routing_marker=routing.routing_marker,
+        dependency_context_status=str(
+            report_context.get("dependency_context_status") or "not_applicable"
+        ),
+        dependency_degradation_reason=str(
+            report_context.get("dependency_degradation_reason") or ""
+        ),
+        dependency_failed_project=str(report_context.get("dependency_failed_project") or ""),
+        dependency_context_id=str(report_context.get("dependency_context_id") or ""),
+        dependency_repositories=list(report_context.get("dependency_repositories") or []),
+        dependency_preparation_seconds=report_context.get("dependency_preparation_seconds"),
+        agent_call_count=agent_call_count,
+    )
 
 
 def _unpublished_finding_result(finding, status: str, reason: str) -> dict:

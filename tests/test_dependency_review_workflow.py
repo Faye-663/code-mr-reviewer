@@ -77,6 +77,15 @@ class _Git:
         }[project_path]
 
 
+class _OutsideTaskGit(_Git):
+    def clone_checkout_and_diff(self, checkout, token, work_dir, limits) -> dict:
+        diff_info = super().clone_checkout_and_diff(checkout, token, work_dir, limits)
+        outside_repo = Path(work_dir).parent / "outside-repo"
+        outside_repo.mkdir()
+        diff_info["repo_path"] = outside_repo
+        return diff_info
+
+
 def _single_plan() -> dict:
     return {
         "change_intent": ["更新调用方"],
@@ -343,6 +352,27 @@ def test_dependency_checkout_failure_discards_all_and_runs_single_one_step(tmp_p
     assert report.dependency_degradation_reason == "dependency_checkout_failed"
     assert report.dependency_failed_project == "team/repo-c"
     assert report.dependency_repositories == []
+    assert [call[3].template_id for call in runner.calls] == ["review"]
+    assert not (tmp_path / task_id).exists()
+
+
+def test_primary_repo_outside_task_dir_degrades_to_single_one_step(tmp_path: Path):
+    git = _OutsideTaskGit()
+    runner = _Runner()
+    task_id = "primary-context-invalid"
+
+    report = _review(
+        ReviewService(_GitLab("【Deep-Review】 Contract"), git, runner),
+        _config(tmp_path, _write_catalog(tmp_path / "catalog.json", ["team/repo-b"])),
+        task_id,
+    )
+
+    assert report.review_mode == "one-step"
+    assert report.review_scope == "single"
+    assert report.dependency_context_status == "degraded"
+    assert report.dependency_degradation_reason == "primary_context_invalid"
+    assert report.dependency_failed_project == "team/app"
+    assert git.dependency_calls == []
     assert [call[3].template_id for call in runner.calls] == ["review"]
     assert not (tmp_path / task_id).exists()
 

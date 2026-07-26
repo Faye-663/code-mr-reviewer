@@ -72,25 +72,29 @@ def _parse_review_plan_object(payload: object) -> dict[str, object]:
     critical_paths = payload.get("critical_paths")
     if not isinstance(critical_paths, list):
         raise ReviewPlanParseError("critical_paths must be a list")
-    parsed_paths = []
-    for index, item in enumerate(critical_paths):
-        if not isinstance(item, dict):
-            raise ReviewPlanParseError(f"critical_paths[{index}] must be an object")
-        unexpected = set(item) - {"path", "reason", "verify"}
-        if unexpected:
-            raise ReviewPlanParseError(f"critical_paths[{index}] contains unexpected fields: {sorted(unexpected)}")
-        path = item.get("path")
-        reason = item.get("reason")
-        if not isinstance(path, str) or not path.strip():
-            raise ReviewPlanParseError(f"critical_paths[{index}].path must be a non-empty string")
-        if not isinstance(reason, str) or not reason.strip():
-            raise ReviewPlanParseError(f"critical_paths[{index}].reason must be a non-empty string")
-        verify = _review_plan_text_list(item, "verify", prefix=f"critical_paths[{index}].")
-        if not verify:
-            raise ReviewPlanParseError(f"critical_paths[{index}].verify must not be empty")
-        parsed_paths.append({"path": path, "reason": reason, "verify": verify})
-    plan["critical_paths"] = parsed_paths
+    plan["critical_paths"] = [
+        _parse_review_plan_critical_path(item, index) for index, item in enumerate(critical_paths)
+    ]
     return plan
+
+
+def _parse_review_plan_critical_path(value: object, index: int) -> dict[str, object]:
+    context = f"critical_paths[{index}]"
+    if not isinstance(value, dict):
+        raise ReviewPlanParseError(f"{context} must be an object")
+    unexpected = set(value) - {"path", "reason", "verify"}
+    if unexpected:
+        raise ReviewPlanParseError(f"{context} contains unexpected fields: {sorted(unexpected)}")
+    path = value.get("path")
+    reason = value.get("reason")
+    if not isinstance(path, str) or not path.strip():
+        raise ReviewPlanParseError(f"{context}.path must be a non-empty string")
+    if not isinstance(reason, str) or not reason.strip():
+        raise ReviewPlanParseError(f"{context}.reason must be a non-empty string")
+    verify = _review_plan_text_list(value, "verify", prefix=f"{context}.")
+    if not verify:
+        raise ReviewPlanParseError(f"{context}.verify must not be empty")
+    return {"path": path, "reason": reason, "verify": verify}
 
 
 def _review_plan_text_list(payload: dict, field: str, prefix: str = "") -> list[str]:

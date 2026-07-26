@@ -192,6 +192,30 @@ def test_parse_dependency_result_accepts_dependency_evidence_and_primary_positio
     assert result.relationship_summary == ["主仓调用 SDK，空值契约不一致。"]
 
 
+def test_parse_dependency_result_normalizes_strict_text_fields():
+    module = _result_module()
+    payload = _result_payload()
+    payload["relationship_summary"] = ["  主仓调用 SDK，空值契约不一致。  "]
+    payload["findings"][0]["title"] = "  调用方未处理 SDK 空返回  "
+
+    result = module.parse_structured_dependency_review_result(
+        json.dumps(payload, ensure_ascii=False),
+        _manifest(),
+    )
+
+    assert result.relationship_summary == ["主仓调用 SDK，空值契约不一致。"]
+    assert result.findings[0].title == "调用方未处理 SDK 空返回"
+
+
+def test_parse_dependency_result_rejects_boolean_position_line():
+    module = _result_module()
+    payload = _result_payload()
+    payload["findings"][0]["position"]["new_line"] = True
+
+    with pytest.raises(module.StructuredDependencyReviewParseError, match="new_line must be an integer"):
+        module.parse_structured_dependency_review_result(json.dumps(payload), _manifest())
+
+
 def test_parse_dependency_result_recovers_one_contract_valid_wrapped_object():
     module = _result_module()
     raw_output = "review result:\n" + json.dumps(_result_payload(), ensure_ascii=False) + "\nend"

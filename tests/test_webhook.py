@@ -654,6 +654,37 @@ def test_webhook_worker_records_review_stage_failure_with_completed_plan(tmp_pat
     assert "失败阶段：dependency_review" in markdown
 
 
+def test_webhook_worker_omits_unavailable_conditional_fields_for_generic_failure(tmp_path: Path):
+    event = parse_gitlab_merge_request_event(
+        _merge_request_payload(),
+        Config(gitlab_base_url="https://gitlab.example.com"),
+    )
+    assert event is not None
+
+    class FailingReviewService:
+        def review_target(self, target, config, task_id, structured_output=False):
+            raise RuntimeError("agent unavailable")
+
+    queue = WebhookReviewQueue(
+        FailingReviewService(),
+        _RecordingGitLabClient(),
+        Config(gitlab_base_url="https://gitlab.example.com", report_dir=tmp_path),
+    )
+    queue.start()
+
+    queue.enqueue(event)
+    queue._queue.join()
+
+    report = json.loads(next(tmp_path.glob("*.json")).read_text(encoding="utf-8"))
+    assert report["status"] == "failed"
+    assert report["submission_status"] == "failed"
+    assert report["dependency_context_status"] == "not_applicable"
+    assert "structured_parse_status" not in report
+    assert "finding_counts" not in report
+    assert "finding_results" not in report
+    assert "failure_stage" not in report
+
+
 class _RecordingReviewService:
     def __init__(self, markdown: str | None = None):
         self.targets = []

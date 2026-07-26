@@ -2,6 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from mr_reviewer.result_validation import (
+    require_exact_fields as _exact_fields,
+    require_integer as _integer,
+    require_list as _require_list,
+    require_object as _require_object,
+    require_text as _text,
+    require_text_list as _text_list,
+)
 from mr_reviewer.review_result import ALLOWED_CONFIDENCES, ALLOWED_SEVERITIES
 from mr_reviewer.structured_output import parse_json_object_output
 
@@ -278,50 +286,6 @@ def _parse_position(value: object, parent: str) -> ReviewSetTargetPosition:
         old_line=_integer(item, "old_line", StructuredReviewSetParseError, context),
         new_line=_integer(item, "new_line", StructuredReviewSetParseError, context),
     )
-
-
-def _require_object(value: object, error_type, context: str) -> dict:
-    if not isinstance(value, dict):
-        raise error_type(f"{context} must be an object")
-    return value
-
-
-def _require_list(payload: dict, field_name: str, error_type) -> list:
-    value = payload.get(field_name)
-    if not isinstance(value, list):
-        raise error_type(f"{field_name} must be a list")
-    return value
-
-
-def _text(payload: dict, field_name: str, error_type, context: str) -> str:
-    value = payload.get(field_name)
-    if not isinstance(value, str) or not value.strip():
-        raise error_type(f"{context}.{field_name} must be a non-empty string")
-    return value.strip()
-
-
-def _integer(payload: dict, field_name: str, error_type, context: str) -> int:
-    value = payload.get(field_name)
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise error_type(f"{context}.{field_name} must be an integer")
-    return value
-
-
-def _text_list(payload: dict, field_name: str, error_type, context: str = "") -> list[str]:
-    value = _require_list(payload, field_name, error_type)
-    if not all(isinstance(item, str) and item.strip() for item in value):
-        prefix = f"{context}." if context else ""
-        raise error_type(f"{prefix}{field_name} must contain non-empty strings")
-    return [item.strip() for item in value]
-
-
-def _exact_fields(payload: dict, expected: set[str], error_type, context: str) -> None:
-    unexpected = set(payload) - expected
-    missing = expected - set(payload)
-    if unexpected:
-        raise error_type(f"{context} contains unexpected fields: {sorted(unexpected)}")
-    if missing:
-        raise error_type(f"{context} is missing fields: {sorted(missing)}")
 
 
 def _evidence_to_dict(evidence: ReviewSetEvidenceRef) -> dict[str, object]:

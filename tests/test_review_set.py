@@ -435,6 +435,25 @@ def test_parse_review_set_result_accepts_multi_target_and_null_position():
     assert result.findings[0].targets[1].position is None
 
 
+def test_parse_review_set_result_normalizes_strict_text_fields():
+    payload = _result_payload()
+    payload["relationship_summary"] = ["  app 调用 sdk，空值契约不一致。  "]
+    payload["findings"][0]["title"] = "  调用方未处理 SDK 空返回  "
+
+    result = parse_structured_review_set_result(json.dumps(payload, ensure_ascii=False))
+
+    assert result.relationship_summary == ["app 调用 sdk，空值契约不一致。"]
+    assert result.findings[0].title == "调用方未处理 SDK 空返回"
+
+
+def test_parse_review_set_result_rejects_boolean_position_line():
+    payload = _result_payload()
+    payload["findings"][0]["targets"][0]["position"]["new_line"] = True
+
+    with pytest.raises(StructuredReviewSetParseError, match="new_line must be an integer"):
+        parse_structured_review_set_result(json.dumps(payload, ensure_ascii=False))
+
+
 def test_parse_review_set_result_recovers_wrapped_contract_object():
     raw = "```json\n" + json.dumps(_result_payload(), ensure_ascii=False) + "\n```"
 

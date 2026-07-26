@@ -5,9 +5,25 @@ from mr_reviewer.reviewer import ReviewSetReviewReport
 
 
 def render_review_set_report(report: ReviewSetReviewReport, publication: ReviewSetPublication) -> str:
+    sections = [
+        _review_set_summary(report),
+        _review_plan(report),
+        _relationships(report),
+        _findings(report, publication),
+        _notes_test_gaps_and_good(report),
+        _publication_summary(publication),
+    ]
+    lines = ["# 多 MR 联合代码检视报告"]
+    for section in sections:
+        if not section:
+            continue
+        lines.append("")
+        lines.extend(section)
+    return "\n".join(lines) + "\n"
+
+
+def _review_set_summary(report: ReviewSetReviewReport) -> list[str]:
     lines = [
-        "# 多 MR 联合代码检视报告",
-        "",
         "## ReviewSet",
         "",
         f"- ReviewSet ID：`{report.manifest.review_set_id}`",
@@ -23,8 +39,11 @@ def render_review_set_report(report: ReviewSetReviewReport, publication: ReviewS
             f"| [{member.project_path}!{member.mr_iid}]({member.mr_url}) | "
             f"`{member.base_sha}` | `{member.start_sha}` | `{member.head_sha}` |"
         )
+    return lines
 
-    lines.extend(["", "## 联合审查计划", ""])
+
+def _review_plan(report: ReviewSetReviewReport) -> list[str]:
+    lines = ["## 联合审查计划", ""]
     member_focus = report.review_plan.get("member_focus", [])
     if not member_focus:
         lines.append("- 无成员计划数据。")
@@ -45,14 +64,23 @@ def render_review_set_report(report: ReviewSetReviewReport, publication: ReviewS
     open_questions = report.review_plan.get("open_questions", [])
     if open_questions:
         lines.append(f"- 待确认问题：{'；'.join(open_questions)}")
+    return lines
 
-    lines.extend(["", "## 跨仓关系", ""])
+
+def _relationships(report: ReviewSetReviewReport) -> list[str]:
+    lines = ["## 跨仓关系", ""]
     lines.extend(f"- {item}" for item in report.result.relationship_summary)
+    return lines
 
+
+def _findings(
+        report: ReviewSetReviewReport,
+        publication: ReviewSetPublication,
+) -> list[str]:
     result_by_target = {
         (item["issue_id"], item["target_index"]): item for item in publication.results
     }
-    lines.extend(["", "## Findings", ""])
+    lines = ["## Findings", ""]
     if not report.result.findings:
         lines.append("- 未发现可报告的问题。")
     for finding_index, finding in enumerate(report.result.findings, start=1):
@@ -85,32 +113,39 @@ def render_review_set_report(report: ReviewSetReviewReport, publication: ReviewS
                 f"  - `{target.member_id}`：位置 {position}；{target.suggestion}；"
                 f"状态 `{publish['status']}`；原因 `{publish['reason'] or '-'}`"
             )
+    return lines
 
+
+def _notes_test_gaps_and_good(report: ReviewSetReviewReport) -> list[str]:
+    lines: list[str] = []
     if report.result.notes:
-        lines.extend(["", "## Notes", ""])
+        lines.extend(["## Notes", ""])
         lines.extend(f"- {item}" for item in report.result.notes)
     if report.result.test_gaps:
-        lines.extend(["", "## Test Gaps", ""])
+        if lines:
+            lines.append("")
+        lines.extend(["## Test Gaps", ""])
         lines.extend(f"- {item}" for item in report.result.test_gaps)
     if report.result.good:
-        lines.extend(["", "## GOOD", ""])
+        if lines:
+            lines.append("")
+        lines.extend(["## GOOD", ""])
         lines.extend(f"- {item}" for item in report.result.good)
+    return lines
 
+
+def _publication_summary(publication: ReviewSetPublication) -> list[str]:
     counts = publication.counts
-    lines.extend(
-        [
-            "",
-            "## 发布摘要",
-            "",
-            f"- 状态：`{publication.status}`",
-            f"- Inline：{counts['posted_inline']}",
-            f"- 普通评论：{counts['posted_note']}",
-            f"- 重复跳过：{counts['skipped_duplicate']}",
-            f"- 过滤：{counts['filtered']}",
-            f"- 无效：{counts['invalid']}",
-            f"- 失败：{counts['failed']}",
-            f"- 发布关闭：{counts['disabled']}",
-            f"- Model 未配置：{counts['model_not_configured']}",
-        ]
-    )
-    return "\n".join(lines) + "\n"
+    return [
+        "## 发布摘要",
+        "",
+        f"- 状态：`{publication.status}`",
+        f"- Inline：{counts['posted_inline']}",
+        f"- 普通评论：{counts['posted_note']}",
+        f"- 重复跳过：{counts['skipped_duplicate']}",
+        f"- 过滤：{counts['filtered']}",
+        f"- 无效：{counts['invalid']}",
+        f"- 失败：{counts['failed']}",
+        f"- 发布关闭：{counts['disabled']}",
+        f"- Model 未配置：{counts['model_not_configured']}",
+    ]

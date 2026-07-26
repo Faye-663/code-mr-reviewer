@@ -393,22 +393,73 @@ def test_review_set_publisher_honors_disabled_and_missing_model_modes():
     assert missing_model_gitlab.note_posts == []
 
 
-def test_render_review_set_report_includes_members_findings_and_publish_status():
+def test_render_review_set_report_preserves_complete_markdown_contract():
+    report = _report()
     publication = ReviewSetPublisher(_PublishingGitLab()).publish(
-        _report(), enabled=True, model_name="GLM5"
+        report, enabled=True, model_name="GLM5"
     )
 
-    markdown = render_review_set_report(_report(), publication)
+    markdown = render_review_set_report(report, publication)
 
-    assert "# 多 MR 联合代码检视报告" in markdown
-    assert "REQ-1" in markdown
-    assert "team/app!7" in markdown
-    assert "team/sdk!8" in markdown
-    assert "## 联合审查计划" in markdown
-    assert "调用方未处理 SDK 空返回" in markdown
-    assert "src/caller.py:-1 -> src/caller.py:57" in markdown
-    assert "posted_inline" in markdown
-    assert "posted_note" in markdown
+    assert markdown == (
+        "# 多 MR 联合代码检视报告\n"
+        "\n"
+        "## ReviewSet\n"
+        "\n"
+        "- ReviewSet ID：`aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`\n"
+        "- ReqID：`REQ-1`\n"
+        "- 上下文状态：`complete`\n"
+        "- Agent 调用次数：2\n"
+        "\n"
+        "| 成员 | Base | Start | Head |\n"
+        "|------|------|-------|------|\n"
+        "| [team/app!7](https://gitlab.example.com/team/app/merge_requests/7) | "
+        "`base-101` | `start-101` | `head-101` |\n"
+        "| [team/sdk!8](https://gitlab.example.com/team/sdk/merge_requests/8) | "
+        "`base-202` | `start-202` | `head-202` |\n"
+        "\n"
+        "## 联合审查计划\n"
+        "\n"
+        "- 无成员计划数据。\n"
+        "\n"
+        "## 跨仓关系\n"
+        "\n"
+        "- app 调用 sdk，空值契约不一致。\n"
+        "\n"
+        "## Findings\n"
+        "\n"
+        "### 1. [major/HIGH] 调用方未处理 SDK 空返回\n"
+        "\n"
+        "- Issue ID：`CONTRACT_NULLABILITY_001`\n"
+        "- Rule：`CONTRACT_NULLABILITY`\n"
+        "- 影响：生产请求可能触发空指针异常。\n"
+        "- 证据：\n"
+        "  - `p202-mr8:src/sdk.py:40-42`：SDK 可以返回 null。\n"
+        "- 责任目标：\n"
+        "  - `p101-mr7`：位置 `src/caller.py:-1 -> src/caller.py:57`；解引用前处理 null：\n"
+        "\n"
+        "```java\n"
+        "Objects.requireNonNull(user);\n"
+        "```；状态 `posted_inline`；原因 `-`\n"
+        "  - `p202-mr8`：位置 普通评论；在 SDK 契约中明确空值语义。；"
+        "状态 `posted_note`；原因 `position_not_provided`\n"
+        "\n"
+        "## Test Gaps\n"
+        "\n"
+        "- 缺少联合契约测试。\n"
+        "\n"
+        "## 发布摘要\n"
+        "\n"
+        "- 状态：`success`\n"
+        "- Inline：1\n"
+        "- 普通评论：1\n"
+        "- 重复跳过：0\n"
+        "- 过滤：0\n"
+        "- 无效：0\n"
+        "- 失败：0\n"
+        "- 发布关闭：0\n"
+        "- Model 未配置：0\n"
+    )
 
 
 def test_gitlab_client_paginates_merge_request_discussions(monkeypatch):

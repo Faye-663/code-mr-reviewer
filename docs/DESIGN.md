@@ -1,6 +1,6 @@
 # 设计方案图
 
-本项目有两类触发入口：WeLink IM poll 和 GitLab webhook。入口负责接收事件、过滤不可处理请求，然后把 GitLab MR 信息交给共用的 review core。单 MR review core 负责 clone/fetch/checkout、生成 diff，并根据最新 MR title 与可选项目依赖目录路由：普通 MR 固定单仓 one-step；`【Deep-Review】` 或 `[Deep-Review]` 完整前缀无映射时单仓 two-step，完整准备 1–3 个依赖时执行依赖联合 two-step，目录、数量或准备异常时降级为单仓 one-step。匹配会去除 title 前导空白并忽略大小写，但不接受混合括号；`routing_marker` 记录命中形式对应的规范 marker。WeLink IM 还支持显式提交 2–3 个不同项目 MR 的 ReviewSet；该路径固定 two-step，不读取项目依赖目录。Python 侧负责信任边界校验、GitLab 发布和 Markdown 渲染。
+本项目有两类触发入口：WeLink IM poll 和 GitLab webhook。单 MR 请求先由共享 `SingleMrReviewCoordinator` 读取 GitLab 当前 Head，再按 `(project_path, mr_iid, head_sha)` 注册 ReviewRun；相同版本只执行一次成功 review，所有 Trigger 的 GitLab/OneBox 意图按 sink 合并并各交付至多一次。Review core 负责 clone/fetch/checkout、diff 和 title/catalog 路由。WeLink IM 的 2–3 MR ReviewSet 继续走独立 two-step 路径，不进入 ReviewRun 协调层。Python 是本地报告、GitLab 和 OneBox 外部写入的唯一所有者。
 
 ## 总体结构
 
@@ -10,9 +10,11 @@ flowchart TD
     C["GitLab webhook"] --> D["校验 path / method / secret"]
     D --> E["解析 merge_request payload"]
     B --> B2{"唯一 MR 数量"}
-    B2 -- "1" --> F["ReviewService 单 MR"]
+    B2 -- "1" --> S["SingleMrReviewCoordinator"]
     B2 -- "2–3 个不同项目" --> R["ReviewSet 预检 / manifest"]
-    E --> F
+    E --> S
+    S --> C1["SQLite Trigger 去重 / ReviewRun claim"]
+    C1 --> F["ReviewService 单 MR"]
     F --> G["GitClient: clone / fetch / checkout / diff"]
     G --> H{"title 以 Deep-Review marker 开头"}
     H -- "否" --> I["AgentRunner: 直接执行 code review"]
@@ -25,9 +27,11 @@ flowchart TD
     I --> J["Python parser / validator"]
     H2 --> J
     Q3 --> J
-    J --> K["IM 入口: 渲染 Markdown 上传 OneBox 并通知群聊"]
-    J --> L["webhook 入口: 发布 GitLab inline discussion"]
-    J --> M["写入本地 JSON / Markdown 报告"]
+    J --> M["原子写 ReviewRun JSON / Markdown"]
+    M --> V{"发布前 Head 仍一致"}
+    V -- "否" --> X["superseded / 两个 sink skipped_stale"]
+    V -- "是" --> K["OneBox sink claim"]
+    V -- "是" --> L["GitLab sink claim / marker 去重"]
     R --> R2["固定两次 Agent 调用"]
     R2 --> R3["校验 evidence / targets / diff position"]
     R3 --> R4["聚合报告上传 OneBox"]
@@ -45,11 +49,12 @@ flowchart TD
     D -- "1 个唯一 MR" --> F["GitLabClient: 获取 MR 元数据"]
     D -- "2–3 个不同项目" --> R["ReviewSetPreparer"]
     D -- "数量 / 项目 / 仓库不合法" --> X["安全拒绝文案 + rejected"]
-    F --> G["ReviewService.review"]
+    F --> F2["读取当前 Head / 注册 Trigger"]
+    F2 --> G["ReviewRun owner 执行；joiner 等待"]
     G --> H["按 title 路由审查模式"]
     H --> H2["单仓 one-step / 单仓 Deep / 依赖联合 Deep"]
-    H2 --> I["Python 渲染 Discoveries 与 review Markdown 报告"]
-    I --> J["WeLink OneBox 文件上传"]
+    H2 --> I["原子写 ReviewRun JSON/Markdown"]
+    I --> J["按 IM sink 配置 claim OneBox/GitLab"]
     J --> K["WeLink 群通知报告文件名"]
     K --> L["StateStore: 标记消息已处理"]
     R --> R2["project path -> project_id"]
@@ -100,16 +105,18 @@ flowchart TD
     B --> C["parse_gitlab_merge_request_event"]
     C --> D{"是否 open / reopen / source update 且无冲突"}
     D -- "否" --> E["返回 skipped"]
-    D -- "是" --> F["WebhookReviewQueue.enqueue"]
-    F --> G["ReviewService.review_target"]
-    G --> H["clone / fetch / checkout / diff"]
+    D -- "是" --> F["读取当前 Head / SQLite 注册 Trigger"]
+    F --> F2["返回 202 + review_run_id + disposition"]
+    F2 --> G["owner 执行；joiner/reuser 等待或复用"]
+    G --> G2["ReviewService.review_target"]
+    G2 --> H["clone / fetch / checkout / diff"]
     H --> I["按 title 路由审查模式"]
     I --> I2["单仓 one-step / 单仓 Deep / 依赖联合 Deep"]
-    I2 --> J["parse JSON / validate finding position"]
-    J --> K{"MR_REVIEWER_WEBHOOK_POST_COMMENT"}
-    K -- "true" --> L["GitLabClient.post_mr_discussion"]
-    K -- "false" --> M["跳过 inline 发布"]
-    L --> N["write_webhook_monitor_report + Markdown report"]
+    I2 --> J["parse JSON / 原子写 ReviewRun 报告"]
+    J --> K{"远端 Head 是否一致"}
+    K -- "否" --> M["superseded / 两个 sink skipped_stale"]
+    K -- "是" --> L["分别 claim GitLab / OneBox sink"]
+    L --> N["更新唯一 JSON / Markdown"]
     M --> N
 ```
 
@@ -166,30 +173,36 @@ flowchart TD
 
 ## Inline 发布规则
 
-webhook 发布前会读取 GitLab MR 详情 API 的 `diff_refs.base_sha`、`diff_refs.start_sha`、`diff_refs.head_sha`，并基于 MR diff 构建可评论行集合。本地 `merge-base` 只用于 clone/diff fallback，不作为 inline discussion position 的权威来源。
+单 MR Trigger 注册前会读取 GitLab MR 详情中的当前 Head；外部交付前再次读取并比较 ReviewRun Head。版本不一致时，GitLab 与 OneBox 都记为 `skipped_stale`，不执行写入。GitLab sink 还会读取 `diff_refs.base_sha`、`diff_refs.start_sha`、`diff_refs.head_sha` 并基于 MR diff 构建可评论行集合。本地 `merge-base` 只用于 clone/diff fallback，不作为 inline discussion position 的权威来源。
 
 发布门槛按固定顺序比较：severity 为 `suggestion < minor < major < fatal`，confidence 为 `LOW < MEDIUM < HIGH`；默认最低值分别是 `minor` 和 `HIGH`。配置值必须使用现有枚举，非法值在 `Config` 初始化时失败。`healthcheck` 输出实际门槛。低于任一门槛的 finding 分别标记 `below_min_severity` 或 `below_min_confidence`。
 
 webhook 仅发布同时满足门槛并能映射到规范 diff 位置的 finding。低于门槛、无法映射到 diff 行、缺少证据或建议的 finding 只进入本地 JSON / Markdown 报告；不会为了发布而借用邻近变更行。ReviewSet 对语法合法但不在当前 diff 的位置继续回退普通 note，自相矛盾或非法位置不回退。
 
-发布前会读取远端 discussions 中的 marker，避免重复 webhook 触发时刷屏。marker 格式：
+SQLite 先按 `(review_run_id, sink)` 事务 claim GitLab sink，再读取远端 discussions marker，避免 IM/webhook 并发或崩溃重试刷屏。marker 格式：
 
 ```markdown
 <!-- ai-cr:finding:{project}:{mr_iid}:{head_sha}:{rule_id}:{old_path}:{new_path}:{old_line}:{new_line} -->
 ```
 
-`MR_REVIEWER_WEBHOOK_POST_COMMENT=false` 时不发布 inline discussion，但仍生成本地报告。webhook 不再通过 notes API 提交整段 Markdown note。
+单 MR 的 IM/webhook GitLab 开关独立；任一 Trigger 开启时，该 ReviewRun 可执行一次 GitLab sink。两个入口都关闭时不发布 inline discussion，但仍生成本地报告。webhook 不再通过 notes API 提交整段 Markdown note。
 
 已知限制：webhook 的高风险、高置信非 diff finding 当前仍只保留本地。未来可以评估将其回退为普通 MR note，但本次设计未开放 Notes API，也未承诺具体启用条件。
 
 ## 本地报告与失败策略
 
-webhook 每次 review 都写入同 stem 的机器可读 JSON 监视报告和人类可读 Markdown 报告：
+IM/webhook 的每个单 MR ReviewRun attempt 都写一组机器可读 JSON 和人类可读 Markdown；多个 Trigger 不复制完整报告：
 
 ```text
-log/webhook-reports/20260709T120000Z-team_project-mr-7-webhook-abc123.json
-log/webhook-reports/20260709T120000Z-team_project-mr-7-webhook-abc123.md
+log/webhook-reports/20260904T120000Z-team_project-mr-7-a1b2c3d4e5f6-review-abc123.json
+log/webhook-reports/20260904T120000Z-team_project-mr-7-a1b2c3d4e5f6-review-abc123.md
 ```
+
+JSON schema `single-mr-review-run/v1` 包含 `review_run_id`、ReviewKey、attempt、`review_status`、`superseded_by`、全部 Trigger、两个 delivery 状态和 `head_validation`，同时保留原 review/routing/finding/failure 字段。成功 OneBox 文件名固定为 `review-<project>-mr-<iid>-<head12>-<run-id>.md`。规范报告首次写入失败会阻止全部外部交付并释放 review lease。
+
+SQLite 使用 WAL、`busy_timeout` 与 `BEGIN IMMEDIATE` claim。ReviewRun 为 `queued/running/succeeded/failed/interrupted/superseded`；成功结果可复用，失败类状态由同 SHA 新 Trigger 创建下一 attempt。全局一次只允许一个 running ReviewRun。启动只把过期 lease 标为 `interrupted`，不会从 SQLite 恢复完整任务。新 SHA 会原子标记同 MR 旧未完成 run 的 `superseded_by`；旧 Agent 不强杀，而是在安全检查点协作停止。
+
+delivery 彼此独立：一个 sink 失败不阻塞另一个，整体返回 `success_with_warnings`。GitLab 明确失败可重试，并依赖 marker 消除崩溃后的重复 finding。OneBox 明确失败可由后续 Trigger 重试；上传中断的 lease 记为 `unknown` 且不自动重试，因为 CLI 没有已验证的服务端幂等键。
 
 失败策略：
 
@@ -201,7 +214,8 @@ log/webhook-reports/20260709T120000Z-team_project-mr-7-webhook-abc123.md
 - finding 全部被过滤：不发布 inline discussion，写成功态本地报告。
 - 读取远端 discussions 失败：不发布新 discussion，避免失去幂等后刷屏。
 - 单条 discussion POST 失败：记录该 finding failed，继续处理其它 finding。
-- Markdown 报告写入失败：任务标记 failed，因为本地 Markdown 报告是 webhook 可观测性的一部分。
+- 规范 JSON 或 Markdown 报告写入失败：任务标记 failed，且禁止 GitLab/OneBox 外部交付。
+- review 成功但某个 sink 失败：不重跑 Agent，只允许后续 Trigger 重试该 sink；另一个 sink 不受影响。
 - ReviewSet 任一预检、checkout、计划、review 或结构化解析失败：不进入 GitLab 发布；发送安全 IM 失败文案并将原消息标记 `failed`。
 - ReviewSet 单个 target 发布失败：保留其它发布结果，在唯一聚合报告中记录失败并标记 `success_with_warnings`。
 
@@ -209,9 +223,13 @@ log/webhook-reports/20260709T120000Z-team_project-mr-7-webhook-abc123.md
 
 MR Web URL 与 REST API root 是两个独立边界：`MR_REVIEWER_GITLAB_BASE_URL` 只用于 URL host 校验，`MR_REVIEWER_GITLAB_API_BASE_URL` 持有包含版本前缀的完整 API root；`GitLabClient` 只追加 `/projects/...` 资源路径。完整接口目录、消费字段和模式调用矩阵见 [GitLab API 说明](GITLAB_API.md)。
 
-- `cli.py`：命令入口、轮询循环和 review service 装配。
-- `welink.py`：WeLink poll/reply 命令执行、OneBox 上传与群通知编排。
-- `webhook.py`：GitLab webhook HTTP handler、secret 校验、payload 解析、后台队列、inline discussion 发布编排和本地报告写入。
+- `cli.py`：命令入口、轮询循环、review service 装配和 IM Trigger 通知。
+- `coordination.py`：SQLite ReviewRun/Trigger/delivery 状态、lease、事务 claim、去重、复用与 supersede。
+- `single_mr.py`：IM/webhook 单 MR 统一编排、协作取消、报告先行和 sink 协调。
+- `delivery.py`：共享 GitLab Head 安全门槛、finding 校验、marker 去重与 discussion 发布。
+- `review_artifacts.py`：ReviewRun 级 JSON/Markdown 的确定性路径、原子写入与成功结果加载。
+- `welink.py`：WeLink poll/reply 命令执行、OneBox 单文件上传与 ReviewSet 群通知编排。
+- `webhook.py`：GitLab webhook HTTP handler、secret/事件校验、202 协调字段和内存后台队列；保留未接协调器时的兼容测试路径。
 - `im.py`：WeLink 历史消息解析、字段归一化，以及忽略/单 MR/ReviewSet/拒绝四态触发判断。
 - `gitlab.py`：GitLab MR URL 解析、project path 到 project id 查询、MR/isource MR 元数据、项目 clone URL、分页 discussions、inline discussion 与普通 note API。
 - `git.py`：临时 clone、fork remote 处理、分支 fetch、checkout、diff 与资源限制。

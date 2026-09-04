@@ -6,6 +6,7 @@ import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from mr_reviewer.config import Config
 from mr_reviewer.dependency_review import (
@@ -91,6 +92,7 @@ class ReviewReport:
     dependency_relationship_summary: list[str] | None = None
     agent_call_count: int = 0
     failure_stage: str = ""
+    head_validation: dict[str, str] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +120,10 @@ class ReviewStageError(RuntimeError):
         self.summary = None
         self.agent_call_count = agent_call_count
         self.report_context = report_context or {}
+
+
+class ReviewCancelledError(RuntimeError):
+    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,13 +164,29 @@ class ReviewService:
         self.git = git
         self.opencode = opencode
 
-    def review(self, mr: GitLabMrUrl, config: Config, task_id: str) -> ReviewReport:
+    def review(
+        self,
+        mr: GitLabMrUrl,
+        config: Config,
+        task_id: str,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> ReviewReport:
         LOG.info("task=%s stage=gitlab_fetch repo=%s mr_iid=%s", task_id, mr.project_path, mr.mr_iid)
+        target = self.resolve_target(mr)
+        return self.review_target(
+            target,
+            config,
+            task_id,
+            structured_output=True,
+            should_cancel=should_cancel,
+        )
+
+    def resolve_target(self, mr: GitLabMrUrl) -> MergeRequestReviewTarget:
         mr_data = self.gitlab.get_merge_request(mr)
         base_sha, head_sha = choose_diff_refs(mr_data)
         target_repo_url = self.gitlab.get_project_http_url(int(mr_data["target_project_id"]))
         source_repo_url = self.gitlab.get_project_http_url(int(mr_data["source_project_id"]))
-        target = MergeRequestReviewTarget(
+        return MergeRequestReviewTarget(
             base_url=mr.base_url,
             project_path=mr.project_path,
             mr_iid=mr.mr_iid,
@@ -177,7 +199,6 @@ class ReviewService:
             head_sha=head_sha,
             title=str(mr_data.get("title") or ""),
         )
-        return self.review_target(target, config, task_id, structured_output=True)
 
     def review_set(self, request: ReviewSetRequest, config: Config, task_id: str) -> ReviewSetReviewReport:
         task_dir = config.work_dir / task_id
@@ -258,10 +279,12 @@ class ReviewService:
             config: Config,
             task_id: str,
             structured_output: bool = True,
+            should_cancel: Callable[[], bool] | None = None,
     ) -> ReviewReport:
         task_dir = config.work_dir / task_id
         deadline = time.monotonic() + config.task_timeout_seconds
         try:
+            _raise_if_cancelled(should_cancel)
             LOG.info(
                 "task=%s stage=gitlab_ready repo=%s source=%s target=%s",
                 task_id,
@@ -277,11 +300,13 @@ class ReviewService:
                     source_branch=target.source_branch,
                     base_sha=target.base_sha,
                     head_sha=target.head_sha,
+                    cancel_check=lambda: _raise_if_cancelled(should_cancel),
                 ),
                 config.gitlab_token,
                 task_dir,
                 {"max_files": config.max_files, "max_diff_lines": config.max_diff_lines},
             )
+            _raise_if_cancelled(should_cancel)
             LOG.info(
                 "task=%s stage=diff_ready repo=%s files=%s diff_lines=%s",
                 task_id,
@@ -298,6 +323,7 @@ class ReviewService:
                 task_dir,
                 task_id,
             )
+            _raise_if_cancelled(should_cancel)
             route_context = self._dependency_report_context(dependency_context)
             selection = dependency_context.selection
             LOG.info(
@@ -320,6 +346,7 @@ class ReviewService:
                     deadline,
                     task_id,
                     route_context,
+                    should_cancel,
                 )
             else:
                 execution = self._run_single_repository_review(
@@ -331,6 +358,7 @@ class ReviewService:
                     task_id,
                     route_context,
                     structured_output,
+                    should_cancel,
                 )
 
             LOG.info(
@@ -474,11 +502,13 @@ class ReviewService:
             task_id: str,
             report_context: dict[str, object],
             structured_output: bool,
+            should_cancel: Callable[[], bool] | None,
     ) -> _ReviewExecution:
         review_plan = None
         prompt_templates: dict[str, dict[str, str]] = {}
         agent_call_count = 0
         if selection.review_mode == "two-step":
+            _raise_if_cancelled(should_cancel)
             plan_prompt = self._build_review_plan_prompt(target, diff_info)
             LOG.info("task=%s stage=review_plan repo=%s status=started", task_id, target.project_path)
             try:
@@ -502,6 +532,7 @@ class ReviewService:
                 "id": plan_prompt.template_id,
                 "version": plan_prompt.template_version,
             }
+            _raise_if_cancelled(should_cancel)
             LOG.info("task=%s stage=review_plan repo=%s status=ready", task_id, target.project_path)
 
         # Agent 已在本地 checkout 后的仓库中运行，prompt 只传定位信息，避免把大 diff 塞进模型上下文。
@@ -519,6 +550,7 @@ class ReviewService:
             config.task_timeout_seconds,
         )
         try:
+            _raise_if_cancelled(should_cancel)
             agent_call_count += 1
             with task_stage("review"):
                 markdown = self.opencode.run_review(
@@ -527,6 +559,7 @@ class ReviewService:
                     _remaining_timeout(deadline),
                     prompt.metadata,
                 )
+            _raise_if_cancelled(should_cancel)
         except Exception as exc:  # noqa: BLE001 - 对外保留概要和失败阶段。
             raise ReviewStageError(
                 "review",
@@ -583,8 +616,10 @@ class ReviewService:
             deadline: float,
             task_id: str,
             report_context: dict[str, object],
+            should_cancel: Callable[[], bool] | None,
     ) -> _ReviewExecution:
         agent_call_count = 0
+        _raise_if_cancelled(should_cancel)
         plan_prompt = build_dependency_review_plan_prompt(context_id=prepared.manifest.context_id)
         try:
             agent_call_count += 1
@@ -608,6 +643,7 @@ class ReviewService:
             context_id=prepared.manifest.context_id,
             review_plan=review_plan,
         )
+        _raise_if_cancelled(should_cancel)
         try:
             agent_call_count += 1
             with task_stage("dependency_review"):
@@ -618,6 +654,7 @@ class ReviewService:
                     review_prompt.metadata,
                 )
             result = parse_structured_dependency_review_result(raw_result, prepared.manifest)
+            _raise_if_cancelled(should_cancel)
         except Exception as exc:  # noqa: BLE001 - 非法联合结果不得进入主 MR 发布路径。
             raise ReviewStageError(
                 "dependency_review",
@@ -678,3 +715,8 @@ def _remaining_timeout(deadline: float) -> int:
     if remaining <= 0:
         raise TimeoutError("review task timeout exhausted")
     return max(1, math.ceil(remaining))
+
+
+def _raise_if_cancelled(should_cancel: Callable[[], bool] | None) -> None:
+    if should_cancel is not None and should_cancel():
+        raise ReviewCancelledError("review was superseded by a newer MR head")

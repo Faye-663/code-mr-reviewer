@@ -209,6 +209,18 @@ def upload_report(config: Config, file_path: str, markdown: str) -> str | None:
     return None
 
 
+def upload_onebox_report(config: Config, file_name: str, markdown: str) -> str | None:
+    """Upload one deterministic single-MR artifact without sending an IM notification."""
+    temp_dir = tempfile.mkdtemp(prefix="mr-reviewer-report-")
+    file_path = Path(temp_dir) / file_name
+    try:
+        file_path.write_text(markdown, encoding="utf-8")
+        return upload_report(config, str(file_path), markdown)
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        LOG.info("stage=file_cleanup path=%s", file_path)
+
+
 def _require_welink_group_id(config: Config) -> str:
     if not config.welink_group_id:
         raise ValueError("WeLink group ID is required")

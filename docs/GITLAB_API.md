@@ -8,7 +8,7 @@
 
 ### 入站 webhook
 
-`mr-reviewer webhook` 暴露的是本项目 HTTP endpoint，不是 GitLab REST API。GitLab 把 Merge Request Hook payload 推送到 `MR_REVIEWER_WEBHOOK_HOST`、`PORT` 和 `PATH`；主程序从 payload 读取 project path、MR iid、title、分支、head SHA 及 target/source clone URL。
+`mr-reviewer webhook` 暴露的是本项目 HTTP endpoint，不是 GitLab REST API。GitLab 把 Merge Request Hook payload 推送到 `MR_REVIEWER_WEBHOOK_HOST`、`PORT` 和 `PATH`；主程序从 payload 读取 project path、MR iid、title、分支、head SHA 及 target/source clone URL，再通过标准 MR API 确认当前 Head。传输去重优先使用 `X-Gitlab-Event-UUID`。
 
 入站 webhook 本身不使用 `PRIVATE-TOKEN`。`MR_REVIEWER_WEBHOOK_SECRET` 通过单独的 secret header 校验，默认 header 为 `X-Gitlab-Token`。
 
@@ -45,9 +45,9 @@ clone/fetch 不经过 `GitLabClient`。项目 API 或 webhook payload 提供 tar
 |---|---|---|---|
 | `healthcheck` | 无；只检查配置和本地命令 | 无 | 无 |
 | `run-once` | 标准 MR；按 target/source project id 各取 clone URL；映射命中的 Deep Review 还按 path 查询依赖项目 | 无 | 无 |
-| IM 单 MR | 与 `run-once` 相同 | 无 | 无；结果上传 OneBox 并通知 WeLink |
-| webhook 仅报告 | 主仓 checkout 信息来自 webhook payload；映射命中的 Deep Review 按 path 查询依赖项目 | 无 | 无 |
-| webhook 自动发布 | 主仓 checkout 信息来自 payload；映射命中的 Deep Review 按 path 查询依赖项目；结构化输出有效、发布开关开启且模型名存在后读取标准 MR `diff_refs` | 分页读取当前 MR discussions 做 marker 去重 | 仅对满足门槛且可定位的 finding POST inline discussion；不回退 note |
+| IM 单 MR | 与 `run-once` 相同；ReviewRun 注册前再读取标准 MR 当前 Head | 交付前读取当前 Head；GitLab sink 分页读取 discussions | 由 IM sink 配置决定是否 POST inline discussion；OneBox 不属于 GitLab API |
+| webhook 仅报告 | payload 解析后读取标准 MR 当前 Head；映射命中的 Deep Review 按 path 查询依赖项目 | 规范报告后再次读取当前 Head | 无 GitLab 写入；OneBox 可独立开启 |
+| webhook 自动发布 | 与 webhook 仅报告相同 | 再读标准 MR `diff_refs`，分页读取 discussions 做 marker 去重 | 仅对满足门槛且可定位的 finding POST inline discussion；不回退 note |
 | IM ReviewSet | 每个成员依次读取 project id、平台 isource MR、标准 MR、target/source clone URL | 只为至少一个可发布 target 的成员分页读取 discussions | 可定位 target POST discussion；未提供位置或合法位置不在 diff 时 POST note |
 | 便携式 skill | 标准 MR；按 target/source project id 各取 clone URL | 无去重读取 | `MR_REVIEW_SUBMIT_COMMENT=true` 时 POST 一条普通 note |
 
@@ -64,14 +64,14 @@ GET /projects/{url_encoded_project_path}/merge_requests/{iid}
 主程序方法：
 
 - `get_merge_request()`：`run-once`、IM 单 MR 和 ReviewSet 元数据准备。
-- `get_mr_detail_for_discussion_position()`：webhook 发布前重新读取权威 diff refs。
+- `get_mr_detail_for_discussion_position()`：IM/webhook 单 MR 注册前确认当前 Head，并在交付前重新读取权威 Head；GitLab sink 还要求完整 diff refs。
 
 实际消费字段：
 
 | 字段 | 调用方 | 用途 |
 |---|---|---|
 | `diff_refs.base_sha` 或 `diff_refs.start_sha` | `run-once`、IM 单 MR、便携式 skill | review range base；两者均缺失时失败。 |
-| `diff_refs.head_sha` 或顶层 `sha` | `run-once`、IM 单 MR、便携式 skill | review range head；两者均缺失时失败。 |
+| `diff_refs.head_sha` 或顶层 `sha` | `run-once`、IM/webhook 单 MR、便携式 skill | review range 或 ReviewRun 当前 head；两者均缺失时失败。 |
 | `diff_refs.base_sha/start_sha/head_sha` | webhook 自动发布 | 构造 GitLab inline position；三者必须同时是非空字符串。 |
 | `target_project_id`、`source_project_id` | 单 MR、ReviewSet、skill | 查询 target/source HTTPS clone URL。主程序要求两者有效。 |
 | `target_branch`、`source_branch` | 单 MR、ReviewSet、skill | fetch/checkout 分支。 |
@@ -260,14 +260,14 @@ body=<comment body>
 
 ## Webhook 调用顺序
 
-1. 入站 payload 提供 checkout 所需的 project path、iid、分支、head SHA 和 clone URL。
-2. Python 完成 clone/diff、Agent review 和结构化结果解析。
-3. `MR_REVIEWER_WEBHOOK_POST_COMMENT=false`：直接记录 `disabled`，不调用 REST API。
-4. `MR_REVIEWER_AGENT_MODEL_NAME` 为空：记录 `model_not_configured`，不调用 REST API。
-5. 读取标准 MR，严格取得 `base_sha/start_sha/head_sha`。
-6. 基于本地 unified diff 验证每个 finding 的规范位置和共享发布门槛。
-7. 分页读取 discussions，提取 marker。
-8. 只为不重复且可发布的 finding POST inline discussion。
+1. 入站 payload 提供 project path、iid、分支、payload head 和 clone URL；使用 `X-Gitlab-Event-UUID` 作为首选 Trigger ID。
+2. 在 HTTP 入队路径读取标准 MR 当前 Head，以当前值注册或加入 SQLite ReviewRun；陈旧 payload 不会反向替代新 Head。
+3. owner 完成 clone/diff、Agent review 和结构化结果解析；joiner 等待，成功结果可被后续 Trigger 复用。
+4. 原子写 ReviewRun 本地 JSON/Markdown，再读取标准 MR 确认 Head 未变化；变化则 GitLab/OneBox 都跳过。
+5. `MR_REVIEWER_WEBHOOK_POST_COMMENT=false`：GitLab sink 记录 `disabled`，但前述 Head 读取仍会发生。
+6. `MR_REVIEWER_AGENT_MODEL_NAME` 为空：GitLab sink 记录 `model_not_configured`，不读取 discussions、不调用写 API。
+7. GitLab sink 严格取得 `base_sha/start_sha/head_sha`，基于本地 unified diff 验证规范位置和共享发布门槛。
+8. 分页读取 discussions 提取 marker，只为不重复且可发布的 finding POST inline discussion。
 
 解析失败、低于门槛、证据/建议缺失或位置无法映射都不会触发写 API。webhook 不会为了发布而借用邻近行或降级为普通 note。
 

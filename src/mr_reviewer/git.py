@@ -6,6 +6,7 @@ import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from mr_reviewer.process import format_command, prepare_command
 
@@ -35,6 +36,7 @@ class GitCheckout:
     source_branch: str
     base_sha: str | None
     head_sha: str
+    cancel_check: Callable[[], None] | None = None
 
 
 class GitClient:
@@ -49,7 +51,9 @@ class GitClient:
         work_dir.mkdir(parents=True, exist_ok=True)
 
         git_prefix, env = self._prepare_git_environment(checkout.target_repo_url, token)
+        self._check_cancel(checkout)
         self._clone_target_repo(git_prefix, checkout, repo_path, work_dir, env)
+        self._check_cancel(checkout)
         source_remote = self._ensure_source_remote(checkout, repo_path, env)
         self._fetch_review_refs(checkout, repo_path, source_remote, env)
         self._run(["git", "checkout", checkout.head_sha], cwd=repo_path, env=env)
@@ -69,6 +73,11 @@ class GitClient:
             "base_sha": base_sha,
             "head_sha": checkout.head_sha,
         }
+
+    @staticmethod
+    def _check_cancel(checkout: GitCheckout) -> None:
+        if checkout.cancel_check is not None:
+            checkout.cancel_check()
 
     def clone_checkout_branch(self, repo_url: str, branch: str, token: str, repo_path: Path) -> str:
         repo_path.parent.mkdir(parents=True, exist_ok=True)

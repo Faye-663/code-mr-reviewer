@@ -51,6 +51,11 @@ def render_structured_output_as_markdown(report: ReviewReport) -> ReviewReport:
     return replace(rendered_report, markdown=_render_report(rendered_report, "success"))
 
 
+def render_review_report(report: ReviewReport, status: str, error: str | None = None) -> str:
+    """Render an already-normalized single-MR report without reparsing Agent output."""
+    return _render_report(report, status, error)
+
+
 def _render_report(
         report: ReviewReport,
         status: str,
@@ -203,6 +208,7 @@ def _comment_status(finding: dict) -> str:
         "model_not_configured": "未提交（未配置模型名）",
         "parse_failed": "未提交（结构化结果无效）",
         "failed": "提交失败",
+        "skipped_stale": "未提交（MR Head 已变化）",
     }
     return labels.get(status, f"未提交（{status or '未知'}）")
 

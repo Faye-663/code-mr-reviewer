@@ -27,17 +27,18 @@
 | 配置能力 | `healthcheck` | `run-once` | IM 单 MR | IM ReviewSet | webhook 仅报告 | webhook 自动发布 |
 |---|---|---|---|---|---|---|
 | GitLab Web 根地址 | 检查 | 必需 | 必需 | 必需 | 必需 | 必需 |
-| GitLab REST API 根地址 | 检查 | 必需，可由 Web 根地址派生 | 必需，可派生 | 必需，可派生 | 不调用 REST API | 必需，可派生 |
+| GitLab REST API 根地址 | 检查 | 必需，可由 Web 根地址派生 | 必需，可派生 | 必需，可派生 | 必需，用于确认当前 Head | 必需，可派生 |
 | GitLab token | 检查 | 必需 | 必需 | 必需 | 必需，用于 HTTPS clone | 必需 |
 | Git 与 Agent 可执行命令 | 检查 | 必需 | 必需 | 必需 | 必需 | 必需 |
-| Agent 展示模型名 | 不检查 | 不使用 | 不使用 | 条件：发布 GitLab 评论 | 不使用 | 必需 |
-| WeLink poll/reply、群和 OneBox | 检查 | 不使用 | 必需 | 必需 | 不使用 | 不使用 |
+| Agent 展示模型名 | 不检查 | 不使用 | 条件：IM 发布 GitLab 评论 | 条件：发布 GitLab 评论 | 不使用 | 必需 |
+| WeLink poll/reply、群和 OneBox | 检查 | 不使用 | poll/reply 必需，OneBox 条件使用 | 必需 | OneBox 开启时条件使用 | OneBox 开启时条件使用 |
 | bot mention/account 与白名单 | 不检查 | 不使用 | 可选 | 可选 | `ALLOWED_REPOS` 可选 | `ALLOWED_REPOS` 可选 |
 | ReviewSet 发布开关 | 展示 | 不使用 | 不使用 | 可选 | 不使用 | 不使用 |
-| webhook 监听、secret、发布开关 | 展示 | 不使用 | 不使用 | 不使用 | 必需/可选 | 必需/可选 |
+| 单 MR 四个入口/sink 开关 | 展示 | 不使用 | 使用 IM 两项 | 不使用 | 使用 webhook 两项 | 使用 webhook 两项 |
+| webhook 监听与 secret | 展示 | 不使用 | 不使用 | 不使用 | 必需/可选 | 必需/可选 |
 | 发布 severity/confidence 门槛 | 展示并校验 | 启动时校验 | 启动时校验 | 发布时使用 | 启动时校验 | 发布时使用 |
 | 项目依赖目录 | 展示并校验 | Deep Review 条件使用 | Deep Review 条件使用 | 不使用 | Deep Review 条件使用 | Deep Review 条件使用 |
-| work/state/report 路径 | 不检查 | `WORK_DIR` | `WORK_DIR`、`STATE_PATH` | `WORK_DIR`、`STATE_PATH` | `WORK_DIR`、`REPORT_DIR` | `WORK_DIR`、`REPORT_DIR` |
+| work/state/report/协调路径 | 展示协调路径 | `WORK_DIR` | `WORK_DIR`、`STATE_PATH`、`REPORT_DIR`、`COORDINATION_DB_PATH` | `WORK_DIR`、`STATE_PATH` | `WORK_DIR`、`REPORT_DIR`、`COORDINATION_DB_PATH` | 同左 |
 | 资源限制和超时 | 不检查 | 使用 | 使用 | 使用 | 使用 | 使用 |
 | 日志和 debug 目录 | 不检查 | 可选 | 可选 | 可选 | 可选 | 可选 |
 
@@ -80,13 +81,15 @@ title 去除前导空白后，只有以完整 `【Deep-Review】` 或 `[Deep-Rev
 | `MR_REVIEWER_ALLOWED_USERS` | 空集合 | `poll` | 逗号分隔发送者白名单；空表示不限制。 |
 | `MR_REVIEWER_ALLOWED_REPOS` | 空集合 | IM 与 webhook | 逗号分隔的 GitLab `path_with_namespace` 白名单；空表示不限制。 |
 
+当 `MR_REVIEWER_IM_POST_COMMENT=true` 且 `ALLOWED_USERS` 或 `ALLOWED_REPOS` 为空时，IM 请求可在对应维度触发不受限的 GitLab 写入。该组合按已接受的兼容语义继续运行，但 `healthcheck` 与 poll 启动日志会输出高风险 warning，不会把 warning 计入非零退出码。
+
 ## Agent
 
 | 配置 | 默认值 | 允许值/空值 | 行为与关联 |
 |---|---|---|---|
 | `MR_REVIEWER_AGENT_TYPE` | `opencode` | `opencode`、`claude-code` | 其它值启动失败。 |
 | `MR_REVIEWER_AGENT_COMMAND` | 按类型选择 `opencode` 或 `claude` | 可执行命令及参数 | 非空时优先于旧 `OPENCODE_COMMAND`。命令解析后首个可执行文件必须可用。 |
-| `MR_REVIEWER_AGENT_MODEL_NAME` | 空 | 任意展示名称 | 只用于 webhook inline discussion 和 ReviewSet GitLab 评论。为空时仍生成报告，但不发布 GitLab 评论；不会从 Agent 输出猜测。 |
+| `MR_REVIEWER_AGENT_MODEL_NAME` | 空 | 任意展示名称 | 用于 IM/webhook 单 MR inline discussion 和 ReviewSet GitLab 评论。为空时仍生成报告，但不发布 GitLab 评论；不会从 Agent 输出猜测。 |
 | `MR_REVIEWER_COMMENT_SKILL` | 空（有效默认 `code-review`） | skill 名称 | 指定自动入口的单仓 review prompt skill；依赖联合检视固定使用 `dependency-code-review`，不受该配置覆盖。skill 必须只返回结构化 JSON，不得自行发布评论。 |
 
 Agent 的 provider、API Key、实际模型和登录状态由 OpenCode 或 Claude Code 自身管理，本项目只选择 adapter、命令和 GitLab 评论中的展示名。review/review-plan/deep-review prompt 使用包内版本化模板，不支持部署侧覆盖。
@@ -95,12 +98,15 @@ Agent 的 provider、API Key、实际模型和登录状态由 OpenCode 或 Claud
 
 | 配置 | 默认值 | 允许值 | 行为与关联 |
 |---|---|---|---|
-| `MR_REVIEWER_WEBHOOK_POST_COMMENT` | `true` | 布尔值 | 只控制 webhook inline discussion；false 时仍生成本地 JSON/Markdown。 |
+| `MR_REVIEWER_IM_POST_COMMENT` | `false` | 布尔值 | 控制 IM 单 MR 是否请求 GitLab inline discussion；不影响 ReviewSet。 |
+| `MR_REVIEWER_IM_UPLOAD_ONEBOX` | `true` | 布尔值 | 控制 IM 单 MR是否请求 OneBox 上传。 |
+| `MR_REVIEWER_WEBHOOK_POST_COMMENT` | `true` | 布尔值 | 控制 webhook 单 MR 是否请求 GitLab inline discussion。 |
+| `MR_REVIEWER_WEBHOOK_UPLOAD_ONEBOX` | `false` | 布尔值 | 控制 webhook 单 MR 是否请求 OneBox 上传。开启时需要有效的 OneBox 配置。 |
 | `MR_REVIEWER_REVIEW_SET_POST_COMMENT` | `true` | 布尔值 | 只控制 IM ReviewSet 的 inline discussion/普通 note；false 时仍生成并上传聚合报告。生产首次验证建议先设为 false。 |
 | `MR_REVIEWER_PUBLISH_MIN_SEVERITY` | `minor` | `suggestion`、`minor`、`major`、`fatal` | webhook 与 ReviewSet 共用；顺序从低到高。非法值在 `Config` 初始化时失败。 |
 | `MR_REVIEWER_PUBLISH_MIN_CONFIDENCE` | `HIGH` | `LOW`、`MEDIUM`、`HIGH` | webhook 与 ReviewSet 共用；非法值在启动时失败。 |
 
-两个门槛只控制 GitLab 发布候选，不过滤本地 JSON、Markdown 或 ReviewSet 聚合报告中的 findings。两个发布开关相互独立；发布开关为 true 但 `AGENT_MODEL_NAME` 为空时仍不发布。
+两个门槛只控制 GitLab 发布候选，不过滤本地 JSON、Markdown 或 ReviewSet 聚合报告中的 findings。单 MR 四个入口/sink 开关彼此独立；同一 `(project_path, mr_iid, head_sha)` ReviewRun 中，只要任一 Trigger 请求某 sink，该 sink 即可执行一次。两个入口都请求 GitLab 时仍按 marker 最多发布一次；都请求 OneBox 时只上传同一个逻辑文件。GitLab 开关为 true 但 `AGENT_MODEL_NAME` 为空时仍不发布。两个单 MR sink 都关闭时，review 仍成功并生成本地报告。
 
 ## Webhook
 
@@ -111,7 +117,10 @@ Agent 的 provider、API Key、实际模型和登录状态由 OpenCode 或 Claud
 | `MR_REVIEWER_WEBHOOK_PATH` | `/webhook/gitlab` | `webhook` | 精确匹配路径；默认配置不接受尾部 `/`。 |
 | `MR_REVIEWER_WEBHOOK_SECRET` | 空 | `webhook` | 空值允许请求但输出 warning；非空时校验指定 header。 |
 | `MR_REVIEWER_WEBHOOK_SECRET_HEADER` | `X-Gitlab-Token` | `webhook` | secret header 名，可按平台改成 `X-CodeHub-Token` 等实际值。 |
-| `MR_REVIEWER_REPORT_DIR` | `log/webhook-reports` | `webhook` | JSON 监视报告和 Markdown review 报告目录，不受日志级别影响。 |
+| `MR_REVIEWER_REPORT_DIR` | `log/webhook-reports` | IM/webhook 单 MR | 每个 ReviewRun attempt 的规范 JSON 与 Markdown 报告目录，不受日志级别影响；默认目录名为兼容旧部署而保留。 |
+| `MR_REVIEWER_COORDINATION_DB_PATH` | `log/review-coordination.sqlite3` | IM/webhook 单 MR | 单机 SQLite 协调与审计文件。两个进程必须共享此路径；使用 WAL、lease 和事务 claim，不保存可恢复 webhook 队列。 |
+
+成功 ReviewRun 按 ReviewKey 复用；ReviewKey 只包含 `project_path + mr_iid + head_sha`。相同 SHA 下 title、target branch、依赖目录或 Agent 配置发生变化不会自动重审。失败、中断或过期 run 不复用，同 SHA 的新 Trigger 会创建下一 attempt。全局同时只运行一个 ReviewRun；队列仍驻留内存，进程退出后不会自动恢复。
 
 完整部署、自测和故障排查见 [Webhook 快速开始](WEBHOOK_QUICKSTART.md)。
 
@@ -132,6 +141,8 @@ Agent 的 provider、API Key、实际模型和登录状态由 OpenCode 或 Claud
 |---|---|---|---|
 | `MR_REVIEWER_WORK_DIR` | 系统临时目录下的 `code-review` | 所有 review | 每个任务的临时 clone/workspace 根目录；空值回落到默认值。 |
 | `MR_REVIEWER_STATE_PATH` | `.mr-reviewer-state.json` | `poll` | 已处理 IM message ID 的本地状态文件。删除或不可写会影响去重。 |
+| `MR_REVIEWER_REPORT_DIR` | `log/webhook-reports` | IM/webhook 单 MR | ReviewRun 级 JSON/Markdown；每个 attempt 一组，不按 Trigger 复制。 |
+| `MR_REVIEWER_COORDINATION_DB_PATH` | `log/review-coordination.sqlite3` | IM/webhook 单 MR | 单机共享协调状态。过期 review lease 启动时标记 `interrupted`，等待新 Trigger，不自动恢复。 |
 | `MR_REVIEWER_MAX_FILES` | `50` | 所有 review | 单个成员允许的最大 changed files 数。 |
 | `MR_REVIEWER_MAX_DIFF_LINES` | `2000` | 所有 review | 单个成员允许的最大 diff 行数。 |
 | `MR_REVIEWER_TASK_TIMEOUT_SECONDS` | `900` | 所有 review | 单仓 one-step、单仓/依赖联合 Deep Review 或 ReviewSet 共享的任务总时间预算；two-step 的两次 Agent 调用共享该预算。 |

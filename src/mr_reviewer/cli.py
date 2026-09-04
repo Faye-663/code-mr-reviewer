@@ -19,6 +19,7 @@ from mr_reviewer.review_set import ReviewSetValidationError
 from mr_reviewer.review_set_publish import ReviewSetPublisher
 from mr_reviewer.review_set_report import render_review_set_report
 from mr_reviewer.reviewer import ReviewService
+from mr_reviewer.single_mr import SingleMrReviewCoordinator, SingleMrTrigger
 from mr_reviewer.repository_dependencies import (
     RepositoryDependencyCatalogError,
     load_repository_dependency_catalog,
@@ -80,7 +81,16 @@ def healthcheck(config: Config) -> int:
             )
     print(f"webhook_endpoint: {config.webhook_host}:{config.webhook_port}{config.webhook_path}")
     print(f"webhook_secret: {'ok' if config.webhook_secret else 'optional'}")
+    print(f"im_post_comment: {'enabled' if config.im_post_comment else 'disabled'}")
+    print(f"im_upload_onebox: {'enabled' if config.im_upload_onebox else 'disabled'}")
     print(f"webhook_post_comment: {'enabled' if config.webhook_post_comment else 'disabled'}")
+    print(f"webhook_upload_onebox: {'enabled' if config.webhook_upload_onebox else 'disabled'}")
+    print(f"coordination_db_path: {config.coordination_db_path}")
+    allowlist_warning = _im_publish_allowlist_warning(config)
+    if allowlist_warning:
+        print(f"im_publish_allowlist: WARNING ({allowlist_warning})")
+    else:
+        print("im_publish_allowlist: restricted")
     print(f"review_set_post_comment: {'enabled' if config.review_set_post_comment else 'disabled'}")
     print(f"publish_min_severity: {config.publish_min_severity}")
     print(f"publish_min_confidence: {config.publish_min_confidence}")
@@ -100,6 +110,14 @@ def run_once(config: Config, mr_url: str) -> int:
 def poll(config: Config, once: bool) -> int:
     state = StateStore(config.state_path)
     service = build_service(config)
+    single_coordinator = None
+    allowlist_warning = _im_publish_allowlist_warning(config)
+    if allowlist_warning:
+        print(
+            "WARNING stage=poller_startup outcome=warning "
+            f"reason=im_gitlab_publish_unrestricted {allowlist_warning}",
+            file=sys.stderr,
+        )
     LOG.info(
         "poller status=started once=%s interval_seconds=%s state_path=%s",
         once,
@@ -130,7 +148,13 @@ def poll(config: Config, once: bool) -> int:
             elif isinstance(request, ReviewSetRequest):
                 _process_review_set(config, state, service, request)
             else:
-                _process_single_review(config, state, service, request)
+                if single_coordinator is None:
+                    single_coordinator = SingleMrReviewCoordinator(
+                        service,
+                        service.gitlab,
+                        config,
+                    )
+                _process_single_review(config, state, service, single_coordinator, request)
 
         if once:
             return 0
@@ -158,10 +182,21 @@ def _send_text(config: Config, text: str) -> None:
     send_text(config, text)
 
 
+def _im_publish_allowlist_warning(config: Config) -> str:
+    if not config.im_post_comment:
+        return ""
+    users = "restricted" if config.allowed_users else "unrestricted"
+    repos = "restricted" if config.allowed_repos else "unrestricted"
+    if users == "restricted" and repos == "restricted":
+        return ""
+    return f"allowed_users={users} allowed_repos={repos}"
+
+
 def _process_single_review(
         config: Config,
         state: StateStore,
         service: ReviewService,
+        coordinator: SingleMrReviewCoordinator,
         request: ReviewRequest,
 ) -> None:
     task_id = f"mr-{uuid.uuid4().hex[:12]}"
@@ -169,19 +204,22 @@ def _process_single_review(
     try:
         LOG.info("task=%s mr=%s/%s status=started", task_id, request.mr.project_path, request.mr.mr_iid)
         with task_context(task_id, config.debug_dir, config.log_level == "DEBUG"):
-            report = render_structured_output_as_markdown(service.review(request.mr, config, task_id))
-            LOG.info(
-                "task=%s stage=im_reply group_id=%s report_chars=%s",
-                task_id,
-                request.message.chat_id,
-                len(report.markdown),
+            target = service.resolve_target(request.mr)
+            outcome = coordinator.handle(
+                target,
+                SingleMrTrigger(
+                    source="im",
+                    trigger_id=request.message.message_id,
+                    post_comment=config.im_post_comment,
+                    upload_onebox=config.im_upload_onebox,
+                ),
             )
-            _reply(config, report.markdown, request.mr)
+            _send_text(config, _single_review_notification(outcome))
         elapsed = time.monotonic() - start
-        state.mark_processed(request.message.message_id, task_id, "success")
+        state.mark_processed(request.message.message_id, outcome.review_run_id, outcome.status)
         LOG.info(
             "task=%s mr=%s/%s elapsed=%.2fs status=success",
-            task_id,
+            outcome.review_run_id,
             request.mr.project_path,
             request.mr.mr_iid,
             elapsed,
@@ -197,6 +235,25 @@ def _process_single_review(
             elapsed,
             exc,
         )
+
+
+def _single_review_notification(outcome) -> str:
+    if outcome.status == "superseded":
+        return "本次代码检视已被更新的 MR 提交替代，过期结果未发布到 GitLab 或 OneBox。"
+    if outcome.status == "failed":
+        return f"代码检视执行失败，请使用任务号 {outcome.review_run_id} 查询日志。"
+    onebox = outcome.deliveries.get("onebox", {})
+    gitlab = outcome.deliveries.get("gitlab", {})
+    if onebox.get("status") == "succeeded":
+        return (
+            "代码审查报告已上传到 WeLink OneBox，群空间Review目录下: "
+            f"{onebox.get('external_ref', '<unknown>')}"
+        )
+    if onebox.get("status") in {"failed", "unknown"}:
+        return "代码审查报告已生成，但 OneBox 上传失败或结果未知，请使用任务号查询本地报告。"
+    if gitlab.get("status") == "succeeded":
+        return "代码检视已完成，符合发布条件的检视意见已处理到 GitLab MR。"
+    return "代码检视已完成；外部交付已关闭，本地报告已保留。"
 
 
 def _reject_review_set(config: Config, state: StateStore, rejection: ReviewSetRejection) -> None:

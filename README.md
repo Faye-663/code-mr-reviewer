@@ -14,7 +14,7 @@ GitLab MR Review 助手。项目支持两种触发入口：
 - 在本地 clone 完整代码仓，对比 target/source 两个分支，可以读取更多代码上下文与代码仓的 skill，提升 review 质量。
 - 只通过 HTTPS Token 访问 GitLab。
 - 支持资源限制：最大变更文件数、最大 diff 行数、任务超时时间。
-- Agent 的 provider 和 API Key 由目标机器上的 OpenCode 或 Claude Code 配置、登录状态和环境变量决定；webhook inline discussion 与 ReviewSet 评论展示名由本项目显式配置的 `MR_REVIEWER_AGENT_MODEL_NAME` 提供。
+- Agent 的 provider 和 API Key 由目标机器上的 OpenCode 或 Claude Code 配置、登录状态和环境变量决定；单 MR inline discussion 与 ReviewSet 评论展示名由本项目显式配置的 `MR_REVIEWER_AGENT_MODEL_NAME` 提供。
 
 ## 依赖条件
 
@@ -287,7 +287,7 @@ welink-cli im send-to-group --group-id "group-example" --text "代码审查报�
 - 全局同时只运行一个单 MR ReviewRun，且只支持共享同一 SQLite 文件的单机进程；不支持多主机协调。
 - ReviewKey 只包含项目、MR IID 和 Head SHA；相同 SHA 下 title、target branch、依赖目录或 Agent 配置变化仍复用已成功结果。
 - OneBox CLI 没有已验证的服务端幂等键。明确失败可由后续 Trigger 重试；上传中断标记为 `unknown` 并禁止自动重试，仍无法承诺严格 exactly-once。
-- webhook 不再提交整段 Markdown note；无法发布为 inline discussion 的 finding 只保留在本地 JSON 和 Markdown 报告中。未来可以评估把高风险、高置信的非 diff finding 降级为普通 MR note，但当前未开放该行为。
+- IM/webhook 单 MR 不提交整段 Markdown note；无法发布为 inline discussion 的 finding 只保留在本地 JSON 和 Markdown 报告中。未来可以评估把高风险、高置信的非 diff finding 降级为普通 MR note，但当前未开放该行为。
 - 项目依赖目录只表达直接源码仓关系，不证明制品版本；开源三方件、Maven/Gradle 解析、JAR 下载/反编译和 webhook 多 MR 聚合不在当前范围内。
 
 ## 排障

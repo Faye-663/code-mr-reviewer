@@ -57,7 +57,7 @@ MR_REVIEWER_REPOSITORY_DEPENDENCY_CATALOG=
 - `MR_REVIEWER_WEBHOOK_UPLOAD_ONEBOX=false` 是默认值；设为 true 后 webhook 也会请求 OneBox 上传，并需要配置 `WELINK_ONEBOX_SPACE_ID` 与 `WELINK_ONEBOX_PARENT_ID`。同一 ReviewRun 只上传一个确定性文件。
 - `MR_REVIEWER_COORDINATION_DB_PATH` 是 IM/webhook 的共享单机 SQLite。多个进程必须配置为同一路径；数据库不保存足以恢复 worker 队列的完整事件。
 - `MR_REVIEWER_REPOSITORY_DEPENDENCY_CATALOG` 可选，只在两种完整 Deep Review marker 的单 MR 中读取。配置 1–3 个直接依赖且全部同名 target branch checkout 成功时才执行联合检视；任何不完整上下文都整组降级，不使用部分依赖。
-- `MR_REVIEWER_PUBLISH_MIN_SEVERITY` 与 `MR_REVIEWER_PUBLISH_MIN_CONFIDENCE` 同时用于 webhook 和 ReviewSet。默认发布 `minor` 及以上且 `confidence=HIGH` 的 finding；severity 顺序为 `suggestion < minor < major < fatal`，confidence 顺序为 `LOW < MEDIUM < HIGH`。非法枚举值会导致启动失败，这两个门槛不会过滤本地报告 findings。
+- `MR_REVIEWER_PUBLISH_MIN_SEVERITY` 与 `MR_REVIEWER_PUBLISH_MIN_CONFIDENCE` 同时用于 IM/webhook 单 MR 和 ReviewSet。默认发布 `minor` 及以上且 `confidence=HIGH` 的 finding；severity 顺序为 `suggestion < minor < major < fatal`，confidence 顺序为 `LOW < MEDIUM < HIGH`。非法枚举值会导致启动失败，这两个门槛不会过滤本地报告 findings。
 - `MR_REVIEWER_COMMENT_SKILL` 仍可选用于指定单仓 review prompt skill；依赖联合检视固定使用 `dependency-code-review`，不受该配置覆盖。skill 必须只输出结构化 JSON，不要配置会自行提交评论的 skill。
 - `MR_REVIEWER_AGENT_MODEL_NAME` 是 webhook inline discussion 的展示模型名。它为空时，worker 只写本地报告并标记 `model_not_configured`，不会提交 GitLab discussion；不会从 Agent 输出推断模型名。
 - 单仓或依赖联合 Deep Review 的审查计划只保存在本地 JSON/Markdown 报告中，不会发布到 GitLab；one-step 不生成计划。依赖仓只能提供 evidence，线上 finding 仍只能发布到主 MR。
@@ -124,7 +124,7 @@ Invoke-WebRequest `
 }
 ```
 
-`disposition` 可能为 `created`、`joined`、`reused` 或 `duplicate`。服务优先使用 `X-Gitlab-Event-UUID` 判断 webhook 传输是否重复；缺少该 header 时回退到项目、MR 与 payload Head 组成的事件 ID。返回 `202` 只表示已注册到内存 worker 队列，不代表任务已经完成；当前不提供查询 API。
+`disposition` 可能为 `created`、`joined`、`reused` 或 `duplicate`。服务优先使用 `X-Gitlab-Event-UUID` 判断 webhook 传输是否重复；缺少该 header 时回退到项目、MR 与 payload Head 组成的事件 ID。返回 `202` 只表示 Trigger 已写入或命中 SQLite 协调记录；除 `duplicate` 外，当前进程还会把任务放入内存 worker 队列。它不代表任务已经完成，当前也不提供查询 API。
 
 后台任务执行前会重新读取 GitLab 当前 Head，避免延迟到达的旧 payload 反向替代新版本。成功 review 在 `MR_REVIEWER_REPORT_DIR` 写入一组 ReviewRun 级 `.json`/`.md`；发布前再次检查当前 Head。Head 变化时本地报告保留，GitLab 与 OneBox 均记为 `skipped_stale`。首次生产验证建议先关闭 GitLab 开关。
 
@@ -142,6 +142,7 @@ Invoke-WebRequest `
 - 访问 `http://本机IP:8080/webhook/gitlab` 连接失败：服务可能仍监听 `127.0.0.1`。把 `MR_REVIEWER_WEBHOOK_HOST` 改为 `0.0.0.0` 或实际网卡 IP 后重启。
 - 返回 `401 WEBHOOK_TOKEN_MISSING`：已配置 `MR_REVIEWER_WEBHOOK_SECRET`，但请求没有 `MR_REVIEWER_WEBHOOK_SECRET_HEADER` 指定的 header。
 - 返回 `403 WEBHOOK_TOKEN_INVALID`：GitLab Secret token 和 `MR_REVIEWER_WEBHOOK_SECRET` 不一致。
+- 返回 `503 WEBHOOK_REGISTRATION_FAILED`：当前 Head 查询或 SQLite Trigger 注册失败，事件没有被本次请求可靠接收；检查 GitLab API、数据库路径与文件权限后重试。
 - 返回 `200 skipped`：请求已到达服务，但事件不是可处理的 MR open、reopen 或 source update 事件。
 - 返回 `202` 且 `disposition=duplicate`：同一个 webhook 事件已经注册，不会再次入队。`reused` 表示复用同 Head 的成功审查，不表示重复上传或重复发布。
 - review 成功但 MR 没有 inline discussion：检查 `MR_REVIEWER_WEBHOOK_POST_COMMENT` 是否为 `true`，`MR_REVIEWER_GITLAB_TOKEN` 是否有读取 MR diff 与提交 discussion 的权限，并查看本地 `.json`/`.md` 报告中的 finding 是否被过滤、无法定位或判定为重复。

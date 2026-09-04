@@ -12,6 +12,8 @@
 
 入站 webhook 本身不使用 `PRIVATE-TOKEN`。`MR_REVIEWER_WEBHOOK_SECRET` 通过单独的 secret header 校验，默认 header 为 `X-Gitlab-Token`。
 
+可处理事件只有在当前 Head 查询和 SQLite Trigger 注册成功后才返回 `202 accepted`。注册所需的 GitLab API 或 SQLite 操作失败时返回 `503 WEBHOOK_REGISTRATION_FAILED`，让发送方按失败请求处理；响应不包含内部异常详情。
+
 ### 出站 REST API
 
 主程序的 `GitLabClient` 以 `MR_REVIEWER_GITLAB_API_BASE_URL` 为完整 API root，只追加本文列出的 `/projects/...` 资源路径。它不从 MR Web URL 猜测额外 API 前缀。
@@ -51,7 +53,7 @@ clone/fetch 不经过 `GitLabClient`。项目 API 或 webhook payload 提供 tar
 | IM ReviewSet | 每个成员依次读取 project id、平台 isource MR、标准 MR、target/source clone URL | 只为至少一个可发布 target 的成员分页读取 discussions | 可定位 target POST discussion；未提供位置或合法位置不在 diff 时 POST note |
 | 便携式 skill | 标准 MR；按 target/source project id 各取 clone URL | 无去重读取 | `MR_REVIEW_SUBMIT_COMMENT=true` 时 POST 一条普通 note |
 
-webhook 在进入 `DiscussionPublisher` 后会先分页读取 discussions，即使最终没有 finding 被 POST。ReviewSet 只为存在 `publishable_inline` 或 `publishable_note` target 的成员读取 discussions；同一成员在一个 ReviewSet 发布阶段只读取一次。
+IM/webhook 单 MR 在进入 `DiscussionPublisher` 后会先分页读取 discussions，即使最终没有 finding 被 POST。ReviewSet 只为存在 `publishable_inline` 或 `publishable_note` target 的成员读取 discussions；同一成员在一个 ReviewSet 发布阶段只读取一次。
 
 ## 接口目录
 
@@ -72,12 +74,12 @@ GET /projects/{url_encoded_project_path}/merge_requests/{iid}
 |---|---|---|
 | `diff_refs.base_sha` 或 `diff_refs.start_sha` | `run-once`、IM 单 MR、便携式 skill | review range base；两者均缺失时失败。 |
 | `diff_refs.head_sha` 或顶层 `sha` | `run-once`、IM/webhook 单 MR、便携式 skill | review range 或 ReviewRun 当前 head；两者均缺失时失败。 |
-| `diff_refs.base_sha/start_sha/head_sha` | webhook 自动发布 | 构造 GitLab inline position；三者必须同时是非空字符串。 |
+| `diff_refs.base_sha/start_sha/head_sha` | IM/webhook 单 MR 自动发布 | 构造 GitLab inline position；三者必须同时是非空字符串。 |
 | `target_project_id`、`source_project_id` | 单 MR、ReviewSet、skill | 查询 target/source HTTPS clone URL。主程序要求两者有效。 |
 | `target_branch`、`source_branch` | 单 MR、ReviewSet、skill | fetch/checkout 分支。 |
 | `title` | 单 MR、skill | 选择 one-step 或 Deep Review。ReviewSet 不使用 title 路由。 |
 
-读取失败会终止当前单 MR review；ReviewSet 在任何成员元数据失败时整组终止，不进入 Agent 或发布。webhook 在 review 已完成但权威 refs 读取失败时写失败态本地报告，不发布 discussion。
+读取失败会终止当前单 MR review；ReviewSet 在任何成员元数据失败时整组终止，不进入 Agent 或发布。单 MR 在 review 已完成但权威 refs 读取失败时写失败态本地报告，不发布 discussion。
 
 ### 2. 按 project path 获取项目
 
@@ -173,11 +175,11 @@ GET /projects/{url_encoded_project_path}/merge_requests/{iid}/discussions?per_pa
 
 主程序方法：`list_mr_discussions()`。
 
-客户端从 `page=1` 开始，每页固定请求 100 条；返回数量少于 100 时结束。每页响应必须是 JSON array。发布器遍历每个 discussion 的 `notes[*].body`，提取本项目生成的隐藏 HTML marker，用于避免 webhook 重放或 ReviewSet 重试产生重复评论。
+客户端从 `page=1` 开始，每页固定请求 100 条；返回数量少于 100 时结束。每页响应必须是 JSON array。发布器遍历每个 discussion 的 `notes[*].body`，提取本项目生成的隐藏 HTML marker，用于避免单 MR 重放或 ReviewSet 重试产生重复评论。
 
 读取失败时采用 fail-closed：
 
-- webhook 不发布任何新 discussion，任务写失败态报告。
+- IM/webhook 单 MR 不发布任何新 discussion，任务写失败态报告。
 - ReviewSet 将该成员的候选 target 标记为 `duplicate_check_failed`，不向该成员发布；其它成员继续。
 
 ### 6. 创建 inline discussion
@@ -234,7 +236,7 @@ Content-Type: application/json; charset=utf-8
 }
 ```
 
-主程序把 `id` 和首个 `notes[0].id` 写入本地发布结果。单条 POST 失败不会回滚已经发布的其它 finding：webhook 继续处理同 MR 的其它 finding；ReviewSet 继续其它 target，并将总状态转为带 warning 的成功。
+主程序把 `id` 和首个 `notes[0].id` 写入本地发布结果。单条 POST 失败不会回滚已经发布的其它 finding：IM/webhook 单 MR 继续处理同 MR 的其它 finding；ReviewSet 继续其它 target，并将总状态转为带 warning 的成功。
 
 原始平台样例记录失败状态为 HTTP 500；当前客户端对任意 HTTP error 都统一按该条发布失败处理，不依赖固定失败状态码。
 
@@ -254,7 +256,7 @@ body=<comment body>
 - target 没有提供 position。
 - position 语法合法，但无法映射到责任 MR 的当前 diff。
 
-未知成员、越界路径、非法行号或自相矛盾位置不会回退 note。单 MR webhook 永远不使用 Notes API；无法定位的 finding 只留在本地报告。
+未知成员、越界路径、非法行号或自相矛盾位置不会回退 note。IM/webhook 单 MR 永远不使用 Notes API；无法定位的 finding 只留在本地报告。
 
 便携式 skill 也使用该 endpoint，但语义不同：它在 `MR_REVIEW_SUBMIT_COMMENT=true` 时把契约校验后的 review object 重新序列化为纯 JSON，作为一条普通 MR note 提交。它不发布 inline discussion，也不读取 discussions 做 marker 去重。
 
@@ -269,7 +271,7 @@ body=<comment body>
 7. GitLab sink 严格取得 `base_sha/start_sha/head_sha`，基于本地 unified diff 验证规范位置和共享发布门槛。
 8. 分页读取 discussions 提取 marker，只为不重复且可发布的 finding POST inline discussion。
 
-解析失败、低于门槛、证据/建议缺失或位置无法映射都不会触发写 API。webhook 不会为了发布而借用邻近行或降级为普通 note。
+解析失败、低于门槛、证据/建议缺失或位置无法映射都不会触发写 API。IM/webhook 单 MR 不会为了发布而借用邻近行或降级为普通 note。
 
 ## ReviewSet 调用顺序
 

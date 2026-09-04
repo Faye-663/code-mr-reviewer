@@ -98,6 +98,41 @@ def test_new_head_supersedes_unfinished_run_and_preserves_global_slot(tmp_path: 
     assert store.claim_review(new.review_run_id, "worker-b")
 
 
+def test_new_head_supersedes_review_with_unfinished_delivery(tmp_path: Path):
+    store = ReviewCoordinationStore(tmp_path / "coordination.sqlite3")
+    old = store.register_trigger(_trigger("hook-a", head_sha="head-a", upload_onebox=True))
+    assert store.claim_review(old.review_run_id, "worker-a")
+    store.complete_review(old.review_run_id, "worker-a", "old.json", "old.md")
+    assert store.claim_delivery(old.review_run_id, "onebox", "delivery-a")
+
+    new = store.register_trigger(_trigger("hook-b", head_sha="head-b"))
+
+    old_record = store.get_run(old.review_run_id)
+    assert old_record.status == "superseded"
+    assert old_record.superseded_by == new.review_run_id
+    assert not store.claim_review(new.review_run_id, "worker-b")
+
+    store.finish_delivery(old.review_run_id, "onebox", "delivery-a", "succeeded")
+    assert store.claim_review(new.review_run_id, "worker-b")
+
+
+def test_new_head_preserves_fully_delivered_review(tmp_path: Path):
+    store = ReviewCoordinationStore(tmp_path / "coordination.sqlite3")
+    old = store.register_trigger(_trigger("hook-a", head_sha="head-a", upload_onebox=True))
+    assert store.claim_review(old.review_run_id, "worker-a")
+    store.complete_review(old.review_run_id, "worker-a", "old.json", "old.md")
+    assert store.claim_delivery(old.review_run_id, "gitlab", "delivery-a")
+    store.finish_delivery(old.review_run_id, "gitlab", "delivery-a", "succeeded")
+    assert store.claim_delivery(old.review_run_id, "onebox", "delivery-a")
+    store.finish_delivery(old.review_run_id, "onebox", "delivery-a", "succeeded")
+
+    store.register_trigger(_trigger("hook-b", head_sha="head-b"))
+
+    old_record = store.get_run(old.review_run_id)
+    assert old_record.status == "succeeded"
+    assert old_record.superseded_by == ""
+
+
 def test_expired_running_lease_is_interrupted_and_not_recovered_automatically(tmp_path: Path):
     now = datetime(2026, 9, 4, tzinfo=timezone.utc)
     store = ReviewCoordinationStore(
@@ -267,6 +302,41 @@ def test_coordinator_marks_stale_review_and_skips_both_external_sinks(tmp_path: 
     assert payload["head_validation"]["status"] == "stale"
     assert payload["deliveries"]["gitlab"]["status"] == "skipped_stale"
     assert payload["deliveries"]["onebox"]["status"] == "skipped_stale"
+
+
+def test_coordinator_rechecks_head_before_onebox_after_gitlab_delivery(tmp_path: Path):
+    config = Config(
+        gitlab_base_url="https://gitlab.example.com",
+        agent_model_name="GLM5",
+        report_dir=tmp_path / "reports",
+        coordination_db_path=tmp_path / "coordination.sqlite3",
+    )
+
+    class AdvancingGitLabClient(_GitLabClient):
+        def post_mr_discussion(self, target, body, severity, position):
+            response = super().post_mr_discussion(target, body, severity, position)
+            self.current_head_sha = "head-b"
+            return response
+
+    gitlab = AdvancingGitLabClient()
+    uploads: list[tuple[str, str]] = []
+    coordinator = SingleMrReviewCoordinator(
+        _ReviewService(),
+        gitlab,
+        config,
+        upload_onebox=lambda file_name, markdown: uploads.append((file_name, markdown)) or None,
+    )
+
+    outcome = coordinator.handle(
+        _target(),
+        SingleMrTrigger("webhook", "hook-a", post_comment=True, upload_onebox=True),
+    )
+
+    assert len(gitlab.discussions) == 1
+    assert uploads == []
+    assert outcome.status == "superseded"
+    assert outcome.deliveries["gitlab"]["status"] == "succeeded"
+    assert outcome.deliveries["onebox"]["status"] == "skipped_stale"
 
 
 def test_coordinator_retries_review_failure_with_new_attempt(tmp_path: Path):

@@ -302,6 +302,27 @@ def test_coordinated_webhook_response_reports_created_and_duplicate(tmp_path: Pa
     assert payload["review_status"] == "succeeded"
 
 
+def test_coordinated_webhook_returns_503_when_registration_fails():
+    body = json.dumps(_merge_request_payload()).encode("utf-8")
+
+    response = handle_webhook_request(
+        "POST",
+        "/webhook/gitlab",
+        {},
+        body,
+        Config(gitlab_base_url="https://gitlab.example.com"),
+        lambda event: (_ for _ in ()).throw(RuntimeError("database unavailable")),
+    )
+
+    assert response.status == 503
+    assert response.body == {
+        "error": {
+            "code": "WEBHOOK_REGISTRATION_FAILED",
+            "message": "webhook trigger could not be registered",
+        }
+    }
+
+
 def test_webhook_registration_uses_current_gitlab_head_instead_of_stale_payload(tmp_path: Path):
     config = Config(
         gitlab_base_url="https://gitlab.example.com",

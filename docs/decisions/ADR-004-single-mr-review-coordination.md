@@ -51,5 +51,5 @@ IM 单 MR 与 GitLab webhook 原本分别编排 Agent、报告与外部发布。
 - ReviewRun 是 review 结果与本地报告的唯一边界；Trigger 只保留来源、事件 ID 和 sink 意图。GitLab、OneBox 失败互不阻塞，部分失败为 `success_with_warnings`。
 - 旧版本已完成的历史 GitLab discussion 或 OneBox 文件不会在新 Head 到达后撤回；新版本形成独立 ReviewRun。
 - SQLite 文件必须位于所有相关同机进程共享且可写的位置。多主机部署仍可能重复执行和交付。
-- HTTP `202 accepted` 只证明 Trigger 已注册到本进程内存队列；进程崩溃可能丢失尚未执行的任务。启动只把过期 lease 标为 `interrupted`，等待新 Trigger。
+- HTTP `202 accepted` 只证明 Trigger 已写入或命中 SQLite 协调记录；除重复传输外，当前进程还会把任务放入内存队列。进程崩溃可能丢失尚未执行的任务；启动只把过期 lease 标为 `interrupted`，等待新 Trigger。
 - 运维排障以 `review_run_id`、ReviewKey、attempt、Trigger 和两个 delivery 状态为主；当前不提供任务查询 API。

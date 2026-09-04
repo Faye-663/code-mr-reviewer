@@ -99,12 +99,12 @@ Agent 的 provider、API Key、实际模型和登录状态由 OpenCode 或 Claud
 | 配置 | 默认值 | 允许值 | 行为与关联 |
 |---|---|---|---|
 | `MR_REVIEWER_IM_POST_COMMENT` | `false` | 布尔值 | 控制 IM 单 MR 是否请求 GitLab inline discussion；不影响 ReviewSet。 |
-| `MR_REVIEWER_IM_UPLOAD_ONEBOX` | `true` | 布尔值 | 控制 IM 单 MR是否请求 OneBox 上传。 |
+| `MR_REVIEWER_IM_UPLOAD_ONEBOX` | `true` | 布尔值 | 控制 IM 单 MR 是否请求 OneBox 上传。 |
 | `MR_REVIEWER_WEBHOOK_POST_COMMENT` | `true` | 布尔值 | 控制 webhook 单 MR 是否请求 GitLab inline discussion。 |
 | `MR_REVIEWER_WEBHOOK_UPLOAD_ONEBOX` | `false` | 布尔值 | 控制 webhook 单 MR 是否请求 OneBox 上传。开启时需要有效的 OneBox 配置。 |
 | `MR_REVIEWER_REVIEW_SET_POST_COMMENT` | `true` | 布尔值 | 只控制 IM ReviewSet 的 inline discussion/普通 note；false 时仍生成并上传聚合报告。生产首次验证建议先设为 false。 |
-| `MR_REVIEWER_PUBLISH_MIN_SEVERITY` | `minor` | `suggestion`、`minor`、`major`、`fatal` | webhook 与 ReviewSet 共用；顺序从低到高。非法值在 `Config` 初始化时失败。 |
-| `MR_REVIEWER_PUBLISH_MIN_CONFIDENCE` | `HIGH` | `LOW`、`MEDIUM`、`HIGH` | webhook 与 ReviewSet 共用；非法值在启动时失败。 |
+| `MR_REVIEWER_PUBLISH_MIN_SEVERITY` | `minor` | `suggestion`、`minor`、`major`、`fatal` | IM/webhook 单 MR 与 ReviewSet 共用；顺序从低到高。非法值在 `Config` 初始化时失败。 |
+| `MR_REVIEWER_PUBLISH_MIN_CONFIDENCE` | `HIGH` | `LOW`、`MEDIUM`、`HIGH` | IM/webhook 单 MR 与 ReviewSet 共用；非法值在启动时失败。 |
 
 两个门槛只控制 GitLab 发布候选，不过滤本地 JSON、Markdown 或 ReviewSet 聚合报告中的 findings。单 MR 四个入口/sink 开关彼此独立；同一 `(project_path, mr_iid, head_sha)` ReviewRun 中，只要任一 Trigger 请求某 sink，该 sink 即可执行一次。两个入口都请求 GitLab 时仍按 marker 最多发布一次；都请求 OneBox 时只上传同一个逻辑文件。GitLab 开关为 true 但 `AGENT_MODEL_NAME` 为空时仍不发布。两个单 MR sink 都关闭时，review 仍成功并生成本地报告。
 

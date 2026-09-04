@@ -192,7 +192,22 @@ def handle_webhook_request(
     if transport_event_id:
         event = replace(event, event_id=transport_event_id)
 
-    registration = enqueue(event)
+    try:
+        registration = enqueue(event)
+    except Exception as exc:  # noqa: BLE001 - 注册失败必须让 GitLab 获得可重试的稳定响应。
+        LOG.exception(
+            "stage=webhook_registration outcome=failed repo=%s mr_iid=%s "
+            "event_id=%s error_type=%s",
+            event.target.project_path,
+            event.target.mr_iid,
+            event.event_id,
+            type(exc).__name__,
+        )
+        return _json_response(
+            503,
+            "WEBHOOK_REGISTRATION_FAILED",
+            "webhook trigger could not be registered",
+        )
     extra = {}
     if registration is not None:
         extra = {

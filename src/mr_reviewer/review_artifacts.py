@@ -28,7 +28,7 @@ class ReviewArtifactStore:
     ) -> tuple[Path, Path]:
         json_path, markdown_path = self._paths(run)
         report = self._preserve_delivery_result(json_path, report)
-        normalized = _normalized_report(report)
+        normalized = normalize_review_report(report)
         head_validation = normalized.head_validation or {
             "review_head_sha": normalized.head_sha or run.head_sha,
             "current_head_sha": "",
@@ -89,7 +89,7 @@ class ReviewArtifactStore:
         return self.report_dir / f"{stem}.json", self.report_dir / f"{stem}.md"
 
 
-def _normalized_report(report: ReviewReport) -> ReviewReport:
+def normalize_review_report(report: ReviewReport) -> ReviewReport:
     if report.structured_parse_status == "success" and report.finding_results is not None:
         return report
     rendered = render_structured_output_as_markdown(report)

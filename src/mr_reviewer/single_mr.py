@@ -18,8 +18,8 @@ from mr_reviewer.coordination import (
     TriggerRegistration,
 )
 from mr_reviewer.delivery import current_head_validation, deliver_gitlab_review
-from mr_reviewer.markdown_report import render_review_report, render_structured_output_as_markdown
-from mr_reviewer.review_artifacts import ReviewArtifactStore
+from mr_reviewer.markdown_report import render_review_report
+from mr_reviewer.review_artifacts import ReviewArtifactStore, normalize_review_report
 from mr_reviewer.review_result import parse_structured_review_result
 from mr_reviewer.reviewer import (
     MergeRequestReviewTarget,
@@ -101,8 +101,11 @@ class SingleMrDeliveryCoordinator:
             if not enabled:
                 self.store.mark_delivery_disabled(run.review_run_id, sink)
 
+        if self.store.is_superseded(run.review_run_id):
+            return self._stale_outcome(run, report, desired)
+
         if not any(desired.values()):
-            return _normalize_report(report), "succeeded"
+            return normalize_review_report(report), "succeeded"
 
         try:
             validation, _ = current_head_validation(self.gitlab, target, report.head_sha)
@@ -116,28 +119,29 @@ class SingleMrDeliveryCoordinator:
             for sink, enabled in desired.items():
                 if enabled:
                     self.store.record_delivery(run.review_run_id, sink, "failed", error=str(exc))
-            return _normalize_report(report), "success_with_warnings"
+            return normalize_review_report(report), "success_with_warnings"
 
         report = replace(report, head_validation=validation)
         if validation["status"] == "stale":
-            for sink, enabled in desired.items():
-                if enabled:
-                    self.store.record_delivery(run.review_run_id, sink, "skipped_stale")
-            self.store.mark_run_superseded(run.review_run_id)
-            return _normalize_report(report), "superseded"
+            return self._stale_outcome(run, report, desired)
 
         if desired["gitlab"]:
             report = self._deliver_gitlab(run, target, report, owner_id)
-            if report.submission_status == "skipped_stale":
-                if desired["onebox"]:
-                    self.store.record_delivery(run.review_run_id, "onebox", "skipped_stale")
-                self.store.mark_run_superseded(run.review_run_id)
-                return report, "superseded"
+            if (
+                report.submission_status == "skipped_stale"
+                or self.store.is_superseded(run.review_run_id)
+            ):
+                return self._stale_outcome(run, report, desired)
         else:
-            report = _normalize_report(report)
+            report = normalize_review_report(report)
 
         if desired["onebox"]:
-            self._deliver_onebox(run, report, owner_id)
+            report = self._deliver_onebox(run, target, report, owner_id)
+            if (
+                report.head_validation
+                and report.head_validation.get("status") == "stale"
+            ) or self.store.is_superseded(run.review_run_id):
+                return self._stale_outcome(run, report, desired)
 
         deliveries = self.store.list_deliveries(run.review_run_id)
         warning_statuses = {"failed", "unknown", "running"}
@@ -158,6 +162,29 @@ class SingleMrDeliveryCoordinator:
             status,
         )
         return report, status
+
+    def _stale_outcome(
+        self,
+        run: ReviewRunRecord,
+        report: ReviewReport,
+        desired: dict[str, bool],
+    ) -> tuple[ReviewReport, str]:
+        current = self.store.get_run(run.review_run_id)
+        if current.superseded_by:
+            replacement = self.store.get_run(current.superseded_by)
+            report = replace(
+                report,
+                head_validation={
+                    "review_head_sha": run.head_sha,
+                    "current_head_sha": replacement.head_sha,
+                    "status": "stale",
+                },
+            )
+        for sink, enabled in desired.items():
+            if enabled:
+                self.store.record_delivery(run.review_run_id, sink, "skipped_stale")
+        self.store.mark_run_superseded(run.review_run_id, current.superseded_by)
+        return normalize_review_report(report), "superseded"
 
     def _deliver_gitlab(
         self,
@@ -201,16 +228,45 @@ class SingleMrDeliveryCoordinator:
             )
             return report
 
-    def _deliver_onebox(self, run: ReviewRunRecord, report: ReviewReport, owner_id: str) -> None:
+    def _deliver_onebox(
+        self,
+        run: ReviewRunRecord,
+        target: MergeRequestReviewTarget,
+        report: ReviewReport,
+        owner_id: str,
+    ) -> ReviewReport:
         if not self.store.claim_delivery(run.review_run_id, "onebox", owner_id):
             self._wait_for_delivery(run.review_run_id, "onebox")
-            return
+            return report
         file_name = _onebox_file_name(run)
-        markdown = render_review_report(_normalize_report(report), "succeeded")
+        markdown = render_review_report(normalize_review_report(report), "succeeded")
+        head_checked = False
         try:
             with self._delivery_heartbeat(run.review_run_id, "onebox", owner_id):
+                validation, _ = current_head_validation(self.gitlab, target, report.head_sha)
+                head_checked = True
+                report = replace(report, head_validation=validation)
+                if validation["status"] == "stale" or self.store.is_superseded(run.review_run_id):
+                    self.store.finish_delivery(
+                        run.review_run_id,
+                        "onebox",
+                        owner_id,
+                        "skipped_stale",
+                        external_ref=file_name,
+                    )
+                    self.store.mark_run_superseded(run.review_run_id)
+                    return report
                 error = self.upload_onebox(file_name, markdown)
         except Exception as exc:  # noqa: BLE001 - 明确失败允许后续 Trigger 重试该 sink。
+            if not head_checked:
+                report = replace(
+                    report,
+                    head_validation={
+                        "review_head_sha": report.head_sha,
+                        "current_head_sha": "",
+                        "status": "failed",
+                    },
+                )
             self.store.finish_delivery(
                 run.review_run_id,
                 "onebox",
@@ -219,7 +275,7 @@ class SingleMrDeliveryCoordinator:
                 error=str(exc),
                 external_ref=file_name,
             )
-            return
+            return report
         except BaseException:  # 上传进程被中断时结果不可判定，不允许自动重试。
             self.store.finish_delivery(run.review_run_id, "onebox", owner_id, "unknown")
             raise
@@ -240,6 +296,7 @@ class SingleMrDeliveryCoordinator:
                 "succeeded",
                 external_ref=file_name,
             )
+        return report
 
     def _wait_for_delivery(self, review_run_id: str, sink: str) -> None:
         deadline = time.monotonic() + self.config.task_timeout_seconds
@@ -501,19 +558,7 @@ class SingleMrReviewCoordinator:
         report: ReviewReport,
     ) -> SingleMrOutcome:
         run = self.store.get_run(review_run_id)
-        replacement = self.store.get_run(run.superseded_by) if run.superseded_by else None
-        validation = {
-            "review_head_sha": run.head_sha,
-            "current_head_sha": replacement.head_sha if replacement else "",
-            "status": "stale",
-        }
-        report = replace(report, head_validation=validation)
-        for sink, enabled in self.store.desired_sinks(review_run_id).items():
-            self.store.record_delivery(
-                review_run_id,
-                sink,
-                "skipped_stale" if enabled else "disabled",
-            )
+        report = self._prepare_superseded_report(run, report)
         report_json_path = ""
         report_markdown_path = ""
         try:
@@ -578,8 +623,16 @@ class SingleMrReviewCoordinator:
         registration: TriggerRegistration,
         report: ReviewReport,
     ) -> SingleMrOutcome:
+        report = self._prepare_superseded_report(run, report)
+        return self._finalize_outcome(run, registration, report, "superseded")
+
+    def _prepare_superseded_report(
+        self,
+        run: ReviewRunRecord,
+        report: ReviewReport,
+    ) -> ReviewReport:
         replacement = self.store.get_run(run.superseded_by) if run.superseded_by else None
-        report = replace(
+        superseded_report = replace(
             report,
             head_validation={
                 "review_head_sha": run.head_sha,
@@ -593,7 +646,7 @@ class SingleMrReviewCoordinator:
                 sink,
                 "skipped_stale" if enabled else "disabled",
             )
-        return self._finalize_outcome(run, registration, report, "superseded")
+        return superseded_report
 
     def _outcome(
         self,
@@ -622,13 +675,6 @@ class SingleMrReviewCoordinator:
     def _raise_if_superseded(self, review_run_id: str) -> None:
         if self.store.is_superseded(review_run_id):
             raise ReviewSupersededError(review_run_id)
-
-
-def _normalize_report(report: ReviewReport) -> ReviewReport:
-    if report.structured_parse_status == "success" and report.finding_results is not None:
-        return report
-    rendered = render_structured_output_as_markdown(report)
-    return replace(rendered, markdown=report.markdown)
 
 
 def _complete_identity(report: ReviewReport, target: MergeRequestReviewTarget) -> ReviewReport:

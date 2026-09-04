@@ -155,6 +155,7 @@ class ReviewCoordinationStore:
     def claim_review(self, review_run_id: str, owner_id: str) -> bool:
         with self._transaction() as connection:
             self._interrupt_expired_runs(connection)
+            self._interrupt_expired_deliveries(connection)
             run = self._get_run(connection, review_run_id)
             if run.status == "running" and run.owner_id == owner_id:
                 return True
@@ -169,6 +170,16 @@ class ReviewCoordinationStore:
                 (self._epoch_now(), review_run_id),
             ).fetchone()
             if active is not None:
+                return False
+            active_delivery = connection.execute(
+                """
+                SELECT 1 FROM deliveries
+                WHERE status = 'running' AND lease_until > ?
+                LIMIT 1
+                """,
+                (self._epoch_now(),),
+            ).fetchone()
+            if active_delivery is not None:
                 return False
             updated = connection.execute(
                 """
@@ -424,6 +435,7 @@ class ReviewCoordinationStore:
                     error = excluded.error,
                     external_ref = excluded.external_ref,
                     updated_at = excluded.updated_at
+                WHERE deliveries.status IN ('failed', 'disabled', 'pending')
                 """,
                 (review_run_id, sink, status, error, external_ref, self._iso_now()),
             )
@@ -525,10 +537,42 @@ class ReviewCoordinationStore:
         connection.execute(
             """
             UPDATE review_runs
-            SET status = CASE WHEN status = 'queued' THEN 'superseded' ELSE status END,
+            SET status = CASE WHEN status = 'running' THEN status ELSE 'superseded' END,
                 superseded_by = ?, updated_at = ?
             WHERE project_path = ? AND mr_iid = ? AND head_sha <> ?
-              AND status IN ('queued', 'running') AND superseded_by = ''
+              AND superseded_by = ''
+              AND (
+                status IN ('queued', 'running')
+                OR (
+                  status = 'succeeded'
+                  AND (
+                    (
+                      EXISTS (
+                        SELECT 1 FROM triggers
+                        WHERE triggers.review_run_id = review_runs.review_run_id
+                          AND post_comment = 1
+                      )
+                      AND NOT EXISTS (
+                        SELECT 1 FROM deliveries
+                        WHERE deliveries.review_run_id = review_runs.review_run_id
+                          AND sink = 'gitlab' AND status IN ('succeeded', 'unknown')
+                      )
+                    )
+                    OR (
+                      EXISTS (
+                        SELECT 1 FROM triggers
+                        WHERE triggers.review_run_id = review_runs.review_run_id
+                          AND upload_onebox = 1
+                      )
+                      AND NOT EXISTS (
+                        SELECT 1 FROM deliveries
+                        WHERE deliveries.review_run_id = review_runs.review_run_id
+                          AND sink = 'onebox' AND status IN ('succeeded', 'unknown')
+                      )
+                    )
+                  )
+                )
+              )
             """,
             (
                 replacement_run_id,

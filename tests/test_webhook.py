@@ -8,6 +8,7 @@ from pathlib import Path
 
 from mr_reviewer.config import Config
 from mr_reviewer.reviewer import ReviewReport, ReviewStageError
+from mr_reviewer.single_mr import SingleMrReviewCoordinator
 from mr_reviewer.webhook import (
     WebhookReviewEvent,
     WebhookReviewQueue,
@@ -239,6 +240,110 @@ def test_webhook_http_handler_accepts_valid_post():
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+def test_coordinated_webhook_response_reports_created_and_duplicate(tmp_path: Path):
+    config = Config(
+        gitlab_base_url="https://gitlab.example.com",
+        gitlab_token="secret-token",
+        agent_model_name="GLM5",
+        report_dir=tmp_path / "reports",
+        coordination_db_path=tmp_path / "coordination.sqlite3",
+    )
+    service = _RecordingReviewService()
+    gitlab = _RecordingGitLabClient()
+    coordinator = SingleMrReviewCoordinator(service, gitlab, config)
+    worker = WebhookReviewQueue(service, gitlab, config, coordinator)
+    worker.start()
+    body = json.dumps(_merge_request_payload()).encode("utf-8")
+
+    created = handle_webhook_request(
+        "POST",
+        "/webhook/gitlab",
+        {"X-Gitlab-Event-UUID": "event-1"},
+        body,
+        config,
+        worker.enqueue,
+    )
+    worker._queue.join()
+    duplicate = handle_webhook_request(
+        "POST",
+        "/webhook/gitlab",
+        {"X-Gitlab-Event-UUID": "event-1"},
+        body,
+        config,
+        worker.enqueue,
+    )
+    reused = handle_webhook_request(
+        "POST",
+        "/webhook/gitlab",
+        {"X-Gitlab-Event-UUID": "event-2"},
+        body,
+        config,
+        worker.enqueue,
+    )
+    worker._queue.join()
+
+    assert created.status == 202
+    assert created.body["disposition"] == "created"
+    assert created.body["review_run_id"].startswith("review-")
+    assert duplicate.body["disposition"] == "duplicate"
+    assert duplicate.body["review_run_id"] == created.body["review_run_id"]
+    assert reused.body["disposition"] == "reused"
+    assert reused.body["review_run_id"] == created.body["review_run_id"]
+    assert len(service.targets) == 1
+    assert service.targets[0].project_path == "team/project"
+    assert service.targets[0].mr_iid == 7
+    assert service.targets[0].base_sha == "base-sha"
+    assert service.targets[0].head_sha == "head-sha"
+    assert len(gitlab.discussions) == 1
+    payload = json.loads(next(config.report_dir.glob("*.json")).read_text(encoding="utf-8"))
+    assert payload["review_run_id"] == created.body["review_run_id"]
+    assert payload["review_status"] == "succeeded"
+
+
+def test_coordinated_webhook_returns_503_when_registration_fails():
+    body = json.dumps(_merge_request_payload()).encode("utf-8")
+
+    response = handle_webhook_request(
+        "POST",
+        "/webhook/gitlab",
+        {},
+        body,
+        Config(gitlab_base_url="https://gitlab.example.com"),
+        lambda event: (_ for _ in ()).throw(RuntimeError("database unavailable")),
+    )
+
+    assert response.status == 503
+    assert response.body == {
+        "error": {
+            "code": "WEBHOOK_REGISTRATION_FAILED",
+            "message": "webhook trigger could not be registered",
+        }
+    }
+
+
+def test_webhook_registration_uses_current_gitlab_head_instead_of_stale_payload(tmp_path: Path):
+    config = Config(
+        gitlab_base_url="https://gitlab.example.com",
+        report_dir=tmp_path / "reports",
+        coordination_db_path=tmp_path / "coordination.sqlite3",
+    )
+    service = _RecordingReviewService()
+    gitlab = _RecordingGitLabClient()
+    gitlab.current_head_sha = "current-head"
+    coordinator = SingleMrReviewCoordinator(service, gitlab, config)
+    worker = WebhookReviewQueue(service, gitlab, config, coordinator)
+    event = parse_gitlab_merge_request_event(_merge_request_payload(), config)
+    assert event is not None
+
+    registration = worker.enqueue(event)
+
+    assert coordinator.store.get_run(registration.review_run_id).head_sha == "current-head"
+    queued_event, queued_registration = worker._queue.get_nowait()
+    assert queued_registration == registration
+    assert queued_event.target.head_sha == "current-head"
+    worker._queue.task_done()
 
 
 def test_write_webhook_monitor_report_redacts_sensitive_values(tmp_path: Path):
@@ -564,6 +669,39 @@ def test_webhook_worker_skips_duplicate_inline_discussion(tmp_path: Path):
     assert report["finding_counts"]["skipped_duplicate"] == 1
 
 
+def test_webhook_worker_does_not_publish_review_for_stale_head(tmp_path: Path):
+    event = parse_gitlab_merge_request_event(
+        _merge_request_payload(),
+        Config(gitlab_base_url="https://gitlab.example.com"),
+    )
+    assert event is not None
+    service = _RecordingReviewService()
+    gitlab = _RecordingGitLabClient()
+    gitlab.current_head_sha = "newer-head-sha"
+    config = Config(
+        gitlab_base_url="https://gitlab.example.com",
+        gitlab_token="secret-token",
+        report_dir=tmp_path,
+        webhook_post_comment=True,
+        agent_model_name="GLM5",
+    )
+    queue = WebhookReviewQueue(service, gitlab, config)
+    queue.start()
+
+    queue.enqueue(event)
+    queue._queue.join()
+
+    assert gitlab.discussions == []
+    report = json.loads(next(tmp_path.glob("*.json")).read_text(encoding="utf-8"))
+    assert report["submission_status"] == "skipped_stale"
+    assert report["finding_results"][0]["status"] == "skipped_stale"
+    assert report["head_validation"] == {
+        "review_head_sha": "head-sha",
+        "current_head_sha": "newer-head-sha",
+        "status": "stale",
+    }
+
+
 def test_webhook_worker_does_not_publish_when_structured_output_is_invalid(tmp_path: Path):
     event = parse_gitlab_merge_request_event(
         _merge_request_payload(),
@@ -715,7 +853,7 @@ class _RecordingReviewService:
             ensure_ascii=False,
         )
 
-    def review_target(self, target, config, task_id, structured_output=False):
+    def review_target(self, target, config, task_id, structured_output=False, should_cancel=None):
         self.targets.append(target)
         self.structured_output_flags.append(structured_output)
         return ReviewReport(
@@ -743,6 +881,7 @@ class _RecordingGitLabClient:
         self.comments = []
         self.discussions = []
         self.existing_marker = existing_marker
+        self.current_head_sha = "head-sha"
 
     def post_mr_note(self, target, body):
         self.comments.append((target, body))
@@ -753,7 +892,7 @@ class _RecordingGitLabClient:
             "diff_refs": {
                 "base_sha": "base-sha",
                 "start_sha": "start-sha",
-                "head_sha": "head-sha",
+                "head_sha": self.current_head_sha,
             }
         }
 

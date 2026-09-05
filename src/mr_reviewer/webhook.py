@@ -15,17 +15,13 @@ from typing import Callable
 from urllib.parse import urlparse
 
 from mr_reviewer.config import Config
+from mr_reviewer.delivery import deliver_gitlab_review
 from mr_reviewer.gitlab import GitLabClient
-from mr_reviewer.inline_review import DiffPositionMap, DiffRefs, FindingValidationDecision, validate_review_findings
 from mr_reviewer.markdown_report import render_markdown_review_report
 from mr_reviewer.observability import task_context
-from mr_reviewer.review_result import (
-    StructuredReviewParseError,
-    StructuredReviewResult,
-    parse_structured_review_result,
-)
 from mr_reviewer.review_routing import resolve_review_routing
 from mr_reviewer.reviewer import MergeRequestReviewTarget, ReviewReport, ReviewService, ReviewStageError
+from mr_reviewer.single_mr import SingleMrReviewCoordinator, SingleMrTrigger
 
 LOG = logging.getLogger("mr_reviewer")
 
@@ -166,7 +162,7 @@ def handle_webhook_request(
         headers: dict[str, str],
         body: bytes,
         config: Config,
-        enqueue: Callable[[WebhookReviewEvent], None],
+        enqueue: Callable[[WebhookReviewEvent], object | None],
 ) -> WebhookResponse:
     if path != config.webhook_path:
         return _json_response(404, "NOT_FOUND", "webhook path not found")
@@ -192,8 +188,32 @@ def handle_webhook_request(
         return _json_response(400, "INVALID_WEBHOOK", str(exc))
     if event is None:
         return WebhookResponse(200, {"status": "skipped"})
+    transport_event_id = _header_value(headers, "X-Gitlab-Event-UUID")
+    if transport_event_id:
+        event = replace(event, event_id=transport_event_id)
 
-    enqueue(event)
+    try:
+        registration = enqueue(event)
+    except Exception as exc:  # noqa: BLE001 - 注册失败必须让 GitLab 获得可重试的稳定响应。
+        LOG.exception(
+            "stage=webhook_registration outcome=failed repo=%s mr_iid=%s "
+            "event_id=%s error_type=%s",
+            event.target.project_path,
+            event.target.mr_iid,
+            event.event_id,
+            type(exc).__name__,
+        )
+        return _json_response(
+            503,
+            "WEBHOOK_REGISTRATION_FAILED",
+            "webhook trigger could not be registered",
+        )
+    extra = {}
+    if registration is not None:
+        extra = {
+            "review_run_id": registration.review_run_id,
+            "disposition": registration.disposition,
+        }
     return WebhookResponse(
         202,
         {
@@ -201,27 +221,81 @@ def handle_webhook_request(
             "event_id": event.event_id,
             "repo": event.target.project_path,
             "mr_iid": event.target.mr_iid,
+            **extra,
         },
     )
 
 
 class WebhookReviewQueue:
-    def __init__(self, service: ReviewService, gitlab: GitLabClient, config: Config):
+    def __init__(
+        self,
+        service: ReviewService,
+        gitlab: GitLabClient,
+        config: Config,
+        coordinator: SingleMrReviewCoordinator | None = None,
+    ):
         self.service = service
         self.gitlab = gitlab
         self.config = config
-        self._queue: queue.Queue[WebhookReviewEvent] = queue.Queue()
+        self.coordinator = coordinator
+        self._queue: queue.Queue = queue.Queue()
         self._thread = threading.Thread(target=self._run, name="mr-reviewer-webhook-worker", daemon=True)
 
     def start(self) -> None:
         self._thread.start()
 
-    def enqueue(self, event: WebhookReviewEvent) -> None:
-        self._queue.put(event)
+    def enqueue(self, event: WebhookReviewEvent):
+        if self.coordinator is None:
+            self._queue.put(event)
+            return None
+        event = replace(event, target=self.coordinator.refresh_target(event.target))
+        registration = self.coordinator.register(
+            event.target,
+            SingleMrTrigger(
+                source="webhook",
+                trigger_id=event.event_id,
+                post_comment=self.config.webhook_post_comment,
+                upload_onebox=self.config.webhook_upload_onebox,
+            ),
+        )
+        if registration.disposition != "duplicate":
+            self._queue.put((event, registration))
+        return registration
 
     def _run(self) -> None:
         while True:
-            event = self._queue.get()
+            item = self._queue.get()
+            if self.coordinator is not None:
+                event, registration = item
+                try:
+                    outcome = self.coordinator.process(registration, event.target)
+                    LOG.info(
+                        "task=%s review_run_id=%s trigger_id=%s repo=%s mr_iid=%s head_sha=%s "
+                        "stage=webhook_review outcome=%s",
+                        registration.review_run_id,
+                        registration.review_run_id,
+                        registration.trigger_id,
+                        event.target.project_path,
+                        event.target.mr_iid,
+                        event.target.head_sha,
+                        outcome.status,
+                    )
+                except Exception as exc:  # noqa: BLE001 - 后台任务失败后必须继续消费队列。
+                    LOG.exception(
+                        "task=%s review_run_id=%s trigger_id=%s repo=%s mr_iid=%s head_sha=%s "
+                        "stage=webhook_review outcome=failed error_type=%s",
+                        registration.review_run_id,
+                        registration.review_run_id,
+                        registration.trigger_id,
+                        event.target.project_path,
+                        event.target.mr_iid,
+                        event.target.head_sha,
+                        type(exc).__name__,
+                    )
+                finally:
+                    self._queue.task_done()
+                continue
+            event = item
             task_id = f"webhook-{uuid.uuid4().hex[:12]}"
             try:
                 with task_context(task_id, self.config.debug_dir, self.config.log_level == "DEBUG"):
@@ -250,103 +324,31 @@ class WebhookReviewQueue:
                 self._queue.task_done()
 
     def _submit_comment(self, event: WebhookReviewEvent, report: ReviewReport) -> ReviewReport:
-        try:
-            structured = parse_structured_review_result(report.markdown)
-        except StructuredReviewParseError:
-            return replace(
-                report,
-                submission_owner="python",
-                submission_status="parse_failed",
-                structured_parse_status="failed",
-                finding_counts=_finding_counts([]),
-                finding_results=[],
-            )
-
-        if not self.config.webhook_post_comment:
-            results = [_unpublished_finding_result(finding, "disabled", "webhook_post_comment_disabled") for finding in structured.findings]
-            return _with_structured_submission(
-                report,
-                structured,
-                "disabled",
-                results,
-            )
-
-        if not self.config.agent_model_name:
-            results = [_unpublished_finding_result(finding, "model_not_configured", "agent_model_name_missing") for finding in structured.findings]
-            return _with_structured_submission(
-                report,
-                structured,
-                "model_not_configured",
-                results,
-            )
-
-        detail = self.gitlab.get_mr_detail_for_discussion_position(event.target)
-        refs = _diff_refs_from_detail(detail)
-        position_map = DiffPositionMap.from_unified_diff(report.diff, refs)
-        decisions = validate_review_findings(
-            structured,
-            position_map,
-            self.config.publication_policy,
-        )
-        publish_results = DiscussionPublisher(self.gitlab, self.config.agent_model_name).publish(event.target, decisions)
-        status = "failed" if any(item["status"] == "failed" for item in publish_results) else "posted"
-        return _with_structured_submission(
+        return deliver_gitlab_review(
+            self.gitlab,
+            self.config,
+            event.target,
             report,
-            structured,
-            status,
-            publish_results,
+            enabled=self.config.webhook_post_comment,
         )
-
-
-class DiscussionPublisher:
-    def __init__(self, gitlab: GitLabClient, model_name: str):
-        self.gitlab = gitlab
-        self.model_name = model_name
-
-    def publish(self, target: MergeRequestReviewTarget, decisions: list[FindingValidationDecision]) -> list[dict]:
-        existing_markers = _extract_existing_markers(self.gitlab.list_mr_discussions(target))
-        results = []
-        for decision in decisions:
-            if decision.status != "publishable":
-                results.append(_finding_result(decision, decision.status, decision.reason))
-                continue
-
-            marker = _finding_marker(target, decision)
-            if marker in existing_markers:
-                results.append(_finding_result(decision, "skipped_duplicate", "duplicate_marker", marker))
-                continue
-
-            try:
-                response = self.gitlab.post_mr_discussion(
-                    target,
-                    _discussion_body(decision, marker, self.model_name),
-                    decision.finding.severity,
-                    decision.position.to_gitlab_position(),
-                )
-            except Exception as exc:  # noqa: BLE001 - 单条发布失败需要记录后继续处理其它 finding。
-                results.append(_finding_result(decision, "failed", str(exc), marker))
-                continue
-
-            result = _finding_result(decision, "posted", "", marker)
-            result["discussion_id"] = response.get("id")
-            notes = response.get("notes") if isinstance(response.get("notes"), list) else []
-            if notes and isinstance(notes[0], dict):
-                result["note_id"] = notes[0].get("id")
-            results.append(result)
-        return results
 
 
 def run_webhook_server(config: Config, service: ReviewService) -> int:
     gitlab = GitLabClient(config.gitlab_api_base_url, config.gitlab_token, config.test_gitlab_responses)
-    worker = WebhookReviewQueue(service, gitlab, config)
+    coordinator = SingleMrReviewCoordinator(service, gitlab, config)
+    worker = WebhookReviewQueue(service, gitlab, config, coordinator)
     worker.start()
     handler = make_webhook_handler(config, worker.enqueue)
     server = ThreadingHTTPServer((config.webhook_host, config.webhook_port), handler)
     LOG.info(
-        "stage=webhook_server status=started host=%s port=%s path=%s",
+        "stage=webhook_server outcome=started host=%s port=%s path=%s "
+        "post_comment=%s upload_onebox=%s coordination_db_path=%s",
         config.webhook_host,
         config.webhook_port,
         config.webhook_path,
+        config.webhook_post_comment,
+        config.webhook_upload_onebox,
+        config.coordination_db_path,
     )
     try:
         server.serve_forever()
@@ -430,6 +432,8 @@ def _build_webhook_monitor_payload(
         "dependency_relationship_summary": report.dependency_relationship_summary or [],
         "agent_call_count": report.agent_call_count,
     }
+    if report.head_validation is not None:
+        data["head_validation"] = report.head_validation
     if report.structured_parse_status:
         data["structured_parse_status"] = report.structured_parse_status
     if report.finding_counts is not None:
@@ -441,7 +445,7 @@ def _build_webhook_monitor_payload(
     return data
 
 
-def make_webhook_handler(config: Config, enqueue: Callable[[WebhookReviewEvent], None]):
+def make_webhook_handler(config: Config, enqueue: Callable[[WebhookReviewEvent], object | None]):
     class GitLabWebhookHandler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API 固定使用该命名。
             parsed_path = urlparse(self.path).path
@@ -483,6 +487,11 @@ def _check_webhook_token(headers: dict[str, str], expected: str, header_name: st
     if actual != expected:
         return _json_response(403, "WEBHOOK_TOKEN_INVALID", f"{header_name} header is invalid")
     return None
+
+
+def _header_value(headers: dict[str, str], header_name: str) -> str:
+    normalized = {key.lower(): value for key, value in headers.items()}
+    return str(normalized.get(header_name.lower()) or "").strip()
 
 
 def _json_response(status: int, code: str, message: str) -> WebhookResponse:
@@ -533,122 +542,6 @@ def _safe_filename(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("_") or "repo"
 
 
-def _diff_refs_from_detail(detail: dict) -> DiffRefs:
-    diff_refs = detail.get("diff_refs")
-    if not isinstance(diff_refs, dict):
-        raise ValueError("GitLab MR detail response missing diff_refs")
-    base_sha = diff_refs.get("base_sha")
-    start_sha = diff_refs.get("start_sha")
-    head_sha = diff_refs.get("head_sha")
-    if not all(isinstance(value, str) and value for value in (base_sha, start_sha, head_sha)):
-        raise ValueError("GitLab MR detail diff_refs missing base_sha/start_sha/head_sha")
-    return DiffRefs(base_sha=base_sha, start_sha=start_sha, head_sha=head_sha)
-
-
-def _extract_existing_markers(discussions: list[dict]) -> set[str]:
-    markers = set()
-    for discussion in discussions:
-        notes = discussion.get("notes") if isinstance(discussion, dict) else None
-        if not isinstance(notes, list):
-            continue
-        for note in notes:
-            if not isinstance(note, dict):
-                continue
-            body = note.get("body")
-            if not isinstance(body, str):
-                continue
-            markers.update(re.findall(r"<!-- ai-cr:finding:[^>]+ -->", body))
-    return markers
-
-
-def _finding_marker(target: MergeRequestReviewTarget, decision: FindingValidationDecision) -> str:
-    finding = decision.finding
-    head_sha = decision.position.refs.head_sha if decision.position else target.head_sha
-    return (
-        "<!-- ai-cr:finding:"
-        f"{target.project_path}:{target.mr_iid}:{head_sha}:{finding.rule_id}:"
-        f"{finding.old_path}:{finding.new_path}:{finding.old_line}:{finding.new_line}"
-        " -->"
-    )
-
-
-def _discussion_body(decision: FindingValidationDecision, marker: str, model_name: str) -> str:
-    finding = decision.finding
-    return (
-        f"**🤖 AI Review｜{finding.title}**\n\n"
-        f"**判断依据**\n\n{finding.evidence}\n\n"
-        f"**影响**\n\n{finding.impact}\n\n"
-        f"**建议**\n\n{finding.suggestion}\n\n"
-        "<details>\n"
-        "<summary>审查信息</summary>\n\n"
-        f"- 置信度：`{finding.confidence}`\n"
-        f"- 规则：`{finding.rule_id}`\n"
-        f"- 来源：`AI Review · {model_name}`\n\n"
-        "</details>\n\n"
-        f"{marker}"
-    )
-
-
-def _finding_result(
-        decision: FindingValidationDecision,
-        status: str,
-        reason: str,
-        marker: str = "",
-) -> dict:
-    finding = decision.finding
-    return {
-        "rule_id": finding.rule_id,
-        "severity": finding.severity,
-        "confidence": finding.confidence,
-        "old_path": finding.old_path,
-        "new_path": finding.new_path,
-        "old_line": finding.old_line,
-        "new_line": finding.new_line,
-        "title": finding.title,
-        "evidence": finding.evidence,
-        "impact": finding.impact,
-        "suggestion": finding.suggestion,
-        "status": status,
-        "reason": reason,
-        "marker": marker,
-    }
-
-
-def _finding_counts(results: list[dict]) -> dict[str, int]:
-    counts = {
-        "total": len(results),
-        "posted": 0,
-        "skipped_duplicate": 0,
-        "filtered": 0,
-        "invalid": 0,
-        "failed": 0,
-    }
-    for result in results:
-        status = result.get("status")
-        if status in counts:
-            counts[status] += 1
-    return counts
-
-
-def _with_structured_submission(
-        report: ReviewReport,
-        structured: StructuredReviewResult,
-        status: str,
-        results: list[dict],
-) -> ReviewReport:
-    return replace(
-        report,
-        submission_owner="python",
-        submission_status=status,
-        structured_parse_status="success",
-        finding_counts=_finding_counts(results),
-        finding_results=results,
-        good=structured.good,
-        notes=structured.notes,
-        test_gaps=structured.test_gaps,
-    )
-
-
 def _build_failure_review_report(
         event: WebhookReviewEvent,
         error: Exception,
@@ -685,25 +578,6 @@ def _build_failure_review_report(
         dependency_preparation_seconds=report_context.get("dependency_preparation_seconds"),
         agent_call_count=agent_call_count,
     )
-
-
-def _unpublished_finding_result(finding, status: str, reason: str) -> dict:
-    return {
-        "rule_id": finding.rule_id,
-        "severity": finding.severity,
-        "confidence": finding.confidence,
-        "old_path": finding.old_path,
-        "new_path": finding.new_path,
-        "old_line": finding.old_line,
-        "new_line": finding.new_line,
-        "title": finding.title,
-        "evidence": finding.evidence,
-        "impact": finding.impact,
-        "suggestion": finding.suggestion,
-        "status": status,
-        "reason": reason,
-        "marker": "",
-    }
 
 
 def _redact(text: str, config: Config) -> str:

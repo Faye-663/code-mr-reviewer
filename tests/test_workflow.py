@@ -9,13 +9,13 @@ import pytest
 
 import mr_reviewer.opencode as agent_module
 from mr_reviewer.config import Config
-from mr_reviewer.cli import _poll_messages, _reply, healthcheck
+from mr_reviewer.cli import _poll_messages, _reply, healthcheck, poll
 from mr_reviewer.git import GitClient
 from mr_reviewer.gitlab import GitLabMrUrl
 from mr_reviewer.im import ImMessage
 from mr_reviewer.opencode import OpenCodeRunner
 from mr_reviewer.prompting import PromptMetadata
-from mr_reviewer.reviewer import ReviewService
+from mr_reviewer.reviewer import ReviewCancelledError, ReviewService
 
 
 class FakeGitLabClient:
@@ -146,6 +146,38 @@ def test_review_service_uses_two_steps_for_deep_review_title(tmp_path: Path):
     assert report.routing_reason == "title_prefix"
     assert report.routing_marker == "【Deep-Review】"
     assert report.agent_call_count == 2
+
+
+def test_review_service_stops_deep_review_after_plan_when_superseded(tmp_path: Path):
+    class DeepReviewGitLabClient(FakeGitLabClient):
+        def get_merge_request(self, mr: GitLabMrUrl):
+            data = super().get_merge_request(mr)
+            data["title"] = "【Deep-Review】 Fix auth"
+            return data
+
+    cancelled = False
+
+    class CancellingRunner(RecordingOpenCodeRunner):
+        def run_review(self, prompt, cwd, timeout_seconds, prompt_metadata=None):
+            nonlocal cancelled
+            result = super().run_review(prompt, cwd, timeout_seconds, prompt_metadata)
+            if prompt_metadata.template_id == "review-plan":
+                cancelled = True
+            return result
+
+    runner = CancellingRunner()
+    service = ReviewService(DeepReviewGitLabClient(), RecordingGitClient(), runner)
+
+    with pytest.raises(ReviewCancelledError):
+        service.review(
+            GitLabMrUrl("https://gitlab.example.com", "team/project", 7),
+            Config(gitlab_base_url="https://gitlab.example.com", work_dir=tmp_path),
+            task_id="task-cancelled-deep-review",
+            should_cancel=lambda: cancelled,
+        )
+
+    assert len(runner.prompts) == 1
+    assert not (tmp_path / "task-cancelled-deep-review").exists()
 
 
 def test_review_service_recovers_wrapped_deep_review_outputs_without_extra_call(tmp_path: Path):
@@ -419,9 +451,11 @@ def test_poll_once_runs_review_and_replies(tmp_path: Path):
         "MR_REVIEWER_WELINK_ONEBOX_PARENT_ID": "parent-example",
         "MR_REVIEWER_BOT_MENTION": "@ReviewBot",
         "MR_REVIEWER_BOT_ACCOUNT": "bot001",
-        "MR_REVIEWER_WORK_DIR": str(tmp_path / "work"),
-        "MR_REVIEWER_STATE_PATH": str(tmp_path / "state.json"),
-        "MR_REVIEWER_OPENCODE_COMMAND": f"{sys.executable} {opencode_script}",
+            "MR_REVIEWER_WORK_DIR": str(tmp_path / "work"),
+            "MR_REVIEWER_STATE_PATH": str(tmp_path / "state.json"),
+            "MR_REVIEWER_REPORT_DIR": str(tmp_path / "reports"),
+            "MR_REVIEWER_COORDINATION_DB_PATH": str(tmp_path / "coordination.sqlite3"),
+            "MR_REVIEWER_OPENCODE_COMMAND": f"{sys.executable} {opencode_script}",
         "MR_REVIEWER_TEST_GITLAB_RESPONSES": str(gitlab_file),
         "MR_REVIEWER_LOG_LEVEL": "INFO",
         "PYTHONPATH": str(Path("src").resolve()),
@@ -784,6 +818,43 @@ def test_healthcheck_requires_welink_group_id(monkeypatch, capsys):
     config.welink_onebox_parent_id = ""
     assert healthcheck(config) == 1
     assert "welink_onebox_parent_id: missing" in capsys.readouterr().out
+
+
+def test_healthcheck_warns_when_im_gitlab_publish_has_empty_allowlists(monkeypatch, capsys):
+    monkeypatch.setattr("shutil.which", lambda command: f"C:/bin/{command}")
+    config = Config(
+        gitlab_base_url="https://gitlab.example.com",
+        gitlab_token="token",
+        im_poll_command="poll",
+        im_reply_command="reply",
+        welink_group_id="group-example",
+        welink_onebox_space_id="space-example",
+        welink_onebox_parent_id="parent-example",
+        im_post_comment=True,
+    )
+
+    assert healthcheck(config) == 0
+    output = capsys.readouterr().out
+    assert "im_post_comment: enabled" in output
+    assert "im_publish_allowlist: WARNING" in output
+    assert "allowed_users=unrestricted" in output
+    assert "allowed_repos=unrestricted" in output
+
+
+def test_poll_always_emits_high_risk_im_publish_warning(tmp_path: Path, monkeypatch, capsys):
+    config = Config(
+        gitlab_base_url="https://gitlab.example.com",
+        state_path=tmp_path / "state.json",
+        im_post_comment=True,
+        log_level="OFF",
+    )
+    monkeypatch.setattr("mr_reviewer.cli.build_service", lambda config: object())
+    monkeypatch.setattr("mr_reviewer.cli._poll_messages", lambda config: [])
+
+    assert poll(config, once=True) == 0
+    warning = capsys.readouterr().err
+    assert "stage=poller_startup" in warning
+    assert "reason=im_gitlab_publish_unrestricted" in warning
 
 
 def test_opencode_runner_uses_utf8_and_redacts_prompt_in_logs(monkeypatch, tmp_path: Path, caplog):

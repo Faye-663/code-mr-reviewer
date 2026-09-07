@@ -240,5 +240,5 @@ MR Web URL 与 REST API root 是两个独立边界：`MR_REVIEWER_GITLAB_BASE_UR
 - `review_set_result.py` / `review_set_publish.py` / `review_set_report.py`：联合 plan/result 严格解析、责任 target 校验/幂等发布和聚合 Markdown。
 - `reviewer.py`：共用 review core，串联 GitLab、Git 和 Agent；单仓 Deep、依赖联合 Deep 与 ReviewSet 的 two-step 均共享各自任务剩余超时预算。
 - `structured_output.py` / `result_validation.py` / `review_result.py` / `inline_review.py` / `publication_policy.py` / `markdown_report.py`：结构化输出恢复边界、严格结果字段校验、审查计划与 review JSON 契约校验、finding 行定位校验、共享发布门槛、GitLab inline 发布结果整理和本地 Markdown 报告渲染。
-- `opencode.py`：AgentRunner protocol、OpenCode/Claude Code adapter、debug 参数和 prompt 日志脱敏。
+- `opencode.py`：AgentRunner protocol、OpenCode/Claude Code 机器可读事件 adapter、顶层会话完整文本提取、tool/sub-agent 输出隔离、协议 fail-closed、debug 参数和 prompt 日志脱敏。
 - `state.py`：IM poll 的本地去重状态文件，避免重复处理同一条 IM 消息。

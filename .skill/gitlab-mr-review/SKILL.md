@@ -49,6 +49,8 @@ python <复制后的skill目录>/gitlab-mr-review/scripts/review_gitlab_mr.py "<
 6. 要求同一 Agent 使用现有 `code-review skill` 审查本地 repo 的 MR range。
 7. 写出本地 Markdown 报告；Deep Review 报告额外包含审查计划。当 `MR_REVIEW_SUBMIT_COMMENT` 不是 `false` 时，只把 review 正文提交到现有 MR comment。
 
+脚本通过 OpenCode `--format json` 或 Claude Code `2.1.214+` 的 `--output-format stream-json --verbose` 读取顶层会话的全部完整文本事件；结构化结果可以位于任意顶层文本消息，但必须只有一个契约有效 JSON。工具输出、转发的子 Agent 文本、损坏事件流、显式错误事件和多个不同的合法结果都不能降级为成功。
+
 ## 边界
 
 - 不要复制或改写 `code-review skill` 的审查规则；本 skill 只负责从 MR URL 到评论写回。

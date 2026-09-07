@@ -16,6 +16,35 @@ from mr_reviewer.im import ImMessage
 from mr_reviewer.opencode import OpenCodeRunner
 from mr_reviewer.prompting import PromptMetadata
 from mr_reviewer.reviewer import ReviewCancelledError, ReviewService
+from mr_reviewer.review_result import parse_structured_review_result
+
+
+def _opencode_json_output(*texts: str) -> str:
+    return "\n".join(
+        json.dumps({"type": "text", "sessionID": "session-1", "part": {"type": "text", "text": text}})
+        for text in texts
+    )
+
+
+def _claude_stream_json_output(*texts: str, result: str | None = None) -> str:
+    events = [
+        {
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": text}]},
+            "session_id": "session-1",
+        }
+        for text in texts
+    ]
+    events.append(
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": texts[-1] if result is None and texts else (result or ""),
+            "session_id": "session-1",
+        }
+    )
+    return "\n".join(json.dumps(event, ensure_ascii=False) for event in events)
 
 
 class FakeGitLabClient:
@@ -408,11 +437,12 @@ def test_poll_once_runs_review_and_replies(tmp_path: Path):
     )
     opencode_script.write_text(
         "import json, pathlib, sys\n"
+        "def emit(payload): print(json.dumps({'type':'text','part':{'type':'text','text':json.dumps(payload)}}))\n"
         "prompt = pathlib.Path(sys.argv[sys.argv.index('--file') + 1]).read_text(encoding='utf-8')\n"
         "if prompt.startswith('分析本次 GitLab MR 并生成严格的审查计划'):\n"
-        "    print(json.dumps({'change_intent':['summary'],'critical_paths':[{'path':'app.py','reason':'output','verify':['behavior']}],'external_contracts':[],'state_invariants':[],'transaction_async_boundaries':[],'test_risks':[],'open_questions':[]}))\n"
+        "    emit({'change_intent':['summary'],'critical_paths':[{'path':'app.py','reason':'output','verify':['behavior']}],'external_contracts':[],'state_invariants':[],'transaction_async_boundaries':[],'test_risks':[],'open_questions':[]})\n"
         "else:\n"
-        "    print(json.dumps({'findings':[],'notes':['No high-confidence issues.'],'test_gaps':[]}))\n",
+        "    emit({'findings':[],'notes':['No high-confidence issues.'],'test_gaps':[]})\n",
         encoding="utf-8",
     )
     gitlab_file.write_text(
@@ -525,15 +555,16 @@ def test_poll_once_runs_review_set_and_uploads_aggregate_report(tmp_path: Path):
     agent_script.write_text(
         "import json, pathlib, sys\n"
         "sys.stdout.reconfigure(encoding='utf-8')\n"
+        "def emit(payload): print(json.dumps({'type':'text','part':{'type':'text','text':json.dumps(payload, ensure_ascii=False)}}, ensure_ascii=False))\n"
         f"calls = pathlib.Path({str(agent_calls)!r})\n"
         "prompt = pathlib.Path(sys.argv[sys.argv.index('--file') + 1]).read_text(encoding='utf-8')\n"
         "manifest = json.loads(pathlib.Path('review-set.json').read_text(encoding='utf-8'))\n"
         "assert all(pathlib.Path(item['repo_path']).joinpath('.git').exists() for item in manifest['members'])\n"
         "with calls.open('a', encoding='utf-8') as stream: stream.write(('plan' if 'review-set-plan/v1' in prompt and '不输出 finding' in prompt else 'review') + '\\n')\n"
         "if '不输出 finding' in prompt:\n"
-        "    print(json.dumps({'schema_version':'review-set-plan/v1','member_focus':[{'member_id':item['member_id'],'change_intent':['verify member'],'critical_paths':[{'path':'app.py' if item['project_path'].endswith('/app') else 'sdk.py','reason':'changed path','verify':['behavior']}],'test_risks':[]} for item in manifest['members']],'relationships':[],'open_questions':[]}))\n"
+        "    emit({'schema_version':'review-set-plan/v1','member_focus':[{'member_id':item['member_id'],'change_intent':['verify member'],'critical_paths':[{'path':'app.py' if item['project_path'].endswith('/app') else 'sdk.py','reason':'changed path','verify':['behavior']}],'test_risks':[]} for item in manifest['members']],'relationships':[],'open_questions':[]})\n"
         "else:\n"
-        "    print(json.dumps({'schema_version':'review-set-review/v1','findings':[],'relationship_summary':['未发现可证实的跨仓关系'],'notes':[],'test_gaps':[],'good':[]}, ensure_ascii=False))\n",
+        "    emit({'schema_version':'review-set-review/v1','findings':[],'relationship_summary':['未发现可证实的跨仓关系'],'notes':[],'test_gaps':[],'good':[]})\n",
         encoding="utf-8",
     )
     upload_script.write_text(
@@ -857,19 +888,28 @@ def test_poll_always_emits_high_risk_im_publish_warning(tmp_path: Path, monkeypa
     assert "reason=im_gitlab_publish_unrestricted" in warning
 
 
-def test_opencode_runner_uses_utf8_and_redacts_prompt_in_logs(monkeypatch, tmp_path: Path, caplog):
+@pytest.mark.parametrize("findings_position", [0, 1, 2])
+def test_opencode_runner_finds_result_at_any_text_event_position(
+        monkeypatch, tmp_path: Path, caplog, findings_position: int
+):
     calls = []
     transferred_prompts = []
+    findings = '{"findings":[],"notes":[],"test_gaps":[]}'
+    text_events = ["正在检查", "继续验证"]
+    text_events.insert(findings_position, findings)
 
     def fake_run(args, **kwargs):
         calls.append((args, kwargs))
         prompt_file = Path(args[args.index("--file") + 1])
         transferred_prompts.append(prompt_file.read_text(encoding="utf-8"))
+        tool_event = json.dumps(
+            {"type": "tool_use", "part": {"type": "tool", "state": {"output": "tool-only-json"}}}
+        )
 
         class Result:
             returncode = 0
             stderr = ""
-            stdout = "# Review\n"
+            stdout = "\n".join([tool_event, _opencode_json_output(*text_events)])
 
         return Result()
 
@@ -880,20 +920,40 @@ def test_opencode_runner_uses_utf8_and_redacts_prompt_in_logs(monkeypatch, tmp_p
 
     args, kwargs = calls[0]
     assert args[:5] == ["opencode", "--print-logs", "--log-level", "DEBUG", "run"]
-    assert args[5] == "Follow the instructions in the attached file."
-    assert args[6] == "--file"
+    assert args[5:9] == ["--format", "json", "Follow the instructions in the attached file.", "--file"]
     assert transferred_prompts == ["请 review 这段 diff"]
     assert "请 review 这段 diff" not in args
     assert kwargs["encoding"] == "utf-8"
     assert kwargs["errors"] == "replace"
-    assert output == "# Review"
+    assert parse_structured_review_result(output).findings == []
+    assert "tool-only-json" not in output
     log_text = "\n".join(record.getMessage() for record in caplog.records)
-    assert "opencode --print-logs --log-level DEBUG run \"Follow the instructions in the attached file.\" --file" in log_text
+    assert "opencode --print-logs --log-level DEBUG run --format json" in log_text
     assert "请 review" not in log_text
 
 
-def test_claude_code_runner_sends_multiline_prompt_via_stdin(monkeypatch, tmp_path: Path):
+@pytest.mark.parametrize("findings_position", [0, 1, 2])
+def test_claude_code_runner_finds_result_at_any_top_level_message_position(
+        monkeypatch, tmp_path: Path, findings_position: int
+):
     calls = []
+    findings = '{"findings":[],"notes":[],"test_gaps":[]}'
+    assistant_texts = ["正在检查", "继续验证"]
+    assistant_texts.insert(findings_position, findings)
+    subagent_event = json.dumps(
+        {
+            "type": "assistant",
+            "parent_tool_use_id": "tool-1",
+            "message": {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": '{"findings":[],"notes":["sub-agent draft"],"test_gaps":[]}',
+                    }
+                ]
+            },
+        }
+    )
 
     def fake_run(args, **kwargs):
         calls.append((args, kwargs))
@@ -901,7 +961,9 @@ def test_claude_code_runner_sends_multiline_prompt_via_stdin(monkeypatch, tmp_pa
         class Result:
             returncode = 0
             stderr = ""
-            stdout = '{"findings":[],"notes":[],"test_gaps":[]}'
+            stdout = "\n".join(
+                [subagent_event, _claude_stream_json_output(*assistant_texts, result="任务总结")]
+            )
 
         return Result()
 
@@ -912,10 +974,62 @@ def test_claude_code_runner_sends_multiline_prompt_via_stdin(monkeypatch, tmp_pa
     output = runner_class("claude", debug=False).run_review(prompt, tmp_path, 60)
 
     args, kwargs = calls[0]
-    assert args == ["claude", "-p", "--output-format", "text"]
+    assert args == ["claude", "-p", "--output-format", "stream-json", "--verbose"]
     assert kwargs["input"] == prompt
     assert prompt not in args
-    assert output.startswith("{")
+    assert parse_structured_review_result(output).findings == []
+    assert "sub-agent draft" not in output
+
+
+@pytest.mark.parametrize(
+    ("stdout", "message"),
+    [
+        ('{"type":"assistant","message":{"content":[]}}', "ended without a result event"),
+        ('not-json\n{"type":"result","subtype":"success","is_error":false}', "line 1 is not valid JSON"),
+        ('{"type":"result","subtype":"success","is_error":false}', "has no text result"),
+        (
+            '{"type":"assistant","message":{"content":[{"type":"text","text":42}]}}\n'
+            '{"type":"result","subtype":"success","is_error":false,"result":"summary"}',
+            "has no text value",
+        ),
+        (
+            '{"type":"result","subtype":"error_during_execution","is_error":true}',
+            "reported an unsuccessful result",
+        ),
+    ],
+)
+def test_claude_code_runner_rejects_invalid_stream(monkeypatch, tmp_path: Path, stdout: str, message: str):
+    class Result:
+        returncode = 0
+        stderr = ""
+
+    Result.stdout = stdout
+    monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: Result())
+
+    with pytest.raises(RuntimeError, match=message):
+        agent_module.ClaudeCodeRunner("claude").run_review("review", tmp_path, 60)
+
+
+@pytest.mark.parametrize(
+    ("stdout", "message"),
+    [
+        ("not-json", "line 1 is not valid JSON"),
+        ('{"type":"error","error":{"name":"ProviderError"}}', "reported an error event"),
+        ('{"type":"step_start","part":{"type":"step-start"}}', "did not contain text"),
+        ("[]", "must be a JSON object"),
+        ('{"type":"text","part":{"type":"text","text":42}}', "has no text value"),
+    ],
+)
+def test_opencode_runner_rejects_invalid_event_stream(monkeypatch, tmp_path: Path, stdout: str, message: str):
+    class Result:
+        returncode = 0
+        stderr = ""
+
+    Result.stdout = stdout
+    monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: Result())
+
+    with pytest.raises(RuntimeError, match=message):
+        OpenCodeRunner("opencode").run_review("review", tmp_path, 60)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows batch regression")
@@ -923,13 +1037,17 @@ def test_claude_code_runner_sends_multiline_prompt_via_stdin(monkeypatch, tmp_pa
 def test_agent_runner_preserves_multiline_prompt_through_windows_batch(tmp_path: Path, agent_type: str):
     reader = tmp_path / "read_prompt.py"
     reader.write_text(
-        "import pathlib, sys\n"
+        "import json, pathlib, sys\n"
         "if '--file' in sys.argv:\n"
         "    path = pathlib.Path(sys.argv[sys.argv.index('--file') + 1])\n"
         "    text = path.read_text(encoding='utf-8')\n"
+        "    events = [{'type':'text','part':{'type':'text','text':text}}]\n"
         "else:\n"
         "    text = sys.stdin.buffer.read().decode('utf-8')\n"
-        "sys.stdout.buffer.write(text.encode('utf-8'))\n",
+        "    events = [{'type':'assistant','message':{'content':[{'type':'text','text':text}]}},"
+        "{'type':'result','subtype':'success','is_error':False,'result':text}]\n"
+        "output = '\\n'.join(json.dumps(event, ensure_ascii=False) for event in events)\n"
+        "sys.stdout.buffer.write(output.encode('utf-8'))\n",
         encoding="utf-8",
     )
     command = tmp_path / "fake-agent.cmd"
@@ -948,15 +1066,17 @@ def test_agent_runner_preserves_multiline_prompt_through_windows_batch(tmp_path:
 
     output = runner.run_review(prompt, tmp_path, 60)
 
-    assert output == prompt.strip()
+    assert output.splitlines() == prompt.strip().splitlines()
 
 
 def test_opencode_runner_writes_diagnostics(monkeypatch, tmp_path: Path, caplog):
+    raw_output = _opencode_json_output("# Review") + "\n"
+
     def fake_run(args, **kwargs):
         class Result:
             returncode = 0
             stderr = "debug logs\n"
-            stdout = "# Review\n"
+            stdout = raw_output
 
         return Result()
 
@@ -994,7 +1114,7 @@ def test_opencode_runner_writes_diagnostics(monkeypatch, tmp_path: Path, caplog)
     assert env_summary["debug"] is True
     assert env_summary["resolved_executable"] == "C:\\bin\\opencode.exe"
     assert "OPENCODE_TEST_FLAG" in env_summary["related_env_names"]
-    assert diagnostic_path.joinpath("stdout.md").read_text(encoding="utf-8") == "# Review\n"
+    assert diagnostic_path.joinpath("stdout.md").read_text(encoding="utf-8") == raw_output
     assert diagnostic_path.joinpath("stderr.log").read_text(encoding="utf-8") == "debug logs\n"
     assert json.loads(diagnostic_path.joinpath("result.json").read_text(encoding="utf-8"))["returncode"] == 0
     log_text = "\n".join(record.getMessage() for record in caplog.records)
@@ -1010,7 +1130,7 @@ def test_opencode_runner_does_not_write_diagnostics_when_debug_is_disabled(monke
         class Result:
             returncode = 0
             stderr = ""
-            stdout = "# Review\n"
+            stdout = _opencode_json_output("# Review")
 
         return Result()
 
@@ -1036,7 +1156,7 @@ def test_opencode_runner_can_send_prompt_as_file(monkeypatch, tmp_path: Path):
         class Result:
             returncode = 0
             stderr = ""
-            stdout = "# Review\n"
+            stdout = _opencode_json_output("# Review")
 
         return Result()
 
@@ -1058,9 +1178,8 @@ def test_opencode_runner_can_send_prompt_as_file(monkeypatch, tmp_path: Path):
     args, kwargs = calls[0]
     assert output == "# Review"
     assert args[:5] == ["opencode", "--print-logs", "--log-level", "DEBUG", "run"]
-    assert args[5] == "Follow the instructions in the attached file."
-    assert args[6] == "--file"
-    prompt_file = Path(args[7])
+    assert args[5:9] == ["--format", "json", "Follow the instructions in the attached file.", "--file"]
+    prompt_file = Path(args[9])
     assert prompt_file.name.startswith("mr-reviewer-agent-prompt-")
     assert not prompt_file.exists()
     assert "https://gitlab.example.com" not in args

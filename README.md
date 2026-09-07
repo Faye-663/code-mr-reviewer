@@ -22,7 +22,7 @@ GitLab MR Review 助手。项目支持两种触发入口：
 - `uv`，用于安装和运行本项目的 Python 包。
 - `git`，用于 clone 目标 GitLab 仓库、fetch MR 分支和生成 diff。
 - 可访问目标 GitLab 的网络环境，以及具备读取 MR API 和 HTTPS clone 权限的 GitLab Token。
-- OpenCode 或 Claude Code CLI：必须已安装并可在 PATH 中找到；也可以通过 `MR_REVIEWER_AGENT_COMMAND` 指定可执行命令。
+- OpenCode 或 Claude Code CLI：必须已安装并可在 PATH 中找到；Claude Code 必须为 `2.1.214` 或更高版本；也可以通过 `MR_REVIEWER_AGENT_COMMAND` 指定可执行命令。
 - 所选 Agent 已安装 `code-review` skill；启用 IM ReviewSet 时还需安装 `cross-repo-code-review` skill；启用项目依赖联合检视时还需安装 `dependency-code-review` skill。仓库内的中立源文件位于 `.skill`，使用方需要复制到自己的 Agent skill 配置目录。
 - 使用 WeLink IM poll 时，还需要 `welink-cli` 已安装并完成登录或授权，且当前账号需要能调用 `im query-history-message`、`im send-to-group` 和 `onebox file-upload`。
 
@@ -257,7 +257,7 @@ welink-cli im send-to-group --group-id "group-example" --text "代码审查报�
 - `stage=trigger_registered` / `stage=webhook_review` / `stage=local_report`：单 MR Trigger 注册、webhook 后台处理和规范报告异常；ReviewRun 报告会记录全部 Trigger、两个 delivery、Head 校验、review/routing/finding/failure 字段及 `markdown_report_path`。
 - `stage=im_poll`：开始调用 WeLink 历史消息查询。
 - `stage=gitlab_api` / Agent / `stage=im_*`：记录调用方法、状态、耗时、返回码、内容长度及 Agent 的 `template_id`/`template_version`，不记录请求或响应正文。完整且脱敏的内容只在 `DEBUG` 本地目录中保存。
-- Windows 下如果 `welink-cli` 或 Agent command 解析到 `.cmd`/`.bat`，程序会通过 `cmd.exe /d /c call "<cmd路径>" ...` 执行。OpenCode 的完整 prompt 通过 UTF-8 文件附件传递，Claude Code 通过 stdin 传递，避免多行 argv 被截断。
+- Windows 下如果 `welink-cli` 或 Agent command 解析到 `.cmd`/`.bat`，程序会通过 `cmd.exe /d /c call "<cmd路径>" ...` 执行。OpenCode 的完整 prompt 通过 UTF-8 文件附件传递，Claude Code 通过 stdin 传递，避免多行 argv 被截断。Agent 输出使用 OpenCode `--format json` 或 Claude Code `--output-format stream-json --verbose` 的事件协议；adapter 遍历顶层会话的全部完整文本消息并忽略工具输出与转发的子 Agent 文本，再由结构化结果解析器接受唯一契约有效 JSON，结果不依赖最后一条消息的位置。
 - `status=messages_received`：本轮收到的消息数量。
 - `reason=already_processed`：状态文件显示消息已处理。
 - `reason=not_review_request`：消息不是 `@Bot + MR URL`。

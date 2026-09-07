@@ -140,7 +140,7 @@ Agent 的 provider、API Key、实际模型和登录状态由 OpenCode 或 Claud
 | 配置 | 默认值 | 适用模式 | 行为与关联 |
 |---|---|---|---|
 | `MR_REVIEWER_WORK_DIR` | 系统临时目录下的 `code-review` | 所有 review | 每个任务的临时 clone/workspace 根目录；空值回落到默认值。 |
-| `MR_REVIEWER_STATE_PATH` | `.mr-reviewer-state.json` | `poll` | 已处理 IM message ID 的本地状态文件。删除或不可写会影响去重。 |
+| `MR_REVIEWER_STATE_PATH` | `.mr-reviewer-state.json` | `poll` | 已处理 IM message ID 的本地状态文件。每个新 entry 还记录 `notifications.accepted` / `notifications.terminal` 的 `succeeded`、`failed` 或 `not_applicable`；旧 entry 无需迁移。删除或不可写会影响去重。 |
 | `MR_REVIEWER_REPORT_DIR` | `log/webhook-reports` | IM/webhook 单 MR | ReviewRun 级 JSON/Markdown；每个 attempt 一组，不按 Trigger 复制。 |
 | `MR_REVIEWER_COORDINATION_DB_PATH` | `log/review-coordination.sqlite3` | IM/webhook 单 MR | 单机共享协调状态。过期 review lease 启动时标记 `interrupted`，等待新 Trigger，不自动恢复。 |
 | `MR_REVIEWER_MAX_FILES` | `50` | 所有 review | 单个成员允许的最大 changed files 数。 |

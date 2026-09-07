@@ -11,6 +11,15 @@ from mr_reviewer.config import Config
 from mr_reviewer.git import GitClient
 from mr_reviewer.gitlab import GitLabClient, GitLabMrUrl, parse_gitlab_mr_url
 from mr_reviewer.im import ReviewRequest, ReviewSetRejection, ReviewSetRequest, resolve_review_trigger
+from mr_reviewer.im_notifications import (
+    render_review_set_accepted,
+    render_review_set_failed,
+    render_review_set_rejected,
+    render_review_set_terminal,
+    render_single_accepted,
+    render_single_failed,
+    render_single_terminal,
+)
 from mr_reviewer.markdown_report import render_structured_output_as_markdown
 from mr_reviewer.observability import configure_logging, task_context
 from mr_reviewer.opencode import build_agent_runner
@@ -26,7 +35,7 @@ from mr_reviewer.repository_dependencies import (
 )
 from mr_reviewer.state import StateStore
 from mr_reviewer.webhook import run_webhook_server
-from mr_reviewer.welink import poll_messages, reply, reply_review_set, send_text
+from mr_reviewer.welink import poll_messages, reply, reply_review_set, send_text, upload_onebox_report
 
 LOG = logging.getLogger("mr_reviewer")
 
@@ -182,6 +191,10 @@ def _send_text(config: Config, text: str) -> None:
     send_text(config, text)
 
 
+def _upload_onebox_report(config: Config, file_name: str, markdown: str) -> str | None:
+    return upload_onebox_report(config, file_name, markdown)
+
+
 def _im_publish_allowlist_warning(config: Config) -> str:
     if not config.im_post_comment:
         return ""
@@ -201,6 +214,13 @@ def _process_single_review(
 ) -> None:
     task_id = f"mr-{uuid.uuid4().hex[:12]}"
     start = time.monotonic()
+    accepted_status = _safe_im_notify(
+        config,
+        render_single_accepted(request.mr),
+        task_id,
+        "single",
+        "accepted",
+    )
     try:
         LOG.info("task=%s mr=%s/%s status=started", task_id, request.mr.project_path, request.mr.mr_iid)
         with task_context(task_id, config.debug_dir, config.log_level == "DEBUG"):
@@ -214,52 +234,74 @@ def _process_single_review(
                     upload_onebox=config.im_upload_onebox,
                 ),
             )
-            _send_text(config, _single_review_notification(outcome))
+        terminal_status = _safe_im_notify(
+            config,
+            render_single_terminal(request.mr, outcome),
+            outcome.review_run_id,
+            "single",
+            "terminal",
+        )
         elapsed = time.monotonic() - start
-        state.mark_processed(request.message.message_id, outcome.review_run_id, outcome.status)
+        state.mark_processed(
+            request.message.message_id,
+            outcome.review_run_id,
+            outcome.status,
+            notifications={"accepted": accepted_status, "terminal": terminal_status},
+        )
         LOG.info(
-            "task=%s mr=%s/%s elapsed=%.2fs status=success",
+            "task=%s mr=%s/%s elapsed=%.2fs status=%s",
             outcome.review_run_id,
             request.mr.project_path,
             request.mr.mr_iid,
             elapsed,
+            outcome.status,
         )
     except Exception as exc:  # noqa: BLE001 - 保留现有单 MR 顶层失败语义。
         elapsed = time.monotonic() - start
-        state.mark_processed(request.message.message_id, task_id, "failed", str(exc))
+        terminal_status = _safe_im_notify(
+            config,
+            render_single_failed(request.mr, task_id),
+            task_id,
+            "single",
+            "terminal",
+        )
+        state.mark_processed(
+            request.message.message_id,
+            task_id,
+            "failed",
+            "single_review_failed",
+            {"accepted": accepted_status, "terminal": terminal_status},
+        )
         LOG.error(
-            "task=%s mr=%s/%s elapsed=%.2fs status=failed error=%s",
+            "task=%s mr=%s/%s elapsed=%.2fs status=failed error_type=%s",
             task_id,
             request.mr.project_path,
             request.mr.mr_iid,
             elapsed,
-            exc,
+            type(exc).__name__,
         )
-
-
-def _single_review_notification(outcome) -> str:
-    if outcome.status == "superseded":
-        return "本次代码检视已被更新的 MR 提交替代，过期结果未发布到 GitLab 或 OneBox。"
-    if outcome.status == "failed":
-        return f"代码检视执行失败，请使用任务号 {outcome.review_run_id} 查询日志。"
-    onebox = outcome.deliveries.get("onebox", {})
-    gitlab = outcome.deliveries.get("gitlab", {})
-    if onebox.get("status") == "succeeded":
-        return (
-            "代码审查报告已上传到 WeLink OneBox，群空间Review目录下: "
-            f"{onebox.get('external_ref', '<unknown>')}"
-        )
-    if onebox.get("status") in {"failed", "unknown"}:
-        return "代码审查报告已生成，但 OneBox 上传失败或结果未知，请使用任务号查询本地报告。"
-    if gitlab.get("status") == "succeeded":
-        return "代码检视已完成，符合发布条件的检视意见已处理到 GitLab MR。"
-    return "代码检视已完成；外部交付已关闭，本地报告已保留。"
 
 
 def _reject_review_set(config: Config, state: StateStore, rejection: ReviewSetRejection) -> None:
     task_id = f"review-set-{uuid.uuid4().hex[:12]}"
-    state.mark_processed(rejection.message.message_id, task_id, "rejected", rejection.reason_code)
-    _safe_send_text(config, _rejection_text(rejection.reason_code), task_id)
+    terminal_status = _safe_im_notify(
+        config,
+        render_review_set_rejected(
+            rejection.members,
+            _rejection_text(rejection.reason_code),
+            task_id,
+        ),
+        task_id,
+        "review-set",
+        "terminal",
+    )
+    state.mark_processed(
+        rejection.message.message_id,
+        task_id,
+        "rejected",
+        rejection.reason_code,
+        {"accepted": "not_applicable", "terminal": terminal_status},
+    )
     LOG.info("task=%s review_scope=review-set status=rejected reason=%s", task_id, rejection.reason_code)
 
 
@@ -271,6 +313,13 @@ def _process_review_set(
 ) -> None:
     task_id = f"review-set-{uuid.uuid4().hex[:12]}"
     start = time.monotonic()
+    accepted_status = _safe_im_notify(
+        config,
+        render_review_set_accepted(request.members),
+        task_id,
+        "review-set",
+        "accepted",
+    )
     try:
         with task_context(task_id, config.debug_dir, config.log_level == "DEBUG"):
             report = service.review_set(request, config, task_id)
@@ -283,25 +332,62 @@ def _process_review_set(
                 model_name=config.agent_model_name,
             )
             markdown = render_review_set_report(report, publication)
-            _reply_review_set(
-                config,
-                markdown,
-                report.manifest.review_set_id,
-                publication.counts,
+            file_name = f"review-set-{report.manifest.review_set_id[:12]}.md"
+            try:
+                upload_error = _upload_onebox_report(config, file_name, markdown)
+            except Exception as exc:  # noqa: BLE001 - 报告上传失败不能改写已完成的联合检视。
+                upload_error = "onebox_upload_failed"
+                LOG.warning(
+                    "task=%s review_scope=review-set stage=file_upload outcome=failed error_type=%s",
+                    task_id,
+                    type(exc).__name__,
+                )
+            final_status = (
+                "success_with_warnings"
+                if publication.status == "success_with_warnings" or upload_error
+                else publication.status
             )
-        state.mark_processed(request.message.message_id, task_id, publication.status)
+        terminal_status = _safe_im_notify(
+            config,
+            render_review_set_terminal(report, publication, file_name, upload_error, task_id),
+            task_id,
+            "review-set",
+            "terminal",
+        )
+        state.mark_processed(
+            request.message.message_id,
+            task_id,
+            final_status,
+            notifications={"accepted": accepted_status, "terminal": terminal_status},
+        )
         LOG.info(
             "task=%s review_scope=review-set review_set_id=%s req_id=%s elapsed=%.2fs status=%s",
             task_id,
             report.manifest.review_set_id,
             report.manifest.req_id,
             time.monotonic() - start,
-            publication.status,
+            final_status,
         )
     except ReviewSetValidationError as exc:
         if exc.reason_code in {"req_id_missing", "req_id_mismatch"}:
-            state.mark_processed(request.message.message_id, task_id, "rejected", exc.reason_code)
-            _safe_send_text(config, _rejection_text(exc.reason_code), task_id)
+            terminal_status = _safe_im_notify(
+                config,
+                render_review_set_rejected(
+                    request.members,
+                    _rejection_text(exc.reason_code),
+                    task_id,
+                ),
+                task_id,
+                "review-set",
+                "terminal",
+            )
+            state.mark_processed(
+                request.message.message_id,
+                task_id,
+                "rejected",
+                exc.reason_code,
+                {"accepted": accepted_status, "terminal": terminal_status},
+            )
             LOG.info(
                 "task=%s review_scope=review-set elapsed=%.2fs status=rejected reason=%s",
                 task_id,
@@ -309,9 +395,9 @@ def _process_review_set(
                 exc.reason_code,
             )
         else:
-            _fail_review_set(config, state, request, task_id, start, exc)
+            _fail_review_set(config, state, request, task_id, start, exc, accepted_status)
     except Exception as exc:  # noqa: BLE001 - 联合失败必须终结消息且只向 IM 暴露安全文案。
-        _fail_review_set(config, state, request, task_id, start, exc)
+        _fail_review_set(config, state, request, task_id, start, exc, accepted_status)
 
 
 def _fail_review_set(
@@ -321,34 +407,70 @@ def _fail_review_set(
         task_id: str,
         start: float,
         error: Exception,
+        accepted_status: str,
 ) -> None:
-    state.mark_processed(request.message.message_id, task_id, "failed", "review_set_failed")
-    _safe_send_text(config, f"多 MR 联合检视执行失败，请使用任务号 {task_id} 查询日志。", task_id)
-    LOG.exception(
+    terminal_status = _safe_im_notify(
+        config,
+        render_review_set_failed(
+            request.members,
+            task_id,
+            str(getattr(error, "stage", "review_set_review")),
+        ),
+        task_id,
+        "review-set",
+        "terminal",
+    )
+    state.mark_processed(
+        request.message.message_id,
+        task_id,
+        "failed",
+        "review_set_failed",
+        {"accepted": accepted_status, "terminal": terminal_status},
+    )
+    LOG.error(
         "task=%s review_scope=review-set elapsed=%.2fs status=failed error_type=%s",
         task_id,
         time.monotonic() - start,
         type(error).__name__,
-        exc_info=True,
     )
 
 
-def _safe_send_text(config: Config, text: str, task_id: str) -> None:
+def _safe_im_notify(
+        config: Config,
+        text: str,
+        task_id: str,
+        review_scope: str,
+        event: str,
+) -> str:
     try:
         _send_text(config, text)
-    except Exception:  # noqa: BLE001 - 通知失败不能使终结状态重新进入轮询。
-        LOG.exception("task=%s review_scope=review-set stage=im_notify status=failed", task_id)
+    except Exception as exc:  # noqa: BLE001 - 通知失败不能改写检视事实或触发 Agent 重试。
+        LOG.warning(
+            "task=%s review_scope=%s stage=im_notify event=%s outcome=failed error_type=%s",
+            task_id,
+            review_scope,
+            event,
+            type(exc).__name__,
+        )
+        return "failed"
+    LOG.info(
+        "task=%s review_scope=%s stage=im_notify event=%s outcome=succeeded",
+        task_id,
+        review_scope,
+        event,
+    )
+    return "succeeded"
 
 
 def _rejection_text(reason_code: str) -> str:
     messages = {
-        "too_many_mrs": "多 MR 联合检视已拒绝：一条消息最多只能包含 3 个唯一 MR。",
-        "same_project": "多 MR 联合检视已拒绝：成员必须来自不同项目。",
-        "repo_not_allowed": "多 MR 联合检视已拒绝：消息中包含未授权仓库。",
-        "req_id_missing": "多 MR 联合检视已拒绝：至少一个 MR 缺少有效 ReqID。",
-        "req_id_mismatch": "多 MR 联合检视已拒绝：成员 MR 的 ReqID 不一致。",
+        "too_many_mrs": "一条消息最多只能包含 3 个唯一 MR。",
+        "same_project": "成员必须来自不同项目。",
+        "repo_not_allowed": "消息中包含未授权仓库。",
+        "req_id_missing": "至少一个 MR 缺少有效 ReqID。",
+        "req_id_mismatch": "成员 MR 的 ReqID 不一致。",
     }
-    return messages.get(reason_code, "多 MR 联合检视已拒绝：请求不满足联合检视条件。")
+    return messages.get(reason_code, "请求不满足联合检视条件。")
 
 
 def main(argv: list[str] | None = None) -> int:

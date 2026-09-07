@@ -18,7 +18,14 @@ class StateStore:
     def is_processed(self, message_id: str) -> bool:
         return message_id in self.data.get("processed", {})
 
-    def mark_processed(self, message_id: str, task_id: str, status: str, error: str | None = None) -> None:
+    def mark_processed(
+        self,
+        message_id: str,
+        task_id: str,
+        status: str,
+        error: str | None = None,
+        notifications: dict[str, str] | None = None,
+    ) -> None:
         processed = self.data.setdefault("processed", {})
         entry = {
             "task_id": task_id,
@@ -27,6 +34,8 @@ class StateStore:
         }
         if error:
             entry["error"] = error
+        if notifications is not None:
+            entry["notifications"] = dict(notifications)
         processed[message_id] = entry
         self.data["lastMessageId"] = message_id
         self._save()

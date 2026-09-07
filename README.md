@@ -106,6 +106,8 @@ uv run mr-reviewer poll --once
 uv run mr-reviewer poll
 ```
 
+合法的单 MR 或 ReviewSet 请求会先收到一条带完整 `project_path!iid` 和 MR URL 的“已受理”通知，再收到一条终态通知。终态会重复列出目标 MR；取得元数据后还会包含 12 位 Head SHA，并分别说明 GitLab、OneBox 和任务号。相同 Head 命中已有 ReviewRun 时会明确标识加入或复用，不会伪装成一次新的 Agent 执行。通知发送失败不会改写检视结果或触发 Agent 重试。
+
 ## Review 流程
 
 实际 Git 流程：
@@ -162,7 +164,7 @@ Agent 读取主 MR changed files 后自行判断哪些依赖契约相关；Pytho
 7. 每个目标使用稳定 marker 去重；单条 GitLab 发布失败不会回滚已发布目标，最终状态为 `success_with_warnings`。
 8. 唯一聚合报告以 `review-set-<ReviewSet ID 前 12 位>.md` 上传 OneBox，包含计划、关系结论、findings、证据、责任位置和逐目标发布状态。
 
-ReqID 缺失或不一致属于 `rejected`；预检、Agent 或结果解析失败属于 `failed`。两者都会向群里发送不含原始异常的短消息并把该 IM 标记为已处理；重新执行必须发送新消息。首期结果只提供建议，不作为合并门禁。webhook 仍只处理单 MR，不做 ReviewSet 聚合。
+ReqID 缺失或不一致属于 `rejected`；预检、Agent 或结果解析失败属于 `failed`。通过本地结构校验的请求先发送成员明确的“已受理”通知，再以不含原始异常的拒绝或失败文案终结；数量、项目或仓库不合法的请求只发送一条拒绝通知。所有终态都会把该 IM 标记为已处理，重新执行必须发送新消息。首期结果只提供建议，不作为合并门禁。webhook 仍只处理单 MR，不做 ReviewSet 聚合。
 
 Agent JSON 中的 `old_line` / `new_line` 表示同一个 GitLab diff 位置，不是范围起止行：新增行使用 `old_line=-1, new_line=N`，删除行使用 `old_line=N, new_line=-1`，未修改的上下文行同时提供该位置匹配的两侧行号。单 MR webhook 兼容更新文件中的同号替换行误报：仅当 `old_line=new_line=N` 且 diff 两侧精确存在旧侧删除行和新侧新增行时，Python 才规范为新侧位置；该容错不用于新文件、范围式行号或 ReviewSet。`0`、小于 `-1`、双 `-1` 及其它冲突组合仍为非法。webhook 对无法映射到当前 diff 的 finding 只保留本地，不借用邻近行；ReviewSet 仅对语法合法但无法映射的位置保留现有普通 note fallback。
 
@@ -238,12 +240,24 @@ WeLink poll 命令 stdout 需要返回 `query-history-message` 的原始 JSON，
 }
 ```
 
-回发前会先上传 Markdown 报告文件，随后实际发送群通知：
+单 MR 的群通知示例：
 
-```powershell
-welink-cli onebox file-upload --space-id "<space-id>" --parent "<parent-id>" "<report-file>.md"
-welink-cli im send-to-group --group-id "group-example" --text "代码审查报告已上传到 WeLink OneBox，群空间Review目录下: <report-file>.md"
+```text
+[代码检视已受理]
+MR：team/project!7
+地址：https://gitlab.example.com/team/project/merge_requests/7
+
+[代码检视完成]
+MR：team/project!7
+地址：https://gitlab.example.com/team/project/merge_requests/7
+版本：a1b2c3d4e5f6
+检视发现：2 条
+GitLab：成功（新发布 1 条，已存在 0 条）
+OneBox：成功（review-project-mr-7-a1b2c3d4e5f6-review-abc.md）
+任务号：review-abc
 ```
+
+ReviewSet 的受理和终态会逐项列出 2–3 个成员；终态另外包含 ReqID、ReviewSet ID、发布计数和聚合报告文件名。OneBox 上传失败只显示安全状态，不把 CLI 原始错误回发到群里。
 
 ## 日志
 
@@ -272,7 +286,8 @@ welink-cli im send-to-group --group-id "group-example" --text "代码审查报�
 - `stage=opencode_review` / `stage=report_ready`：调用 Agent review 并得到结构化 JSON；Deep Review 会注入待验证计划，`run-once` 和 WeLink poll 继续由 Python 渲染为 Markdown。
 - `stage=file_upload` / `stage=file_upload_result`：上传 Markdown 报告文件到 WeLink OneBox。
 - `stage=file_upload_failed`：报告已生成，但 OneBox 上传失败；程序会继续向群里发送失败提示。
-- `stage=im_reply` / `stage=im_send`：准备和执行 WeLink 群通知。
+- `stage=im_notify event=accepted|terminal outcome=succeeded|failed`：受理或终态通知结果；通知失败与 review 状态分别记录，不输出通知正文或原始异常。
+- `stage=im_send`：执行 WeLink 群通知 transport。
 - `stage=cleanup`：清理任务临时目录。
 
 控制台日志不会输出 GitLab token、WeLink 原始正文、Agent prompt 或完整 Markdown 报告；需要排障时使用 `DEBUG` 的本地脱敏产物。
@@ -287,6 +302,7 @@ welink-cli im send-to-group --group-id "group-example" --text "代码审查报�
 - 全局同时只运行一个单 MR ReviewRun，且只支持共享同一 SQLite 文件的单机进程；不支持多主机协调。
 - ReviewKey 只包含项目、MR IID 和 Head SHA；相同 SHA 下 title、target branch、依赖目录或 Agent 配置变化仍复用已成功结果。
 - OneBox CLI 没有已验证的服务端幂等键。明确失败可由后续 Trigger 重试；上传中断标记为 `unknown` 并禁止自动重试，仍无法承诺严格 exactly-once。
+- WeLink 群通知没有已验证的服务端幂等键；受理或终态发送失败只记录到 IM state 和日志，不自动重试，避免在结果不确定时重复刷屏。
 - IM/webhook 单 MR 不提交整段 Markdown note；无法发布为 inline discussion 的 finding 只保留在本地 JSON 和 Markdown 报告中。未来可以评估把高风险、高置信的非 diff finding 降级为普通 MR note，但当前未开放该行为。
 - 项目依赖目录只表达直接源码仓关系，不证明制品版本；开源三方件、Maven/Gradle 解析、JAR 下载/反编译和 webhook 多 MR 聚合不在当前范围内。
 

@@ -128,7 +128,6 @@ def _reply_report(
         if upload_error:
             notify_text = (
                 "代码审查报告已生成，但 OneBox 上传失败，请检查 space-id/parent 是否存在或账号是否有权限。"
-                f"错误: {upload_error}"
             )
         else:
             notify_text = success_text.format(file_name=file_name)
@@ -204,7 +203,7 @@ def upload_report(config: Config, file_path: str, markdown: str) -> str | None:
     LOG.info("stage=file_upload_result returncode=%s stdout_chars=%s stderr_chars=%s", upload_result.returncode, len(upload_result.stdout or ""), len(upload_result.stderr or ""))
     if upload_result.returncode != 0:
         error = upload_result.stderr.strip() or upload_result.stdout.strip() or f"returncode={upload_result.returncode}"
-        LOG.warning("stage=file_upload_failed error=%s", error)
+        LOG.warning("stage=file_upload_failed error_type=command_failed")
         return error
     return None
 

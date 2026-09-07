@@ -466,7 +466,10 @@ def test_poll_once_runs_review_and_replies(tmp_path: Path):
     reply_script = tmp_path / "reply.py"
     reply_script.write_text(
         "import json, pathlib, sys\n"
-        "pathlib.Path(sys.argv[1]).write_text(json.dumps(sys.argv[2:], ensure_ascii=False), encoding='utf-8')\n",
+        "path = pathlib.Path(sys.argv[1])\n"
+        "calls = json.loads(path.read_text(encoding='utf-8')) if path.exists() else []\n"
+        "calls.append(sys.argv[2:])\n"
+        "path.write_text(json.dumps(calls, ensure_ascii=False), encoding='utf-8')\n",
         encoding="utf-8",
     )
 
@@ -500,11 +503,16 @@ def test_poll_once_runs_review_and_replies(tmp_path: Path):
         env=env,
     )
 
-    assert "success" in result.stderr
-    reply_args = json.loads(reply_file.read_text(encoding="utf-8"))
-    assert reply_args[:2] == ["--group-id", "configured-group"]
-    assert reply_args[2] == "--text"
-    assert "代码审查报告已上传到 WeLink OneBox" in reply_args[3]
+    assert "status=succeeded" in result.stderr
+    reply_calls = json.loads(reply_file.read_text(encoding="utf-8"))
+    assert len(reply_calls) == 2
+    assert all(call[:2] == ["--group-id", "configured-group"] for call in reply_calls)
+    assert all(call[2] == "--text" for call in reply_calls)
+    assert reply_calls[0][3].startswith("[代码检视已受理]")
+    assert "team/project!7" in reply_calls[0][3]
+    assert reply_calls[1][3].startswith("[代码检视完成]")
+    assert "team/project!7" in reply_calls[1][3]
+    assert "OneBox：成功" in reply_calls[1][3]
     upload_text = upload_log.read_text(encoding="utf-8")
     assert upload_text.startswith("onebox file-upload")
     assert "--space-id space-example --parent parent-example" in upload_text
@@ -737,7 +745,8 @@ def test_welink_reply_warns_group_when_onebox_upload_fails(monkeypatch, caplog):
     assert kwargs["encoding"] == "utf-8"
     log_text = "\n".join(record.getMessage() for record in caplog.records)
     assert "stage=file_upload_result returncode=1" in log_text
-    assert "parent not found" in log_text
+    assert "stage=file_upload_failed error_type=command_failed" in log_text
+    assert "parent not found" not in log_text
 
 
 def test_welink_reply_warns_group_when_onebox_config_missing(monkeypatch):

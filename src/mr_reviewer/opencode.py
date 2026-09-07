@@ -59,7 +59,7 @@ class OpenCodeRunner:
         # 多行 prompt 不进入 argv，避免 Windows 批处理重解析，并统一 Linux/Windows 行为。
         prompt_file, cleanup_prompt_file = self._write_prompt_transfer_file(prompt, diagnostic_path)
         # OpenCode 的 --file 是数组参数；位置参数必须放在它之前，避免被解析为额外附件。
-        args += ["run", PROMPT_FILE_MESSAGE, "--file", str(prompt_file)]
+        args += ["run", "--format", "json", PROMPT_FILE_MESSAGE, "--file", str(prompt_file)]
         LOG.info(
             "stage=opencode command=%s cwd=%s prompt_transport=%s prompt_chars=%s prompt_sha256=%s "
             "mr_url_present=%s template_id=%s template_version=%s diagnostic_path=%s",
@@ -90,7 +90,7 @@ class OpenCodeRunner:
                 self._write_diagnostic_result(diagnostic_path, result)
             if result.returncode != 0:
                 raise RuntimeError(f"opencode run failed: {result.stderr.strip()}")
-            return result.stdout.strip()
+            return "\n\n".join(_extract_opencode_json_texts(result.stdout or ""))
         finally:
             if cleanup_prompt_file and prompt_file:
                 prompt_file.unlink(missing_ok=True)
@@ -177,7 +177,9 @@ class ClaudeCodeRunner(OpenCodeRunner):
         args = shlex.split(self.command, posix=(os.name != "nt"))
         if self.debug:
             args += ["--debug"]
-        args += ["-p", "--output-format", "text"]
+        # text 模式只返回最后一条 assistant 消息；agent 最后输出任务总结时结构化结果会丢失。
+        # stream-json 会输出全部 assistant 消息事件，由下游契约解析扫描任意消息中的结果 JSON。
+        args += ["-p", "--output-format", "stream-json", "--verbose"]
         prompt_sha256 = _prompt_sha256(prompt)
         diagnostic_path = self._create_diagnostic_path(prompt_sha256) if self.debug and self.diagnostic_dir else None
         LOG.info(
@@ -209,7 +211,7 @@ class ClaudeCodeRunner(OpenCodeRunner):
             self._write_diagnostic_result(diagnostic_path, result)
         if result.returncode != 0:
             raise RuntimeError(f"claude code run failed: {result.stderr.strip()}")
-        return result.stdout.strip()
+        return "\n\n".join(_extract_claude_stream_json_texts(result.stdout or ""))
 
 
 def build_agent_runner(
@@ -225,6 +227,99 @@ def build_agent_runner(
     if agent_type == "claude-code":
         return ClaudeCodeRunner(command, debug=debug, diagnostic_dir=diagnostic_dir, redaction_token=redaction_token, prompt_transport="file")
     raise ValueError(f"unsupported agent type: {agent_type}")
+
+
+def _extract_claude_stream_json_texts(stdout: str) -> list[str]:
+    """提取 Claude Code 完整 assistant 消息，不扫描 tool 事件中的不可信嵌套内容。"""
+    texts: list[str] = []
+    seen: set[str] = set()
+    result_seen = False
+    for line_number, line in enumerate(stdout.splitlines(), start=1):
+        line = line.strip()
+        if not line:
+            continue
+        event = _decode_json_event(line, line_number, "claude code stream-json")
+        event_type = event.get("type")
+        if event_type == "result":
+            result_seen = True
+            if event.get("is_error") is True or event.get("subtype") != "success":
+                raise RuntimeError(
+                    f"claude code stream-json reported an unsuccessful result: {event.get('subtype', 'unknown')}"
+                )
+            result_text = event.get("result")
+            if not isinstance(result_text, str):
+                raise RuntimeError(f"claude code stream-json result event at line {line_number} has no text result")
+            _append_unique_text(texts, seen, result_text)
+            continue
+        if event_type != "assistant":
+            continue
+        # 转发的子 Agent 文本不是顶层 review 的权威输出，不能参与 findings 候选选择。
+        if event.get("parent_tool_use_id") is not None:
+            continue
+        message = event.get("message")
+        if not isinstance(message, dict):
+            raise RuntimeError(f"claude code stream-json assistant event at line {line_number} has no message object")
+        content = message.get("content")
+        if not isinstance(content, list):
+            raise RuntimeError(f"claude code stream-json assistant event at line {line_number} has no content list")
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                text = block.get("text")
+                if not isinstance(text, str):
+                    raise RuntimeError(
+                        f"claude code stream-json text block at line {line_number} has no text value"
+                    )
+                _append_unique_text(texts, seen, text)
+    if not result_seen:
+        raise RuntimeError("claude code stream-json output ended without a result event")
+    if not texts:
+        raise RuntimeError("claude code stream-json output did not contain assistant text")
+    return texts
+
+
+def _extract_opencode_json_texts(stdout: str) -> list[str]:
+    """提取 OpenCode 完整 text part；工具输出不得进入业务 JSON 候选集。"""
+    texts: list[str] = []
+    seen: set[str] = set()
+    for line_number, line in enumerate(stdout.splitlines(), start=1):
+        line = line.strip()
+        if not line:
+            continue
+        event = _decode_json_event(line, line_number, "opencode json")
+        event_type = event.get("type")
+        if event_type == "error":
+            raise RuntimeError("opencode json output reported an error event")
+        if event_type != "text":
+            continue
+        part = event.get("part")
+        if not isinstance(part, dict) or part.get("type") != "text":
+            raise RuntimeError(f"opencode json text event at line {line_number} has no text part")
+        text = part.get("text")
+        if not isinstance(text, str):
+            raise RuntimeError(f"opencode json text event at line {line_number} has no text value")
+        _append_unique_text(texts, seen, text)
+    if not texts:
+        raise RuntimeError("opencode json output did not contain text")
+    return texts
+
+
+def _decode_json_event(line: str, line_number: int, protocol: str) -> dict[str, object]:
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"{protocol} event at line {line_number} is not valid JSON") from exc
+    if not isinstance(event, dict):
+        raise RuntimeError(f"{protocol} event at line {line_number} must be a JSON object")
+    return event
+
+
+def _append_unique_text(texts: list[str], seen: set[str], value: object) -> None:
+    if not isinstance(value, str):
+        return
+    text = value.strip()
+    if text and text not in seen:
+        seen.add(text)
+        texts.append(text)
 
 
 def _command_for_log(args: list[str], prompt_sha256: str | None = None, redact_prompt: bool = True) -> str:

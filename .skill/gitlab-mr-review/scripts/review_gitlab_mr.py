@@ -644,10 +644,17 @@ def run_agent_review(agent_type: str, command: str, prompt: str, repo_path: Path
             ) as file:
                 file.write(prompt)
                 prompt_file = Path(file.name)
-            args += ["run", "Follow the instructions in the attached file.", "--file", str(prompt_file)]
+            args += [
+                "run",
+                "--format",
+                "json",
+                "Follow the instructions in the attached file.",
+                "--file",
+                str(prompt_file),
+            ]
             input_text = None
         elif agent_type == "claude-code":
-            args += ["-p", "--output-format", "text"]
+            args += ["-p", "--output-format", "stream-json", "--verbose"]
             input_text = prompt
         else:
             raise ValueError(f"unsupported agent type: {agent_type}")
@@ -664,10 +671,104 @@ def run_agent_review(agent_type: str, command: str, prompt: str, repo_path: Path
         )
         if result.returncode != 0:
             raise RuntimeError(f"agent run failed: {result.stderr.strip()}")
-        return result.stdout.strip()
+        if agent_type == "opencode":
+            texts = _extract_opencode_json_texts(result.stdout or "")
+        else:
+            texts = _extract_claude_stream_json_texts(result.stdout or "")
+        return "\n\n".join(texts)
     finally:
         if prompt_file:
             prompt_file.unlink(missing_ok=True)
+
+
+def _extract_claude_stream_json_texts(stdout: str) -> list[str]:
+    texts: list[str] = []
+    seen: set[str] = set()
+    result_seen = False
+    for line_number, line in enumerate(stdout.splitlines(), start=1):
+        line = line.strip()
+        if not line:
+            continue
+        event = _decode_json_event(line, line_number, "claude code stream-json")
+        event_type = event.get("type")
+        if event_type == "result":
+            result_seen = True
+            if event.get("is_error") is True or event.get("subtype") != "success":
+                raise RuntimeError(
+                    f"claude code stream-json reported an unsuccessful result: {event.get('subtype', 'unknown')}"
+                )
+            result_text = event.get("result")
+            if not isinstance(result_text, str):
+                raise RuntimeError(f"claude code stream-json result event at line {line_number} has no text result")
+            _append_unique_text(texts, seen, result_text)
+            continue
+        if event_type != "assistant":
+            continue
+        if event.get("parent_tool_use_id") is not None:
+            continue
+        message = event.get("message")
+        if not isinstance(message, dict):
+            raise RuntimeError(f"claude code stream-json assistant event at line {line_number} has no message object")
+        content = message.get("content")
+        if not isinstance(content, list):
+            raise RuntimeError(f"claude code stream-json assistant event at line {line_number} has no content list")
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                text = block.get("text")
+                if not isinstance(text, str):
+                    raise RuntimeError(
+                        f"claude code stream-json text block at line {line_number} has no text value"
+                    )
+                _append_unique_text(texts, seen, text)
+    if not result_seen:
+        raise RuntimeError("claude code stream-json output ended without a result event")
+    if not texts:
+        raise RuntimeError("claude code stream-json output did not contain assistant text")
+    return texts
+
+
+def _extract_opencode_json_texts(stdout: str) -> list[str]:
+    texts: list[str] = []
+    seen: set[str] = set()
+    for line_number, line in enumerate(stdout.splitlines(), start=1):
+        line = line.strip()
+        if not line:
+            continue
+        event = _decode_json_event(line, line_number, "opencode json")
+        event_type = event.get("type")
+        if event_type == "error":
+            raise RuntimeError("opencode json output reported an error event")
+        if event_type != "text":
+            continue
+        part = event.get("part")
+        if not isinstance(part, dict) or part.get("type") != "text":
+            raise RuntimeError(f"opencode json text event at line {line_number} has no text part")
+        text = part.get("text")
+        if not isinstance(text, str):
+            raise RuntimeError(f"opencode json text event at line {line_number} has no text value")
+        _append_unique_text(texts, seen, text)
+    if not texts:
+        raise RuntimeError("opencode json output did not contain text")
+    return texts
+
+
+def _decode_json_event(line: str, line_number: int, protocol: str) -> dict[str, object]:
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"{protocol} event at line {line_number} is not valid JSON") from exc
+    if not isinstance(event, dict):
+        raise RuntimeError(f"{protocol} event at line {line_number} must be a JSON object")
+    return event
+
+
+def _append_unique_text(texts: list[str], seen: set[str], value: object) -> None:
+    if not isinstance(value, str):
+        return
+    text = value.strip()
+    if text and text not in seen:
+        seen.add(text)
+        texts.append(text)
 
 
 def prepare_command(args: list[str]) -> list[str]:

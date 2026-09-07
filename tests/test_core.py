@@ -17,6 +17,29 @@ from mr_reviewer.review_routing import resolve_review_routing
 from mr_reviewer.state import StateStore
 
 
+def _opencode_json_output(*texts: str) -> str:
+    return "\n".join(
+        json.dumps({"type": "text", "sessionID": "session-1", "part": {"type": "text", "text": text}})
+        for text in texts
+    )
+
+
+def _claude_stream_json_output(*texts: str, result: str | None = None) -> str:
+    events = [
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}}
+        for text in texts
+    ]
+    events.append(
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": texts[-1] if result is None and texts else (result or ""),
+        }
+    )
+    return "\n".join(json.dumps(event, ensure_ascii=False) for event in events)
+
+
 def _load_gitlab_mr_review_script():
     path = Path(".skill/gitlab-mr-review/scripts/review_gitlab_mr.py")
     spec = importlib.util.spec_from_file_location("gitlab_mr_review_script", path)
@@ -379,6 +402,7 @@ def test_gitlab_mr_review_script_sends_opencode_prompt_as_file(monkeypatch, tmp_
     script = _load_gitlab_mr_review_script()
     calls = []
     transferred = []
+    findings = '{"findings":[],"notes":[],"test_gaps":[]}'
 
     def fake_run(args, **kwargs):
         calls.append(args)
@@ -388,7 +412,7 @@ def test_gitlab_mr_review_script_sends_opencode_prompt_as_file(monkeypatch, tmp_
         class Result:
             returncode = 0
             stderr = ""
-            stdout = "review"
+            stdout = _opencode_json_output("正在检查", findings, "任务总结")
 
         return Result()
 
@@ -396,19 +420,36 @@ def test_gitlab_mr_review_script_sends_opencode_prompt_as_file(monkeypatch, tmp_
 
     result = script.run_agent_review("opencode", "opencode", "line1\nBase SHA: base", tmp_path)
 
-    assert result == "review"
+    assert script.parse_structured_review_result(result) == {"findings": [], "notes": [], "test_gaps": []}
     assert transferred == ["line1\nBase SHA: base"]
-    assert calls[0][1:4] == [
+    assert calls[0][1:6] == [
         "run",
+        "--format",
+        "json",
         "Follow the instructions in the attached file.",
         "--file",
     ]
-    assert Path(calls[0][4]).suffix == ".md"
+    assert Path(calls[0][6]).suffix == ".md"
 
 
 def test_gitlab_mr_review_script_sends_claude_prompt_via_stdin(monkeypatch, tmp_path: Path):
     script = _load_gitlab_mr_review_script()
     calls = []
+    findings = '{"findings":[],"notes":[],"test_gaps":[]}'
+    subagent_event = json.dumps(
+        {
+            "type": "assistant",
+            "parent_tool_use_id": "tool-1",
+            "message": {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": '{"findings":[],"notes":["sub-agent draft"],"test_gaps":[]}',
+                    }
+                ]
+            },
+        }
+    )
 
     def fake_run(args, **kwargs):
         calls.append((args, kwargs))
@@ -416,7 +457,9 @@ def test_gitlab_mr_review_script_sends_claude_prompt_via_stdin(monkeypatch, tmp_
         class Result:
             returncode = 0
             stderr = ""
-            stdout = "review"
+            stdout = "\n".join(
+                [subagent_event, _claude_stream_json_output("正在检查", findings, "任务总结", result="任务总结")]
+            )
 
         return Result()
 
@@ -426,9 +469,10 @@ def test_gitlab_mr_review_script_sends_claude_prompt_via_stdin(monkeypatch, tmp_
     result = script.run_agent_review("claude-code", "claude", prompt, tmp_path)
 
     args, kwargs = calls[0]
-    assert result == "review"
-    assert args == ["claude", "-p", "--output-format", "text"]
+    assert script.parse_structured_review_result(result) == {"findings": [], "notes": [], "test_gaps": []}
+    assert args == ["claude", "-p", "--output-format", "stream-json", "--verbose"]
     assert kwargs["input"] == prompt
+    assert "sub-agent draft" not in result
 
 
 def test_gitlab_mr_review_script_runs_plan_before_review_and_keeps_plan_local(monkeypatch, tmp_path: Path):

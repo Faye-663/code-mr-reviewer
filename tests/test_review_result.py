@@ -3,7 +3,11 @@ import logging
 import pytest
 
 import mr_reviewer.review_result as review_result_module
-from mr_reviewer.markdown_report import render_structured_output_as_markdown
+from mr_reviewer.markdown_report import (
+    format_comment_status,
+    render_review_report,
+    render_structured_output_as_markdown,
+)
 from mr_reviewer.review_result import StructuredReviewParseError, parse_structured_review_result
 from mr_reviewer.reviewer import ReviewReport
 
@@ -248,7 +252,7 @@ def test_render_structured_output_as_markdown_uses_python_renderer():
     assert rendered.markdown.startswith("# 代码检视报告")
     assert "team/project!7" in rendered.markdown
     assert "批量查询缺少数量限制" in rendered.markdown
-    assert "仅写入本地报告" in rendered.markdown
+    assert "未提交（当前入口仅生成本地报告）" in rendered.markdown
     assert "## Discoveries" in rendered.markdown
     assert "修复认证流程" in rendered.markdown
 
@@ -262,6 +266,64 @@ def test_render_structured_output_as_markdown_counts_minor_severity():
     assert "| minor | 1 | 警告 |" in rendered.markdown
     assert "major/minor" in rendered.markdown
     assert ("min" + "jor") not in rendered.markdown
+
+
+@pytest.mark.parametrize(
+    ("status", "reason", "expected"),
+    [
+        ("posted", "", "已提交 MR 行内评论"),
+        ("skipped_duplicate", "duplicate_marker", "未重复提交（相同 MR 评论已存在）"),
+        ("monitor_only", "not_published_for_entry", "未提交（当前入口仅生成本地报告）"),
+        ("disabled", "post_comment_disabled", "未提交（GitLab 评论发布未启用）"),
+        ("model_not_configured", "agent_model_name_missing", "未提交（Agent 模型名未配置）"),
+        ("skipped_stale", "mr_head_changed", "未提交（MR 版本已变化）"),
+        ("filtered", "below_min_severity", "未提交（严重程度低于当前发布门槛）"),
+        ("filtered", "below_min_confidence", "未提交（置信度低于当前发布门槛）"),
+        ("invalid", "line_not_in_diff", "未提交（位置不在当前 MR diff）"),
+        ("invalid", "inconsistent_line_sides", "未提交（diff 行号两侧不一致）"),
+        ("invalid", "invalid_line_value", "未提交（评论行号无效）"),
+        ("failed", "secret raw exception", "提交失败（详情见任务日志）"),
+        ("unexpected", "secret raw exception", "未提交（原因未知）"),
+    ],
+)
+def test_review_report_renders_safe_comment_status_reason(status, reason, expected):
+    finding = {
+        "severity": "major",
+        "title": "问题",
+        "new_path": "app.py",
+        "new_line": 1,
+        "evidence": "证据",
+        "impact": "影响",
+        "suggestion": "建议",
+        "status": status,
+        "reason": reason,
+    }
+
+    markdown = render_review_report(ReviewReport(markdown="{}", finding_results=[finding]), "success")
+
+    assert f"**MR评论状态**：{expected}" in markdown
+    assert "filtered" not in markdown
+    assert "secret raw exception" not in markdown
+
+
+@pytest.mark.parametrize(
+    ("status", "reason", "expected"),
+    [
+        ("posted_inline", "", "已提交 MR 行内评论"),
+        ("posted_note", "position_not_provided", "已提交普通 MR 评论（未提供 diff 位置）"),
+        ("posted_note", "position_not_in_diff", "已提交普通 MR 评论（位置不在当前 diff）"),
+        ("disabled", "review_set_post_comment_disabled", "未提交（GitLab 评论发布未启用）"),
+        ("invalid", "invalid_target_line", "未提交（评论行号无效）"),
+        ("invalid", "invalid_target_path", "未提交（评论路径无效）"),
+        ("invalid", "invalid_evidence_path", "未提交（证据路径无效）"),
+        ("invalid", "unknown_target_member", "未提交（责任 MR 不属于当前 ReviewSet）"),
+        ("invalid", "unknown_evidence_member", "未提交（证据 MR 不属于当前 ReviewSet）"),
+        ("failed", "duplicate_check_failed", "提交失败（详情见任务日志）"),
+        ("failed", "gitlab_publish_failed", "提交失败（详情见任务日志）"),
+    ],
+)
+def test_comment_status_formatter_covers_review_set_results(status, reason, expected):
+    assert format_comment_status(status, reason) == expected
 
 
 def _structured_payload(

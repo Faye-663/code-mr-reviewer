@@ -106,7 +106,7 @@ uv run mr-reviewer poll --once
 uv run mr-reviewer poll
 ```
 
-合法的单 MR 或 ReviewSet 请求会先收到一条带完整 `project_path!iid` 和 MR URL 的“已受理”通知，再收到一条终态通知。终态会重复列出目标 MR；取得元数据后还会包含 12 位 Head SHA，并分别说明 GitLab、OneBox 和任务号。相同 Head 命中已有 ReviewRun 时会明确标识加入或复用，不会伪装成一次新的 Agent 执行。通知发送失败不会改写检视结果或触发 Agent 重试。
+合法的单 MR 或 ReviewSet 请求会先收到一条带完整 `project_path!iid` 和 MR URL 的“已受理”通知，再收到一条终态通知。终态会重复列出目标 MR；取得元数据后还会包含 12 位 Head SHA、finding 总数及严重级别分布、GitLab 状态、Review Report 上传状态和跟踪ID。跟踪ID用于关联普通日志、IM state、SQLite ReviewRun 和本地报告，不是 GitLab IID 或业务 ReqID，当前也不提供任务查询 API。相同 Head 命中已有 ReviewRun 时会明确标识加入或复用，不会伪装成一次新的 Agent 执行。通知发送失败不会改写检视结果或触发 Agent 重试。
 
 ## Review 流程
 
@@ -169,6 +169,8 @@ ReqID 缺失或不一致属于 `rejected`；预检、Agent 或结果解析失败
 Agent JSON 中的 `old_line` / `new_line` 表示同一个 GitLab diff 位置，不是范围起止行：新增行使用 `old_line=-1, new_line=N`，删除行使用 `old_line=N, new_line=-1`，未修改的上下文行同时提供该位置匹配的两侧行号。单 MR webhook 兼容更新文件中的同号替换行误报：仅当 `old_line=new_line=N` 且 diff 两侧精确存在旧侧删除行和新侧新增行时，Python 才规范为新侧位置；该容错不用于新文件、范围式行号或 ReviewSet。`0`、小于 `-1`、双 `-1` 及其它冲突组合仍为非法。webhook 对无法映射到当前 diff 的 finding 只保留本地，不借用邻近行；ReviewSet 仅对语法合法但无法映射的位置保留现有普通 note fallback。
 
 GitLab discussion 使用统一的证据优先格式：标题保留 `🤖 AI Review` 来源标识，但不重复平台已经展示的 severity；正文依次展示判断依据、影响和建议，并把 confidence、rule、模型名及 ReviewSet issue 等元数据折叠到“审查信息”。ReviewSet 证据按成员、文件和行号分项展示。suggestion 包含可靠的具体代码时，Agent 可以在 JSON 字符串内输出带语言标识的普通 Markdown fenced code block；当前不生成可一键应用的 GitLab `suggestion` block。
+
+本地 JSON 保留逐条 finding 的原始 `status` 和 `reason`，便于机器处理；单 MR 与 ReviewSet Markdown 不显示内部枚举或原始异常，而是统一显示安全中文原因，例如严重程度/置信度低于发布门槛、位置不在当前 diff、评论发布未启用、重复跳过或提交失败需查看任务日志。
 
 ## Agent skill 直接使用
 
@@ -251,19 +253,20 @@ MR：team/project!7
 MR：team/project!7
 地址：https://gitlab.example.com/team/project/merge_requests/7
 版本：a1b2c3d4e5f6
-检视发现：2 条
+执行：新建检视任务
+检视总结：共 2 条（fatal 0、major 1、minor 1、suggestion 0）
 GitLab：成功（新发布 1 条，已存在 0 条）
-OneBox：成功（review-project-mr-7-a1b2c3d4e5f6-review-abc.md）
-任务号：review-abc
+Review Report：已上传 OneBox（review-project-mr-7-a1b2c3d4e5f6-review-abc.md）
+跟踪ID：review-abc1234567890def
 ```
 
-ReviewSet 的受理和终态会逐项列出 2–3 个成员；终态另外包含 ReqID、ReviewSet ID、发布计数和聚合报告文件名。OneBox 上传失败只显示安全状态，不把 CLI 原始错误回发到群里。
+即使未发现 finding，终态仍会保留 MR、URL、Head SHA、执行方式、`检视总结：未发现问题（共 0 条）`、两个交付状态和跟踪ID。ReviewSet 的受理和终态会逐项列出 2–3 个成员；终态另外包含 ReqID、ReviewSet ID、finding 严重级别分布、发布计数和聚合报告文件名。OneBox 上传失败只显示安全状态，不把 CLI 原始错误回发到群里。
 
 ## 日志
 
 程序默认关闭项目日志。设置 `MR_REVIEWER_LOG_LEVEL=INFO` 后才输出标准日志；设置为 `DEBUG` 时会额外写入本地脱敏诊断文件。关键字段：
 
-- `task`：单个 review 任务 ID。
+- `task`：日志中的 review 跟踪ID；单 MR 注册后与 `review_run_id` 一致，注册前失败使用 `mr-<12位随机值>`，ReviewSet 使用 `review-set-<12位随机值>`。
 - `review_run_id` / `trigger_id` / `head_sha`：单 MR 协调 run、入口事件和审查版本；关键协调与交付日志还包含 `repo`、`mr_iid`、`stage`、`outcome`。
 - `message`：WeLink 消息 ID。
 - `mr` / `repo` / `mr_iid`：GitLab MR 定位信息。
@@ -271,7 +274,7 @@ ReviewSet 的受理和终态会逐项列出 2–3 个成员；终态另外包含
 - `stage=trigger_registered` / `stage=webhook_review` / `stage=local_report`：单 MR Trigger 注册、webhook 后台处理和规范报告异常；ReviewRun 报告会记录全部 Trigger、两个 delivery、Head 校验、review/routing/finding/failure 字段及 `markdown_report_path`。
 - `stage=im_poll`：开始调用 WeLink 历史消息查询。
 - `stage=gitlab_api` / Agent / `stage=im_*`：记录调用方法、状态、耗时、返回码、内容长度及 Agent 的 `template_id`/`template_version`，不记录请求或响应正文。完整且脱敏的内容只在 `DEBUG` 本地目录中保存。
-- Windows 下如果 `welink-cli` 或 Agent command 解析到 `.cmd`/`.bat`，程序会通过 `cmd.exe /d /c call "<cmd路径>" ...` 执行。OpenCode 的完整 prompt 通过 UTF-8 文件附件传递，Claude Code 通过 stdin 传递，避免多行 argv 被截断。Agent 输出使用 OpenCode `--format json` 或 Claude Code `--output-format stream-json --verbose` 的事件协议；adapter 遍历顶层会话的全部完整文本消息并忽略工具输出与转发的子 Agent 文本，再由结构化结果解析器接受唯一契约有效 JSON，结果不依赖最后一条消息的位置。
+- Windows 下如果 `welink-cli` 或 Agent command 解析到 `.cmd`/`.bat`，程序会通过 `cmd.exe /d /c call "<cmd路径>" ...` 执行。直接配置的 `welink-cli`、`welink-cli.cmd`、`welink-cli.ps1` 或 `welink-cli.exe` 在发送前会把所有平台换行统一编码为字面量 `\n`，由 CLI 还原为群消息换行；自定义 IM reply command 继续接收真实换行。OpenCode 的完整 prompt 通过 UTF-8 文件附件传递，Claude Code 通过 stdin 传递，避免多行 argv 被截断。Agent 输出使用 OpenCode `--format json` 或 Claude Code `--output-format stream-json --verbose` 的事件协议；adapter 遍历顶层会话的全部完整文本消息并忽略工具输出与转发的子 Agent 文本，再由结构化结果解析器接受唯一契约有效 JSON，结果不依赖最后一条消息的位置。
 - `status=messages_received`：本轮收到的消息数量。
 - `reason=already_processed`：状态文件显示消息已处理。
 - `reason=not_review_request`：消息不是 `@Bot + MR URL`。
@@ -317,7 +320,7 @@ ReviewSet 的受理和终态会逐项列出 2–3 个成员；终态另外包含
 - `healthcheck` 显示 `repository_dependency_catalog: invalid`：按括号内 reason 检查文件可读性、JSON 和严格 schema；目录无效时 Deep Review 会降级为单仓 one-step。
 - Deep Review 报告显示“未执行依赖联合检视”：查看 `dependency_degradation_reason` 和 `dependency_failed_project`。数量超限、目录错误、同名 target branch 缺失或任一 checkout 失败都不会使用部分依赖上下文。
 - 多 MR 消息被拒绝：确认消息只含 2–3 个不同项目的唯一 MR，所有仓库均在白名单内，且每个 isource MR 响应的 `e2e_issues[0].issue_num` 为相同非空字符串。
-- ReviewSet 报告存在 finding 但没有 GitLab 评论：检查 `MR_REVIEWER_REVIEW_SET_POST_COMMENT` 和 `MR_REVIEWER_AGENT_MODEL_NAME`，再查看报告中的逐目标 `status`/`reason`。
+- ReviewSet 报告存在 finding 但没有 GitLab 评论：检查 `MR_REVIEWER_REVIEW_SET_POST_COMMENT` 和 `MR_REVIEWER_AGENT_MODEL_NAME`，再查看 Markdown 中的逐目标“MR评论状态”；需要内部枚举时查看 JSON 的 `status`/`reason`。
 - 重复处理同一条消息：检查 `MR_REVIEWER_STATE_PATH` 是否可写、是否被删除。
 
 ## 验证命令

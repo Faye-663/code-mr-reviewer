@@ -443,9 +443,9 @@ def test_render_review_set_report_preserves_complete_markdown_contract():
         "\n"
         "```java\n"
         "Objects.requireNonNull(user);\n"
-        "```；状态 `posted_inline`；原因 `-`\n"
+        "```；MR评论状态：已提交 MR 行内评论\n"
         "  - `p202-mr8`：位置 普通评论；在 SDK 契约中明确空值语义。；"
-        "状态 `posted_note`；原因 `position_not_provided`\n"
+        "MR评论状态：已提交普通 MR 评论（未提供 diff 位置）\n"
         "\n"
         "## Test Gaps\n"
         "\n"
@@ -749,7 +749,7 @@ def test_review_set_upload_failure_is_warning_and_still_sends_terminal_notificat
     assert state["status"] == "success_with_warnings"
     assert state["notifications"] == {"accepted": "succeeded", "terminal": "succeeded"}
     assert sent[1].startswith("[联合代码检视完成但有告警]")
-    assert "OneBox：失败" in sent[1]
+    assert "Review Report：上传 OneBox 失败" in sent[1]
     assert "secret parent path" not in sent[1]
 
 

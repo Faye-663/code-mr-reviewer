@@ -17,6 +17,7 @@ from mr_reviewer.opencode import OpenCodeRunner
 from mr_reviewer.prompting import PromptMetadata
 from mr_reviewer.reviewer import ReviewCancelledError, ReviewService
 from mr_reviewer.review_result import parse_structured_review_result
+from mr_reviewer.welink import send_text
 
 
 def _opencode_json_output(*texts: str) -> str:
@@ -512,7 +513,9 @@ def test_poll_once_runs_review_and_replies(tmp_path: Path):
     assert "team/project!7" in reply_calls[0][3]
     assert reply_calls[1][3].startswith("[代码检视完成]")
     assert "team/project!7" in reply_calls[1][3]
-    assert "OneBox：成功" in reply_calls[1][3]
+    assert "检视总结：未发现问题（共 0 条）" in reply_calls[1][3]
+    assert "Review Report：已上传 OneBox" in reply_calls[1][3]
+    assert "跟踪ID：review-" in reply_calls[1][3]
     upload_text = upload_log.read_text(encoding="utf-8")
     assert upload_text.startswith("onebox file-upload")
     assert "--space-id space-example --parent parent-example" in upload_text
@@ -702,6 +705,87 @@ def test_welink_reply_uses_utf8_and_redacts_text_in_logs(monkeypatch, caplog):
     log_text = "\n".join(record.getMessage() for record in caplog.records)
     assert "stage=im_send group_id=group-example" in log_text
     assert "# 报告" not in log_text
+
+
+def test_welink_send_text_encodes_all_line_breaks_for_direct_cli(monkeypatch, caplog):
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+
+        class Result:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return Result()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    config = Config(
+        gitlab_base_url="https://gitlab.example.com",
+        im_reply_command="welink-cli im send-to-group",
+        welink_group_id="group-example",
+    )
+    text = "[代码检视已受理]\r\nMR：team/app!7\r地址：https://gitlab.example.com/team/app/merge_requests/7"
+
+    with caplog.at_level(logging.INFO, logger="mr_reviewer"):
+        send_text(config, text)
+
+    encoded = calls[0][0][-1]
+    assert encoded == (
+        "[代码检视已受理]\\nMR：team/app!7\\n"
+        "地址：https://gitlab.example.com/team/app/merge_requests/7"
+    )
+    assert "\n" not in encoded and "\r" not in encoded
+    assert encoded.replace("\\n", "\n") == text.replace("\r\n", "\n").replace("\r", "\n")
+    assert "text_chars=" in caplog.text
+    assert "encoded_text_chars=" in caplog.text
+    assert text not in caplog.text
+
+
+def test_custom_im_reply_command_keeps_real_line_breaks(monkeypatch):
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+
+        class Result:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return Result()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    config = Config(
+        gitlab_base_url="https://gitlab.example.com",
+        im_reply_command="custom-reply send",
+        welink_group_id="group-example",
+    )
+
+    send_text(config, "line1\nline2")
+
+    assert calls[0][0][-1] == "line1\nline2"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows .cmd argument handling regression")
+def test_welink_cmd_receives_complete_escaped_multiline_text(tmp_path: Path):
+    output = tmp_path / "reply-args.txt"
+    cli = tmp_path / "welink-cli.cmd"
+    cli.write_text(
+        f'@echo off\r\necho %* > "{output}"\r\nexit /b 0\r\n',
+        encoding="utf-8",
+    )
+    config = Config(
+        gitlab_base_url="https://gitlab.example.com",
+        im_reply_command=f"{cli} im send-to-group",
+        welink_group_id="group-example",
+    )
+
+    send_text(config, "[accepted]\nMR:team/app!7")
+
+    args = output.read_text(encoding="utf-8").strip()
+    assert "--text [accepted]\\nMR:team/app!7" in args
 
 
 def test_welink_reply_warns_group_when_onebox_upload_fails(monkeypatch, caplog):

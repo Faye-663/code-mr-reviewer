@@ -459,7 +459,7 @@ def test_webhook_worker_posts_inline_discussion_from_python(tmp_path: Path):
     markdown_report = markdown_report_path.read_text(encoding="utf-8")
     assert "# 代码检视报告" in markdown_report
     assert "team/project!7" in markdown_report
-    assert "已提交MR评论" in markdown_report
+    assert "已提交 MR 行内评论" in markdown_report
     assert report["summary"] is None
     assert report["review_plan"]["change_intent"] == ["修复认证流程"]
     assert "## Discoveries" in markdown_report

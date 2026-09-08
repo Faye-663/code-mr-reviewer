@@ -88,7 +88,7 @@ Agent 的第一阶段输出 `review-set-plan/v1`，第二阶段输出 `review-se
 
 IM/webhook 单 MR 与 ReviewSet 共用 `FindingPublicationPolicy`。默认发布 `minor` 及以上且 `confidence=HIGH` 的 target；部署侧可通过 `MR_REVIEWER_PUBLISH_MIN_SEVERITY` 与 `MR_REVIEWER_PUBLISH_MIN_CONFIDENCE` 调整，门槛只影响发布候选，不过滤报告 findings。marker 由 ReviewSet ID、规范化 evidence、rule 和 target 计算；分页读取 discussions 时，individual note 也参与去重。单目标 POST 失败不回滚其它已发布目标，状态转为 `success_with_warnings`。`MR_REVIEWER_REVIEW_SET_POST_COMMENT=false` 时只生成报告并把候选记为 `disabled`；开关开启但 `MR_REVIEWER_AGENT_MODEL_NAME` 为空时不发布，状态为 `success_with_warnings`。
 
-聚合报告 basename 固定为 `review-set-<review_set_id 前 12 位>.md`，包含 ReqID、成员 refs、计划、关系结论、所有 findings、证据、责任位置和逐 target 发布状态。任务状态限定为 `rejected`、`failed`、`success` 或 `success_with_warnings`；OneBox 上传失败把已完成任务提升为 `success_with_warnings`。拒绝和运行失败都以成员明确的安全 IM 文案终结原消息，不自动重试。
+聚合报告 basename 固定为 `review-set-<review_set_id 前 12 位>.md`，包含 ReqID、成员 refs、计划、关系结论、所有 findings、证据、责任位置和逐 target 发布状态。JSON 保留机器可读的原始 `status`/`reason`；单 MR 和 ReviewSet Markdown 通过同一 formatter 转为安全中文原因，未知组合不暴露内部枚举，发布异常也不写入报告。任务状态限定为 `rejected`、`failed`、`success` 或 `success_with_warnings`；OneBox 上传失败把已完成任务提升为 `success_with_warnings`。拒绝和运行失败都以成员明确的安全 IM 文案终结原消息，不自动重试。
 
 ## 单 MR 项目依赖联合检视
 
@@ -207,7 +207,9 @@ SQLite 使用 WAL、`busy_timeout` 与 `BEGIN IMMEDIATE` claim。ReviewRun 为 `
 
 delivery 彼此独立：一个 sink 失败不阻塞另一个，整体返回 `success_with_warnings`。GitLab 明确失败可重试，并依赖 marker 消除崩溃后的重复 finding。OneBox 明确失败可由后续 Trigger 重试；上传中断的 lease 记为 `unknown` 且不自动重试，因为 CLI 没有已验证的服务端幂等键。
 
-IM poll 在合法请求进入 GitLab 或 Agent I/O 前发送“已受理”，终态重复携带 `project_path!iid`、MR URL、可用的 Head SHA 和每个 sink 的结果。单 MR 的 `joined`、`reused`、`duplicate` 会显式呈现 ReviewRun 协调语义；ReviewSet 终态列出全部成员、ReqID 和 ReviewSet ID。`StateStore` 在原消息 entry 中分别记录受理和终态通知结果。IM transport 没有已验证的幂等键，因此发送失败不自动重试，也不改写真实 review 状态。
+IM poll 在合法请求进入 GitLab 或 Agent I/O 前发送“已受理”，终态重复携带 `project_path!iid`、MR URL、可用的 Head SHA、finding 总数及严重级别分布、每个 sink 的结果和跟踪ID；零 finding 不省略这些身份与交付字段。单 MR 的 `joined`、`reused`、`duplicate` 会显式呈现 ReviewRun 协调语义；ReviewSet 终态列出全部成员、ReqID 和 ReviewSet ID。跟踪ID关联日志、State JSON、SQLite ReviewRun 和本地报告，不承担查询接口语义。`StateStore` 在原消息 entry 中分别记录受理和终态通知结果。
+
+通知 renderer 内部继续使用真实换行。`welink.py` 仅在 reply command 的首个可执行文件直接解析为 `welink-cli[.cmd|.ps1|.exe]` 时，把 CRLF/CR/LF 统一编码为字面量 `\n` 后传给 CLI；Windows、PowerShell 和 POSIX 使用同一参数语义，自定义 reply command 保持真实换行。IM transport 没有已验证的幂等键，因此发送失败不自动重试，也不改写真实 review 状态。
 
 失败策略：
 

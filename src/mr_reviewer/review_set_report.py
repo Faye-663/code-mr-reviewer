@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from mr_reviewer.markdown_report import format_comment_status
 from mr_reviewer.review_set_publish import ReviewSetPublication
 from mr_reviewer.reviewer import ReviewSetReviewReport
 
@@ -111,7 +112,8 @@ def _findings(
                 )
             lines.append(
                 f"  - `{target.member_id}`：位置 {position}；{target.suggestion}；"
-                f"状态 `{publish['status']}`；原因 `{publish['reason'] or '-'}`"
+                "MR评论状态："
+                f"{format_comment_status(str(publish['status']), str(publish['reason'] or ''))}"
             )
     return lines
 

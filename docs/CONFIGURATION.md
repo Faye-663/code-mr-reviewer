@@ -71,7 +71,7 @@ title 去除前导空白后，只有以完整 `【Deep-Review】` 或 `[Deep-Rev
 | 配置 | 默认值 | 适用模式 | 行为与关联 |
 |---|---|---|---|
 | `MR_REVIEWER_IM_POLL_COMMAND` | 空 | `poll` | 查询群历史消息的基础命令；程序追加 `--group-id <WELINK_GROUP_ID>`。 |
-| `MR_REVIEWER_IM_REPLY_COMMAND` | 空 | `poll` | 发送群通知的基础命令；程序追加 `--group-id ... --text ...`。 |
+| `MR_REVIEWER_IM_REPLY_COMMAND` | 空 | `poll` | 发送群通知的基础命令；程序追加 `--group-id ... --text ...`。首个可执行文件直接为 `welink-cli[.cmd|.ps1|.exe]` 时，程序将 CRLF/CR/LF 统一编码为字面量 `\n`，由 CLI 渲染换行；自定义命令继续接收真实换行。 |
 | `MR_REVIEWER_WELINK_GROUP_ID` | 空 | `poll` | 当前唯一轮询和通知目标群。 |
 | `MR_REVIEWER_WELINK_ONEBOX_SPACE_ID` | 空 | `poll` | 聚合/单 MR Markdown 上传目标 `space-id`。 |
 | `MR_REVIEWER_WELINK_ONEBOX_PARENT_ID` | 空 | `poll` | OneBox 目标目录 ID；与 `SPACE_ID` 必须同时有效。上传失败会通知群，但不会把已完成的 review 改为失败。 |

@@ -145,12 +145,19 @@ def send_text(config: Config, text: str) -> None:
     if not config.im_reply_command:
         raise ValueError("IM reply command is required")
     group_id = _require_welink_group_id(config)
-    LOG.info("stage=im_send group_id=%s text_chars=%s", group_id, len(text))
-    reply_args = split_command(config.im_reply_command) + [
+    command = split_command(config.im_reply_command)
+    encoded_text = _encode_welink_text(text) if _is_welink_cli(command) else text
+    LOG.info(
+        "stage=im_send group_id=%s text_chars=%s encoded_text_chars=%s",
+        group_id,
+        len(text),
+        len(encoded_text),
+    )
+    reply_args = command + [
         "--group-id",
         group_id,
         "--text",
-        text,
+        encoded_text,
     ]
     reply_result = subprocess.run(
         prepare_command(reply_args),
@@ -170,6 +177,25 @@ def send_text(config: Config, text: str) -> None:
     )
     if reply_result.returncode != 0:
         raise RuntimeError(f"IM reply command failed: {reply_result.stderr.strip()}")
+
+
+def _is_welink_cli(args: list[str]) -> bool:
+    if not args:
+        return False
+    executable = args[0].strip("\"'").replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return executable in {
+        "welink-cli",
+        "welink-cli.cmd",
+        "welink-cli.ps1",
+        "welink-cli.exe",
+    }
+
+
+def _encode_welink_text(text: str) -> str:
+    # welink-cli 会把字面量 \n 还原为群消息换行；先统一平台行尾，避免 Windows .cmd
+    # 把真实 CR/LF 当作命令边界而只传递第一行。
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    return normalized.replace("\n", "\\n")
 
 
 def upload_report(config: Config, file_path: str, markdown: str) -> str | None:

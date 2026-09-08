@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from mr_reviewer.gitlab import GitLabMrUrl
 from mr_reviewer.im_notifications import (
     render_review_set_accepted,
@@ -43,6 +45,11 @@ def test_single_notifications_identify_mr_version_disposition_and_deliveries():
         markdown="{}",
         head_sha="a" * 40,
         finding_counts={"total": 3, "posted": 2, "skipped_duplicate": 1},
+        finding_results=[
+            {"severity": "major"},
+            {"severity": "minor"},
+            {"severity": "suggestion"},
+        ],
     )
     outcome = SingleMrOutcome(
         review_run_id="review-123",
@@ -67,10 +74,114 @@ def test_single_notifications_identify_mr_version_disposition_and_deliveries():
     assert terminal.startswith("[代码检视完成]")
     assert "版本：aaaaaaaaaaaa" in terminal
     assert "执行：复用已有完成结果" in terminal
-    assert "检视发现：3 条" in terminal
+    assert "检视总结：共 3 条（fatal 0、major 1、minor 1、suggestion 1）" in terminal
     assert "GitLab：成功（新发布 2 条，已存在 1 条）" in terminal
-    assert "OneBox：成功（review-app-mr-7.md）" in terminal
-    assert "任务号：review-123" in terminal
+    assert "Review Report：已上传 OneBox（review-app-mr-7.md）" in terminal
+    assert "跟踪ID：review-123" in terminal
+
+
+def test_single_terminal_without_findings_keeps_mr_identity_and_report_delivery():
+    mr = _mr()
+    report = ReviewReport(
+        markdown="{}",
+        head_sha="a" * 40,
+        finding_counts={"total": 0, "posted": 0, "skipped_duplicate": 0},
+        finding_results=[],
+    )
+    outcome = SingleMrOutcome(
+        review_run_id="review-empty",
+        attempt=1,
+        disposition="created",
+        status="succeeded",
+        report=report,
+        report_json_path="report.json",
+        report_markdown_path="report.md",
+        deliveries={
+            "gitlab": {"status": "succeeded"},
+            "onebox": {"status": "succeeded", "external_ref": "review-empty.md"},
+        },
+    )
+
+    terminal = render_single_terminal(mr, outcome)
+
+    assert terminal.startswith("[代码检视完成]")
+    assert "MR：team/app!7" in terminal
+    assert "地址：https://gitlab.example.com/team/app/merge_requests/7" in terminal
+    assert "版本：aaaaaaaaaaaa" in terminal
+    assert "执行：新建检视任务" in terminal
+    assert "检视总结：未发现问题（共 0 条）" in terminal
+    assert "GitLab：无需发布（未发现问题）" in terminal
+    assert "Review Report：已上传 OneBox（review-empty.md）" in terminal
+    assert "跟踪ID：review-empty" in terminal
+
+
+@pytest.mark.parametrize(
+    ("disposition", "expected"),
+    [
+        ("created", "新建检视任务"),
+        ("joined", "加入已有检视任务"),
+        ("reused", "复用已有完成结果"),
+        ("duplicate", "复用原请求结果"),
+    ],
+)
+def test_single_terminal_names_every_execution_disposition(disposition, expected):
+    outcome = SingleMrOutcome(
+        review_run_id="review-shared",
+        attempt=1,
+        disposition=disposition,
+        status="succeeded",
+        report=ReviewReport(markdown="{}", head_sha="a" * 40, finding_counts={"total": 0}),
+        report_json_path="report.json",
+        report_markdown_path="report.md",
+        deliveries={"gitlab": {"status": "disabled"}, "onebox": {"status": "disabled"}},
+    )
+
+    terminal = render_single_terminal(_mr(), outcome)
+
+    assert f"执行：{expected}" in terminal
+    assert "跟踪ID：review-shared" in terminal
+
+
+@pytest.mark.parametrize(
+    ("gitlab_status", "onebox_status", "gitlab_expected", "report_expected"),
+    [
+        ("disabled", "disabled", "GitLab：未启用", "Review Report：未上传（OneBox 未启用）"),
+        ("failed", "failed", "GitLab：失败", "Review Report：上传 OneBox 失败"),
+        ("unknown", "unknown", "GitLab：结果未知", "Review Report：OneBox 上传结果未知"),
+        (
+            "skipped_stale",
+            "skipped_stale",
+            "GitLab：已跳过（MR 版本已过期）",
+            "Review Report：未上传（MR 版本已过期）",
+        ),
+        ("not_run", "not_run", "GitLab：未执行", "Review Report：未上传"),
+    ],
+)
+def test_single_terminal_renders_safe_delivery_states(
+    gitlab_status,
+    onebox_status,
+    gitlab_expected,
+    report_expected,
+):
+    outcome = SingleMrOutcome(
+        review_run_id="review-delivery",
+        attempt=1,
+        disposition="created",
+        status="succeeded",
+        report=ReviewReport(markdown="{}", head_sha="a" * 40, finding_counts={"total": 0}),
+        report_json_path="report.json",
+        report_markdown_path="report.md",
+        deliveries={
+            "gitlab": {"status": gitlab_status, "error": "secret gitlab failure"},
+            "onebox": {"status": onebox_status, "error": "secret onebox failure"},
+        },
+    )
+
+    terminal = render_single_terminal(_mr(), outcome)
+
+    assert gitlab_expected in terminal
+    assert report_expected in terminal
+    assert "secret" not in terminal
 
 
 def test_single_terminal_reports_superseded_version_and_safe_failure():
@@ -96,9 +207,13 @@ def test_single_terminal_reports_superseded_version_and_safe_failure():
 
     assert terminal.startswith("[代码检视已过期]")
     assert "版本：aaaaaaaaaaaa → cccccccccccc" in terminal
-    assert terminal.count("已跳过（版本过期）") == 2
+    assert "GitLab：已跳过（MR 版本已过期）" in terminal
+    assert "Review Report：未上传（MR 版本已过期）" in terminal
+    assert "跟踪ID：review-old" in terminal
     assert failed.startswith("[代码检视失败]")
     assert "阶段：MR 信息读取" in failed
+    assert "Review Report：未上传" in failed
+    assert "跟踪ID：mr-task" in failed
     assert "secret internal detail" not in failed
 
 
@@ -115,7 +230,9 @@ def test_review_set_notifications_identify_every_member_and_delivery_result():
     report = ReviewSetReviewReport(
         manifest=manifest,
         review_plan={},
-        result=SimpleNamespace(findings=(object(), object())),
+        result=SimpleNamespace(
+            findings=(SimpleNamespace(severity="major"), SimpleNamespace(severity="minor"))
+        ),
         members=(),
         prompt_templates={},
         agent_call_count=2,
@@ -151,9 +268,10 @@ def test_review_set_notifications_identify_every_member_and_delivery_result():
     assert "ReviewSet：ffffffffffff" in terminal
     assert "team/app!7 @ aaaaaaaaaaaa" in terminal
     assert "team/sdk!8 @ cccccccccccc" in terminal
-    assert "检视发现：2 条" in terminal
+    assert "检视总结：共 2 条（fatal 0、major 1、minor 1、suggestion 0）" in terminal
     assert "新发布 2 条，已存在 1 条" in terminal
-    assert "OneBox：成功（review-set-ffffffffffff.md）" in terminal
+    assert "Review Report：已上传 OneBox（review-set-ffffffffffff.md）" in terminal
+    assert "跟踪ID：task-1" in terminal
     assert rejected.startswith("[联合代码检视已拒绝]")
     assert "team/app!7" in rejected and "team/sdk!8" in rejected
     assert "原因：ReqID 不一致。" in rejected
@@ -180,5 +298,8 @@ def test_review_set_upload_failure_is_rendered_without_raw_error():
     )
 
     assert terminal.startswith("[联合代码检视完成但有告警]")
-    assert "OneBox：失败" in terminal
+    assert "team/app!7 @ aaaaaaaaaaaa" in terminal
+    assert "检视总结：未发现问题（共 0 条）" in terminal
+    assert "Review Report：上传 OneBox 失败" in terminal
+    assert "跟踪ID：task-1" in terminal
     assert "secret parent path" not in terminal

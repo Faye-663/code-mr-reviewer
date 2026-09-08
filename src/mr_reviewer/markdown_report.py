@@ -199,18 +199,54 @@ def _finding_lines(index: int, finding: dict) -> list[str]:
 
 
 def _comment_status(finding: dict) -> str:
-    status = finding.get("status", "")
-    labels = {
-        "posted": "已提交MR评论",
-        "skipped_duplicate": "已存在相同MR评论",
-        "monitor_only": "仅写入本地报告",
-        "disabled": "未提交（已关闭）",
-        "model_not_configured": "未提交（未配置模型名）",
-        "parse_failed": "未提交（结构化结果无效）",
-        "failed": "提交失败",
-        "skipped_stale": "未提交（MR Head 已变化）",
-    }
-    return labels.get(status, f"未提交（{status or '未知'}）")
+    return format_comment_status(
+        str(finding.get("status") or ""),
+        str(finding.get("reason") or ""),
+    )
+
+
+def format_comment_status(status: str, reason: str) -> str:
+    if status in {"posted", "posted_inline"}:
+        return "已提交 MR 行内评论"
+    if status == "posted_note":
+        detail = {
+            "position_not_provided": "未提供 diff 位置",
+            "position_not_in_diff": "位置不在当前 diff",
+        }.get(reason)
+        return f"已提交普通 MR 评论（{detail}）" if detail else "已提交普通 MR 评论"
+    if status == "skipped_duplicate":
+        return "未重复提交（相同 MR 评论已存在）"
+    if status == "monitor_only":
+        return "未提交（当前入口仅生成本地报告）"
+    if status == "disabled":
+        return "未提交（GitLab 评论发布未启用）"
+    if status == "model_not_configured":
+        return "未提交（Agent 模型名未配置）"
+    if status == "parse_failed":
+        return "未提交（结构化检视结果无效）"
+    if status == "skipped_stale":
+        return "未提交（MR 版本已变化）"
+    if status == "failed":
+        return "提交失败（详情见任务日志）"
+    if status == "filtered":
+        detail = {
+            "below_min_severity": "严重程度低于当前发布门槛",
+            "below_min_confidence": "置信度低于当前发布门槛",
+        }.get(reason, "未满足当前发布门槛")
+        return f"未提交（{detail}）"
+    if status == "invalid":
+        detail = {
+            "line_not_in_diff": "位置不在当前 MR diff",
+            "inconsistent_line_sides": "diff 行号两侧不一致",
+            "invalid_line_value": "评论行号无效",
+            "invalid_target_line": "评论行号无效",
+            "invalid_target_path": "评论路径无效",
+            "invalid_evidence_path": "证据路径无效",
+            "unknown_target_member": "责任 MR 不属于当前 ReviewSet",
+            "unknown_evidence_member": "证据 MR 不属于当前 ReviewSet",
+        }.get(reason, "评论位置或目标无效")
+        return f"未提交（{detail}）"
+    return "未提交（原因未知）"
 
 
 def _severity_status(severity: str, count: int) -> str:

@@ -38,6 +38,7 @@ class ReviewSetRequest:
 class ReviewSetRejection:
     message: ImMessage
     reason_code: str
+    members: tuple[GitLabMrUrl, ...] = ()
 
 
 def parse_poll_output(stdout: str) -> list[ImMessage]:
@@ -125,11 +126,11 @@ def resolve_review_trigger(
             return None
         return ReviewRequest(message=message, mr=mr)
     if len(members) > 3:
-        return ReviewSetRejection(message, "too_many_mrs")
+        return ReviewSetRejection(message, "too_many_mrs", tuple(members))
     if len({mr.project_path for mr in members}) != len(members):
-        return ReviewSetRejection(message, "same_project")
+        return ReviewSetRejection(message, "same_project", tuple(members))
     if config.allowed_repos and any(mr.project_path not in config.allowed_repos for mr in members):
-        return ReviewSetRejection(message, "repo_not_allowed")
+        return ReviewSetRejection(message, "repo_not_allowed", tuple(members))
     return ReviewSetRequest(message, tuple(members))
 
 

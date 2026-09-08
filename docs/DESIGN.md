@@ -43,19 +43,28 @@ flowchart TD
 ```mermaid
 flowchart TD
     A["WeLink 群消息"] --> B["poll: 查询群历史"]
+    B -. "按间隔持续查询，不等待 review" .-> B
     B --> C["parse_poll_output: 解析 respData.chatInfo"]
     C --> D{"resolve_review_trigger"}
     D -- "未 @Bot / 不在白名单 / 无 MR URL" --> E["跳过消息"]
-    D -- "1 个唯一 MR" --> F["GitLabClient: 获取 MR 元数据"]
-    D -- "2–3 个不同项目" --> R["ReviewSetPreparer"]
-    D -- "数量 / 项目 / 仓库不合法" --> X["安全拒绝文案 + rejected"]
+    D -- "单 MR / 合法 ReviewSet" --> Q["in-flight 占位 + 有界 FIFO admission"]
+    Q -- "等待队列已满" --> QX["成员明确的暂未受理通知 + rejected/queue_full"]
+    Q -- "已入队" --> QT{"请求类型"}
+    QT -- "1 个唯一 MR" --> A1["发送单 MR 已受理通知 + 位置快照"]
+    QT -- "2–3 个不同项目" --> A2["发送 ReviewSet 已受理通知 + 位置快照"]
+    A1 --> W["单 worker 串行消费"]
+    A2 --> W
+    W --> WT{"消费请求类型"}
+    WT -- "单 MR" --> F["GitLabClient: 获取 MR 元数据"]
+    WT -- "ReviewSet" --> R["ReviewSetPreparer"]
+    D -- "数量 / 项目 / 仓库不合法" --> X["成员明确的安全拒绝文案 + rejected"]
     F --> F2["读取当前 Head / 注册 Trigger"]
     F2 --> G["ReviewRun owner 执行；joiner 等待"]
     G --> H["按 title 路由审查模式"]
     H --> H2["单仓 one-step / 单仓 Deep / 依赖联合 Deep"]
     H2 --> I["原子写 ReviewRun JSON/Markdown"]
     I --> J["按 IM sink 配置 claim OneBox/GitLab"]
-    J --> K["WeLink 群通知报告文件名"]
+    J --> K["发送带 MR / Head / sink 状态的终态通知"]
     K --> L["StateStore: 标记消息已处理"]
     R --> R2["project path -> project_id"]
     R2 --> R3["isource MR: diff_refs + ReqID"]
@@ -65,7 +74,8 @@ flowchart TD
     R5 --> R6["review-set-plan/v1"]
     R6 --> R7["review-set-review/v1"]
     R7 --> R8["聚合报告 + 责任 MR 发布"]
-    R8 --> L
+    R8 --> R9["OneBox 上传 + 成员明确的终态通知"]
+    R9 --> L
     X --> L
 ```
 
@@ -85,7 +95,7 @@ Agent 的第一阶段输出 `review-set-plan/v1`，第二阶段输出 `review-se
 
 IM/webhook 单 MR 与 ReviewSet 共用 `FindingPublicationPolicy`。默认发布 `minor` 及以上且 `confidence=HIGH` 的 target；部署侧可通过 `MR_REVIEWER_PUBLISH_MIN_SEVERITY` 与 `MR_REVIEWER_PUBLISH_MIN_CONFIDENCE` 调整，门槛只影响发布候选，不过滤报告 findings。marker 由 ReviewSet ID、规范化 evidence、rule 和 target 计算；分页读取 discussions 时，individual note 也参与去重。单目标 POST 失败不回滚其它已发布目标，状态转为 `success_with_warnings`。`MR_REVIEWER_REVIEW_SET_POST_COMMENT=false` 时只生成报告并把候选记为 `disabled`；开关开启但 `MR_REVIEWER_AGENT_MODEL_NAME` 为空时不发布，状态为 `success_with_warnings`。
 
-聚合报告 basename 固定为 `review-set-<review_set_id 前 12 位>.md`，包含 ReqID、成员 refs、计划、关系结论、所有 findings、证据、责任位置和逐 target 发布状态。任务状态限定为 `rejected`、`failed`、`success` 或 `success_with_warnings`；拒绝和运行失败都以安全 IM 文案终结原消息，不自动重试。
+聚合报告 basename 固定为 `review-set-<review_set_id 前 12 位>.md`，包含 ReqID、成员 refs、计划、关系结论、所有 findings、证据、责任位置和逐 target 发布状态。JSON 保留机器可读的原始 `status`/`reason`；单 MR 和 ReviewSet Markdown 通过同一 formatter 转为安全中文原因，未知组合不暴露内部枚举，发布异常也不写入报告。任务状态限定为 `rejected`、`failed`、`success` 或 `success_with_warnings`；OneBox 上传失败把已完成任务提升为 `success_with_warnings`。拒绝和运行失败都以成员明确的安全 IM 文案终结原消息，不自动重试。
 
 ## 单 MR 项目依赖联合检视
 
@@ -204,6 +214,14 @@ SQLite 使用 WAL、`busy_timeout` 与 `BEGIN IMMEDIATE` claim。ReviewRun 为 `
 
 delivery 彼此独立：一个 sink 失败不阻塞另一个，整体返回 `success_with_warnings`。GitLab 明确失败可重试，并依赖 marker 消除崩溃后的重复 finding。OneBox 明确失败可由后续 Trigger 重试；上传中断的 lease 记为 `unknown` 且不自动重试，因为 CLI 没有已验证的服务端幂等键。
 
+IM poll 主线程只执行查询、解析、本地拒绝、in-flight 去重、受理通知和入队；单个 `ImReviewWorker` 串行消费单 MR 与 ReviewSet，因此 Agent 最大并发仍为 1。`MR_REVIEWER_IM_MAX_PENDING_REVIEWS` 默认 20，只限制等待数，不包含当前执行项。容量判断使用 worker 接管条件同步，避免同批首个请求尚未 dequeue 时误拒绝后续请求。队列位置是 admission 瞬间的快照，包含当前运行和更早入队的 IM 请求，不包含 webhook 或其它进程，也不表示 ETA。
+
+IM poll 在合法请求进入 GitLab 或 Agent I/O 前发送“已受理”，终态重复携带 `project_path!iid`、MR URL、可用的 Head SHA、finding 总数及严重级别分布、每个 sink 的结果和跟踪ID；零 finding 不省略这些身份与交付字段。单 MR 的 `joined`、`reused`、`duplicate` 会显式呈现 ReviewRun 协调语义；ReviewSet 终态列出全部成员、ReqID 和 ReviewSet ID。跟踪ID关联日志、State JSON、SQLite ReviewRun 和本地报告，不承担查询接口语义。`StateStore` 使用进程内 `RLock` 串行化读取、entry 更新与原子替换，并在原消息 entry 中分别记录受理和终态通知结果。排队和执行中的 message ID 只保存在带锁的 in-flight map；终态成功持久化后才移除，进程强制终止后依靠历史查询重放。
+
+常驻 poll 查询异常或正常退出时停止接收新任务，并 drain 全部已受理任务；`poll --once` 同样等待该批终态。worker 对每个业务任务隔离异常并继续 FIFO；若终态 State 写入失败，则仅记录安全 `error_type`，停止后续 admission，并让 poll 非零退出。accepted 与 terminal 发送共用互斥锁，避免并发启动多个 `welink-cli`。
+
+通知 renderer 内部继续使用真实换行。`welink.py` 仅在 reply command 的首个可执行文件直接解析为 `welink-cli[.cmd|.ps1|.exe]` 时，把 CRLF/CR/LF 统一编码为字面量 `\n` 后传给 CLI；Windows、PowerShell 和 POSIX 使用同一参数语义，自定义 reply command 保持真实换行。IM transport 没有已验证的幂等键，因此发送失败不自动重试，也不改写真实 review 状态。
+
 失败策略：
 
 - 审查计划生成或校验失败：停止第二步，写 `failure_stage=review_plan` 的失败态报告。
@@ -218,17 +236,21 @@ delivery 彼此独立：一个 sink 失败不阻塞另一个，整体返回 `suc
 - review 成功但某个 sink 失败：不重跑 Agent，只允许后续 Trigger 重试该 sink；另一个 sink 不受影响。
 - ReviewSet 任一预检、checkout、计划、review 或结构化解析失败：不进入 GitLab 发布；发送安全 IM 失败文案并将原消息标记 `failed`。
 - ReviewSet 单个 target 发布失败：保留其它发布结果，在唯一聚合报告中记录失败并标记 `success_with_warnings`。
+- IM 受理或终态发送失败：记录 `stage=im_notify` 的 event/outcome 和 StateStore notification 状态；继续或保留真实 review 结果，不重跑 Agent。
+- IM 等待队列已满：不发送受理通知，不调用 GitLab/Agent；发送一次成员明确的“暂未受理”，写入 `rejected/queue_full`，相同消息不自动重试。
+- IM 终态 State 写入失败：作为 poll 基础设施故障停止 admission 并非零退出；不把已完成 review 改写为业务失败，也不追加第二条终态。
 
 ## 模块边界
 
 MR Web URL 与 REST API root 是两个独立边界：`MR_REVIEWER_GITLAB_BASE_URL` 只用于 URL host 校验，`MR_REVIEWER_GITLAB_API_BASE_URL` 持有包含版本前缀的完整 API root；`GitLabClient` 只追加 `/projects/...` 资源路径。完整接口目录、消费字段和模式调用矩阵见 [GitLab API 说明](GITLAB_API.md)。
 
-- `cli.py`：命令入口、轮询循环、review service 装配和 IM Trigger 通知。
+- `cli.py`：命令入口、持续轮询、有界 FIFO worker、in-flight admission、review service 装配和 IM Trigger 通知。
+- `im_notifications.py`：单 MR / ReviewSet 受理、完成、告警、过期、失败和拒绝文案的纯渲染。
 - `coordination.py`：SQLite ReviewRun/Trigger/delivery 状态、lease、事务 claim、去重、复用与 supersede。
 - `single_mr.py`：IM/webhook 单 MR 统一编排、协作取消、报告先行和 sink 协调。
 - `delivery.py`：共享 GitLab Head 安全门槛、finding 校验、marker 去重与 discussion 发布。
 - `review_artifacts.py`：ReviewRun 级 JSON/Markdown 的确定性路径、原子写入与成功结果加载。
-- `welink.py`：WeLink poll/reply 命令执行、OneBox 单文件上传与 ReviewSet 群通知编排。
+- `welink.py`：WeLink poll/send 命令执行和 OneBox 单文件上传 transport。
 - `webhook.py`：GitLab webhook HTTP handler、secret/事件校验、202 协调字段和内存后台队列；保留未接协调器时的兼容测试路径。
 - `im.py`：WeLink 历史消息解析、字段归一化，以及忽略/单 MR/ReviewSet/拒绝四态触发判断。
 - `gitlab.py`：GitLab MR URL 解析、project path 到 project id 查询、MR/isource MR 元数据、项目 clone URL、分页 discussions、inline discussion 与普通 note API。
@@ -241,4 +263,4 @@ MR Web URL 与 REST API root 是两个独立边界：`MR_REVIEWER_GITLAB_BASE_UR
 - `reviewer.py`：共用 review core，串联 GitLab、Git 和 Agent；单仓 Deep、依赖联合 Deep 与 ReviewSet 的 two-step 均共享各自任务剩余超时预算。
 - `structured_output.py` / `result_validation.py` / `review_result.py` / `inline_review.py` / `publication_policy.py` / `markdown_report.py`：结构化输出恢复边界、严格结果字段校验、审查计划与 review JSON 契约校验、finding 行定位校验、共享发布门槛、GitLab inline 发布结果整理和本地 Markdown 报告渲染。
 - `opencode.py`：AgentRunner protocol、OpenCode/Claude Code 机器可读事件 adapter、顶层会话完整文本提取、tool/sub-agent 输出隔离、协议 fail-closed、debug 参数和 prompt 日志脱敏。
-- `state.py`：IM poll 的本地去重状态文件，避免重复处理同一条 IM 消息。
+- `state.py`：IM poll 的本地去重状态文件，同时记录受理和终态通知是否发送成功。

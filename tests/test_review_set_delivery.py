@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from pathlib import Path
+
+import pytest
 
 from mr_reviewer.cli import healthcheck, poll
 from mr_reviewer.config import Config
@@ -16,7 +20,8 @@ from mr_reviewer.review_set import (
 from mr_reviewer.review_set_publish import ReviewSetPublisher
 from mr_reviewer.review_set_report import render_review_set_report
 from mr_reviewer.review_set_result import parse_structured_review_set_result
-from mr_reviewer.reviewer import ReviewSetReviewReport
+from mr_reviewer.reviewer import ReviewReport, ReviewSetReviewReport
+from mr_reviewer.single_mr import SingleMrOutcome
 from mr_reviewer.welink import reply_review_set
 
 
@@ -440,9 +445,9 @@ def test_render_review_set_report_preserves_complete_markdown_contract():
         "\n"
         "```java\n"
         "Objects.requireNonNull(user);\n"
-        "```；状态 `posted_inline`；原因 `-`\n"
+        "```；MR评论状态：已提交 MR 行内评论\n"
         "  - `p202-mr8`：位置 普通评论；在 SDK 契约中明确空值语义。；"
-        "状态 `posted_note`；原因 `position_not_provided`\n"
+        "MR评论状态：已提交普通 MR 评论（未提供 diff 位置）\n"
         "\n"
         "## Test Gaps\n"
         "\n"
@@ -498,6 +503,16 @@ def _im_message(text: str) -> ImMessage:
     return ImMessage("message-1", "group-1", "alice", text, "2026-07-14T00:00:00Z")
 
 
+def _named_im_message(message_id: str, project: str, iid: int) -> ImMessage:
+    return ImMessage(
+        message_id,
+        "group-1",
+        "alice",
+        f"@ReviewBot https://gitlab.example.com/{project}/merge_requests/{iid}",
+        "2026-07-14T00:00:00Z",
+    )
+
+
 def _poll_config(tmp_path: Path) -> Config:
     return Config(
         gitlab_base_url="https://gitlab.example.com",
@@ -528,6 +543,13 @@ def test_poll_replies_and_terminates_rejected_review_set(tmp_path: Path, monkeyp
 
     state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
     assert state["processed"]["message-1"]["status"] == "rejected"
+    assert state["processed"]["message-1"]["notifications"] == {
+        "accepted": "not_applicable",
+        "terminal": "succeeded",
+    }
+    assert len(sent) == 1
+    assert sent[0].startswith("[联合代码检视已拒绝]")
+    assert "team/app!1" in sent[0] and "team/extra!4" in sent[0]
     assert "最多只能包含 3 个" in sent[0]
 
 
@@ -551,9 +573,16 @@ def test_poll_replies_with_safe_message_and_terminates_failed_review_set(tmp_pat
 
     state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
     assert state["processed"]["message-1"]["status"] == "failed"
-    assert "联合检视执行失败" in sent[0]
-    assert "secret internal detail" not in sent[0]
+    assert len(sent) == 2
+    assert sent[0].startswith("[联合代码检视已受理]")
+    assert sent[1].startswith("[联合代码检视失败]")
+    assert "team/app!1" in sent[1] and "team/sdk!2" in sent[1]
+    assert "secret internal detail" not in sent[1]
     assert "secret internal detail" not in state["processed"]["message-1"].get("error", "")
+    assert state["processed"]["message-1"]["notifications"] == {
+        "accepted": "succeeded",
+        "terminal": "succeeded",
+    }
 
 
 def test_healthcheck_prints_review_set_publish_switch(capsys, monkeypatch, tmp_path: Path):
@@ -570,6 +599,7 @@ def test_healthcheck_prints_review_set_publish_switch(capsys, monkeypatch, tmp_p
     assert "review_set_post_comment: enabled" in output
     assert "publish_min_severity: minor" in output
     assert "publish_min_confidence: HIGH" in output
+    assert "im_max_pending_reviews: 20" in output
 
 
 def test_poll_delivers_successful_review_set_report(tmp_path: Path, monkeypatch):
@@ -579,7 +609,8 @@ def test_poll_delivers_successful_review_set_report(tmp_path: Path, monkeypatch)
         "https://gitlab.example.com/team/sdk/merge_requests/8"
     )
     gitlab = _PublishingGitLab()
-    delivered: list[tuple] = []
+    sent: list[str] = []
+    uploaded: list[tuple[str, str]] = []
 
     class SuccessfulService:
         def __init__(self):
@@ -593,19 +624,422 @@ def test_poll_delivers_successful_review_set_report(tmp_path: Path, monkeypatch)
     monkeypatch.setattr("mr_reviewer.cli._poll_messages", lambda current: [message])
     monkeypatch.setattr("mr_reviewer.cli.build_service", lambda current: SuccessfulService())
     monkeypatch.setattr(
-        "mr_reviewer.cli._reply_review_set",
-        lambda current, markdown, review_set_id, counts: delivered.append(
-            (markdown, review_set_id, counts)
-        ),
+        "mr_reviewer.cli._upload_onebox_report",
+        lambda current, file_name, markdown: uploaded.append((file_name, markdown)),
     )
+    monkeypatch.setattr("mr_reviewer.cli._send_text", lambda current, text: sent.append(text))
 
     assert poll(config, once=True) == 0
 
     state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
     assert state["processed"]["message-1"]["status"] == "success"
-    assert "# 多 MR 联合代码检视报告" in delivered[0][0]
-    assert delivered[0][2]["posted_inline"] == 1
-    assert delivered[0][2]["posted_note"] == 1
+    assert state["processed"]["message-1"]["notifications"] == {
+        "accepted": "succeeded",
+        "terminal": "succeeded",
+    }
+    assert uploaded[0][0].startswith("review-set-")
+    assert "# 多 MR 联合代码检视报告" in uploaded[0][1]
+    assert len(sent) == 2
+    assert sent[0].startswith("[联合代码检视已受理]")
+    assert sent[1].startswith("[联合代码检视完成]")
+    assert "team/app!7" in sent[1] and "team/sdk!8" in sent[1]
+    assert "新发布 2 条" in sent[1]
+
+
+def test_poll_accepts_next_mr_while_first_review_is_still_running(tmp_path: Path, monkeypatch):
+    first = _named_im_message("message-a", "team/app", 1)
+    second = _named_im_message("message-b", "team/sdk", 2)
+    first_started = threading.Event()
+    release_first = threading.Event()
+    second_accepted = threading.Event()
+    poll_calls = 0
+    sent: list[str] = []
+    starts: list[str] = []
+    active = 0
+    max_active = 0
+    errors: list[Exception] = []
+
+    class Service:
+        gitlab = object()
+
+        def resolve_target(self, mr):
+            return mr
+
+    class Coordinator:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def handle(self, target, trigger):
+            nonlocal active, max_active
+            starts.append(trigger.trigger_id)
+            active += 1
+            max_active = max(max_active, active)
+            try:
+                if trigger.trigger_id == "message-a":
+                    first_started.set()
+                    assert release_first.wait(2)
+                return SingleMrOutcome(
+                    review_run_id=f"review-{trigger.trigger_id}",
+                    attempt=1,
+                    disposition="created",
+                    status="succeeded",
+                    report=ReviewReport(markdown="{}", head_sha="a" * 40, finding_counts={"total": 0}),
+                    report_json_path="report.json",
+                    report_markdown_path="report.md",
+                    deliveries={
+                        "gitlab": {"status": "disabled"},
+                        "onebox": {"status": "disabled"},
+                    },
+                )
+            finally:
+                active -= 1
+
+    def poll_messages(config):
+        nonlocal poll_calls
+        poll_calls += 1
+        if poll_calls == 1:
+            return [first]
+        if poll_calls == 2:
+            return [first, second]
+        raise RuntimeError("stop after proving the second poll")
+
+    def send(config, text):
+        sent.append(text)
+        if text.startswith("[代码检视已受理]") and "team/sdk!2" in text:
+            second_accepted.set()
+
+    config = _poll_config(tmp_path)
+    config.poll_interval_seconds = 0
+    monkeypatch.setattr("mr_reviewer.cli._poll_messages", poll_messages)
+    monkeypatch.setattr("mr_reviewer.cli.build_service", lambda current: Service())
+    monkeypatch.setattr("mr_reviewer.cli.SingleMrReviewCoordinator", Coordinator)
+    monkeypatch.setattr("mr_reviewer.cli._send_text", send)
+
+    def run_poll():
+        try:
+            poll(config, once=False)
+        except Exception as exc:  # noqa: BLE001 - 测试用哨兵终止常驻 poll。
+            errors.append(exc)
+
+    thread = threading.Thread(target=run_poll)
+    thread.start()
+    assert first_started.wait(1)
+    accepted_before_first_completed = second_accepted.wait(0.25)
+    release_first.set()
+    thread.join(3)
+
+    assert accepted_before_first_completed
+    assert not thread.is_alive()
+    assert poll_calls == 3
+    assert starts == ["message-a", "message-b"]
+    assert max_active == 1
+    second_notice = next(text for text in sent if "team/sdk!2" in text and "已受理" in text)
+    assert "IM队列：入队时前方 1 个请求" in second_notice
+    assert len([text for text in sent if text.startswith("[代码检视已受理]")]) == 2
+    assert len(errors) == 1 and str(errors[0]) == "stop after proving the second poll"
+
+
+def test_poll_rejects_request_beyond_pending_capacity(tmp_path: Path, monkeypatch):
+    first = _named_im_message("message-a", "team/app", 1)
+    second = _named_im_message("message-b", "team/sdk", 2)
+    third = _named_im_message("message-c", "team/api", 3)
+    first_started = threading.Event()
+    release_first = threading.Event()
+    third_rejected = threading.Event()
+    poll_calls = 0
+    starts: list[str] = []
+    sent: list[str] = []
+    errors: list[Exception] = []
+
+    class Service:
+        gitlab = object()
+
+        def resolve_target(self, mr):
+            return mr
+
+    class Coordinator:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def handle(self, target, trigger):
+            starts.append(trigger.trigger_id)
+            if trigger.trigger_id == "message-a":
+                first_started.set()
+                assert release_first.wait(2)
+            return SingleMrOutcome(
+                review_run_id=f"review-{trigger.trigger_id}",
+                attempt=1,
+                disposition="created",
+                status="succeeded",
+                report=ReviewReport(markdown="{}", head_sha="a" * 40, finding_counts={"total": 0}),
+                report_json_path="report.json",
+                report_markdown_path="report.md",
+                deliveries={"gitlab": {"status": "disabled"}, "onebox": {"status": "disabled"}},
+            )
+
+    def poll_messages(config):
+        nonlocal poll_calls
+        poll_calls += 1
+        if poll_calls == 1:
+            return [first]
+        if poll_calls == 2:
+            return [first, second, third]
+        raise RuntimeError("stop after queue-full rejection")
+
+    def send(config, text):
+        sent.append(text)
+        if "team/api!3" in text:
+            third_rejected.set()
+
+    config = _poll_config(tmp_path)
+    config.poll_interval_seconds = 0
+    config.im_max_pending_reviews = 1
+    monkeypatch.setattr("mr_reviewer.cli._poll_messages", poll_messages)
+    monkeypatch.setattr("mr_reviewer.cli.build_service", lambda current: Service())
+    monkeypatch.setattr("mr_reviewer.cli.SingleMrReviewCoordinator", Coordinator)
+    monkeypatch.setattr("mr_reviewer.cli._send_text", send)
+
+    def run_poll():
+        try:
+            poll(config, once=False)
+        except Exception as exc:  # noqa: BLE001 - 测试用哨兵终止常驻 poll。
+            errors.append(exc)
+
+    thread = threading.Thread(target=run_poll)
+    thread.start()
+    assert first_started.wait(1)
+    assert third_rejected.wait(1)
+    release_first.set()
+    thread.join(3)
+
+    assert starts == ["message-a", "message-b"]
+    assert len([text for text in sent if text.startswith("[代码检视已受理]")]) == 2
+    full_notice = next(text for text in sent if text.startswith("[代码检视暂未受理]"))
+    assert "MR：team/api!3" in full_notice
+    assert "最多等待 1 个请求" in full_notice
+    state = json.loads(config.state_path.read_text(encoding="utf-8"))["processed"]
+    assert state["message-c"]["status"] == "rejected"
+    assert state["message-c"]["error"] == "queue_full"
+    assert state["message-c"]["notifications"] == {
+        "accepted": "not_applicable",
+        "terminal": "succeeded",
+    }
+    assert len(errors) == 1 and str(errors[0]) == "stop after queue-full rejection"
+
+
+def test_poll_once_continues_after_failed_review_and_waits_for_remaining_terminal(tmp_path: Path, monkeypatch):
+    first = _named_im_message("message-a", "team/app", 1)
+    second = _named_im_message("message-b", "team/sdk", 2)
+    starts: list[str] = []
+
+    class Service:
+        gitlab = object()
+
+        def resolve_target(self, mr):
+            return mr
+
+    class Coordinator:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def handle(self, target, trigger):
+            starts.append(trigger.trigger_id)
+            if trigger.trigger_id == "message-a":
+                raise RuntimeError("private failure")
+            time.sleep(0.05)
+            return SingleMrOutcome(
+                review_run_id="review-message-b",
+                attempt=1,
+                disposition="created",
+                status="succeeded",
+                report=ReviewReport(markdown="{}", head_sha="b" * 40, finding_counts={"total": 0}),
+                report_json_path="report.json",
+                report_markdown_path="report.md",
+                deliveries={"gitlab": {"status": "disabled"}, "onebox": {"status": "disabled"}},
+            )
+
+    config = _poll_config(tmp_path)
+    monkeypatch.setattr("mr_reviewer.cli._poll_messages", lambda current: [first, second])
+    monkeypatch.setattr("mr_reviewer.cli.build_service", lambda current: Service())
+    monkeypatch.setattr("mr_reviewer.cli.SingleMrReviewCoordinator", Coordinator)
+    monkeypatch.setattr("mr_reviewer.cli._send_text", lambda config, text: None)
+
+    assert poll(config, once=True) == 0
+
+    state = json.loads(config.state_path.read_text(encoding="utf-8"))["processed"]
+    assert starts == ["message-a", "message-b"]
+    assert state["message-a"]["status"] == "failed"
+    assert state["message-b"]["status"] == "succeeded"
+
+
+def test_poll_treats_terminal_state_write_failure_as_infrastructure_error(
+    tmp_path: Path,
+    monkeypatch,
+    caplog,
+):
+    message = _named_im_message("message-a", "team/app", 1)
+    sent: list[str] = []
+
+    class Service:
+        gitlab = object()
+
+        def resolve_target(self, mr):
+            return mr
+
+    class Coordinator:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def handle(self, target, trigger):
+            return SingleMrOutcome(
+                review_run_id="review-message-a",
+                attempt=1,
+                disposition="created",
+                status="succeeded",
+                report=ReviewReport(markdown="{}", head_sha="a" * 40, finding_counts={"total": 0}),
+                report_json_path="report.json",
+                report_markdown_path="report.md",
+                deliveries={"gitlab": {"status": "disabled"}, "onebox": {"status": "disabled"}},
+            )
+
+    config = _poll_config(tmp_path)
+    monkeypatch.setattr("mr_reviewer.cli._poll_messages", lambda current: [message])
+    monkeypatch.setattr("mr_reviewer.cli.build_service", lambda current: Service())
+    monkeypatch.setattr("mr_reviewer.cli.SingleMrReviewCoordinator", Coordinator)
+    monkeypatch.setattr("mr_reviewer.cli._send_text", lambda config, text: sent.append(text))
+    monkeypatch.setattr(
+        "mr_reviewer.cli.StateStore.mark_processed",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("disk unavailable")),
+    )
+
+    with pytest.raises(RuntimeError, match="IM review worker failed"):
+        poll(config, once=True)
+
+    assert len(sent) == 2
+    assert sent[0].startswith("[代码检视已受理]")
+    assert sent[1].startswith("[代码检视完成]")
+    assert "disk unavailable" not in caplog.text
+    assert "error_type=OSError" in caplog.text
+
+
+def test_poll_notifies_single_mr_metadata_failure_without_exposing_error(tmp_path: Path, monkeypatch):
+    message = _im_message("@ReviewBot https://gitlab.example.com/team/app/merge_requests/1")
+    sent: list[str] = []
+
+    class FailingService:
+        gitlab = object()
+
+        def resolve_target(self, mr):
+            raise RuntimeError("secret internal detail")
+
+    monkeypatch.setattr("mr_reviewer.cli._poll_messages", lambda config: [message])
+    monkeypatch.setattr("mr_reviewer.cli.build_service", lambda config: FailingService())
+    monkeypatch.setattr("mr_reviewer.cli._send_text", lambda config, text: sent.append(text))
+
+    assert poll(_poll_config(tmp_path), once=True) == 0
+
+    state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))["processed"]["message-1"]
+    assert state["status"] == "failed"
+    assert state["error"] == "single_review_failed"
+    assert state["notifications"] == {"accepted": "succeeded", "terminal": "succeeded"}
+    assert len(sent) == 2
+    assert sent[0].startswith("[代码检视已受理]")
+    assert sent[1].startswith("[代码检视失败]")
+    assert "team/app!1" in sent[1]
+    assert all("secret internal detail" not in text for text in sent)
+
+
+@pytest.mark.parametrize("failed_notification", ["accepted", "terminal"])
+def test_single_mr_notification_failure_does_not_change_review_status(
+    tmp_path: Path,
+    monkeypatch,
+    failed_notification: str,
+):
+    message = _im_message("@ReviewBot https://gitlab.example.com/team/app/merge_requests/1")
+    report = ReviewReport(markdown="{}", head_sha="a" * 40, finding_counts={"total": 0})
+    outcome = SingleMrOutcome(
+        review_run_id="review-success",
+        attempt=1,
+        disposition="created",
+        status="succeeded",
+        report=report,
+        report_json_path="report.json",
+        report_markdown_path="report.md",
+        deliveries={"gitlab": {"status": "disabled"}, "onebox": {"status": "disabled"}},
+    )
+    calls: list[str] = []
+    handled: list[str] = []
+
+    class SuccessfulService:
+        gitlab = object()
+
+        def resolve_target(self, mr):
+            return object()
+
+    class SuccessfulCoordinator:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def handle(self, target, trigger):
+            handled.append(trigger.trigger_id)
+            return outcome
+
+    def send(current, text):
+        calls.append(text)
+        event = "accepted" if len(calls) == 1 else "terminal"
+        if event == failed_notification:
+            raise RuntimeError("secret send failure")
+
+    monkeypatch.setattr("mr_reviewer.cli._poll_messages", lambda config: [message])
+    monkeypatch.setattr("mr_reviewer.cli.build_service", lambda config: SuccessfulService())
+    monkeypatch.setattr("mr_reviewer.cli.SingleMrReviewCoordinator", SuccessfulCoordinator)
+    monkeypatch.setattr("mr_reviewer.cli._send_text", send)
+
+    assert poll(_poll_config(tmp_path), once=True) == 0
+
+    state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))["processed"]["message-1"]
+    expected = {"accepted": "succeeded", "terminal": "succeeded"}
+    expected[failed_notification] = "failed"
+    assert state["status"] == "succeeded"
+    assert state["notifications"] == expected
+    assert handled == ["message-1"]
+    assert len(calls) == 2
+
+
+def test_review_set_upload_failure_is_warning_and_still_sends_terminal_notification(tmp_path: Path, monkeypatch):
+    message = _im_message(
+        "@ReviewBot "
+        "https://gitlab.example.com/team/app/merge_requests/7 "
+        "https://gitlab.example.com/team/sdk/merge_requests/8"
+    )
+    gitlab = _PublishingGitLab()
+    sent: list[str] = []
+
+    class SuccessfulService:
+        def __init__(self):
+            self.gitlab = gitlab
+
+        def review_set(self, request, config, task_id):
+            return _report()
+
+    config = _poll_config(tmp_path)
+    config.agent_model_name = "GLM5"
+    monkeypatch.setattr("mr_reviewer.cli._poll_messages", lambda current: [message])
+    monkeypatch.setattr("mr_reviewer.cli.build_service", lambda current: SuccessfulService())
+    monkeypatch.setattr(
+        "mr_reviewer.cli._upload_onebox_report",
+        lambda current, file_name, markdown: "secret parent path",
+    )
+    monkeypatch.setattr("mr_reviewer.cli._send_text", lambda current, text: sent.append(text))
+
+    assert poll(config, once=True) == 0
+
+    state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))["processed"]["message-1"]
+    assert state["status"] == "success_with_warnings"
+    assert state["notifications"] == {"accepted": "succeeded", "terminal": "succeeded"}
+    assert sent[1].startswith("[联合代码检视完成但有告警]")
+    assert "Review Report：上传 OneBox 失败" in sent[1]
+    assert "secret parent path" not in sent[1]
 
 
 def test_welink_review_set_reply_uses_stable_report_prefix(monkeypatch):

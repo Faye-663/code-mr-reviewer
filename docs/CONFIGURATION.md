@@ -71,7 +71,8 @@ title 去除前导空白后，只有以完整 `【Deep-Review】` 或 `[Deep-Rev
 | 配置 | 默认值 | 适用模式 | 行为与关联 |
 |---|---|---|---|
 | `MR_REVIEWER_IM_POLL_COMMAND` | 空 | `poll` | 查询群历史消息的基础命令；程序追加 `--group-id <WELINK_GROUP_ID>`。 |
-| `MR_REVIEWER_IM_REPLY_COMMAND` | 空 | `poll` | 发送群通知的基础命令；程序追加 `--group-id ... --text ...`。 |
+| `MR_REVIEWER_IM_REPLY_COMMAND` | 空 | `poll` | 发送群通知的基础命令；程序追加 `--group-id ... --text ...`。首个可执行文件直接为 `welink-cli[.cmd|.ps1|.exe]` 时，程序将 CRLF/CR/LF 统一编码为字面量 `\n`，由 CLI 渲染换行；自定义命令继续接收真实换行。 |
+| `MR_REVIEWER_IM_MAX_PENDING_REVIEWS` | `20` | `poll` | 单个 IM worker 最多容纳的等待请求数，不包含当前执行项；必须为大于 0 的整数，非法值启动失败。 |
 | `MR_REVIEWER_WELINK_GROUP_ID` | 空 | `poll` | 当前唯一轮询和通知目标群。 |
 | `MR_REVIEWER_WELINK_ONEBOX_SPACE_ID` | 空 | `poll` | 聚合/单 MR Markdown 上传目标 `space-id`。 |
 | `MR_REVIEWER_WELINK_ONEBOX_PARENT_ID` | 空 | `poll` | OneBox 目标目录 ID；与 `SPACE_ID` 必须同时有效。上传失败会通知群，但不会把已完成的 review 改为失败。 |
@@ -82,6 +83,8 @@ title 去除前导空白后，只有以完整 `【Deep-Review】` 或 `[Deep-Rev
 | `MR_REVIEWER_ALLOWED_REPOS` | 空集合 | IM 与 webhook | 逗号分隔的 GitLab `path_with_namespace` 白名单；空表示不限制。 |
 
 当 `MR_REVIEWER_IM_POST_COMMENT=true` 且 `ALLOWED_USERS` 或 `ALLOWED_REPOS` 为空时，IM 请求可在对应维度触发不受限的 GitLab 写入。该组合按已接受的兼容语义继续运行，但 `healthcheck` 与 poll 启动日志会输出高风险 warning，不会把 warning 计入非零退出码。
+
+常驻 poll 在 review 执行期间继续查询，单 MR 与合法 ReviewSet 按同一 FIFO 串行执行。受理通知中的排队位置是入队瞬间快照，包含当前运行及更早排队的 IM 请求，不包含 webhook 或其它进程，也不承诺 ETA。队列满时该消息被标记为 `rejected/queue_full`，用户需要发送新消息重试；`poll --once` 会等待本轮全部已受理任务写入终态。
 
 ## Agent
 
@@ -140,13 +143,13 @@ Agent 的 provider、API Key、实际模型和登录状态由 OpenCode 或 Claud
 | 配置 | 默认值 | 适用模式 | 行为与关联 |
 |---|---|---|---|
 | `MR_REVIEWER_WORK_DIR` | 系统临时目录下的 `code-review` | 所有 review | 每个任务的临时 clone/workspace 根目录；空值回落到默认值。 |
-| `MR_REVIEWER_STATE_PATH` | `.mr-reviewer-state.json` | `poll` | 已处理 IM message ID 的本地状态文件。删除或不可写会影响去重。 |
+| `MR_REVIEWER_STATE_PATH` | `.mr-reviewer-state.json` | `poll` | 已处理 IM message ID 的本地状态文件。每个新 entry 还记录 `notifications.accepted` / `notifications.terminal` 的 `succeeded`、`failed` 或 `not_applicable`；旧 entry 无需迁移。排队/执行中的 ID 只在进程内存中占位，成功写入终态后才移除；删除或不可写会影响去重。 |
 | `MR_REVIEWER_REPORT_DIR` | `log/webhook-reports` | IM/webhook 单 MR | ReviewRun 级 JSON/Markdown；每个 attempt 一组，不按 Trigger 复制。 |
 | `MR_REVIEWER_COORDINATION_DB_PATH` | `log/review-coordination.sqlite3` | IM/webhook 单 MR | 单机共享协调状态。过期 review lease 启动时标记 `interrupted`，等待新 Trigger，不自动恢复。 |
 | `MR_REVIEWER_MAX_FILES` | `50` | 所有 review | 单个成员允许的最大 changed files 数。 |
 | `MR_REVIEWER_MAX_DIFF_LINES` | `2000` | 所有 review | 单个成员允许的最大 diff 行数。 |
 | `MR_REVIEWER_TASK_TIMEOUT_SECONDS` | `900` | 所有 review | 单仓 one-step、单仓/依赖联合 Deep Review 或 ReviewSet 共享的任务总时间预算；two-step 的两次 Agent 调用共享该预算。 |
-| `MR_REVIEWER_POLL_INTERVAL_SECONDS` | `15` | 常驻 `poll` | 两轮 WeLink 查询间隔；`poll --once` 不等待下一轮。 |
+| `MR_REVIEWER_POLL_INTERVAL_SECONDS` | `15` | 常驻 `poll` | 两轮 WeLink 查询间隔；review 执行不阻塞下一轮查询。`poll --once` 不等待下一轮，但会 drain 本轮全部已受理任务。 |
 
 ## 旧兼容配置
 

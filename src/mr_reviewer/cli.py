@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import argparse
 import logging
+import queue
 import shutil
 import sys
+import threading
 import time
 import uuid
+from dataclasses import dataclass
 
 from mr_reviewer.config import Config
 from mr_reviewer.git import GitClient
@@ -14,10 +17,12 @@ from mr_reviewer.im import ReviewRequest, ReviewSetRejection, ReviewSetRequest, 
 from mr_reviewer.im_notifications import (
     render_review_set_accepted,
     render_review_set_failed,
+    render_review_set_queue_full,
     render_review_set_rejected,
     render_review_set_terminal,
     render_single_accepted,
     render_single_failed,
+    render_single_queue_full,
     render_single_terminal,
 )
 from mr_reviewer.markdown_report import render_structured_output_as_markdown
@@ -103,6 +108,7 @@ def healthcheck(config: Config) -> int:
     print(f"review_set_post_comment: {'enabled' if config.review_set_post_comment else 'disabled'}")
     print(f"publish_min_severity: {config.publish_min_severity}")
     print(f"publish_min_confidence: {config.publish_min_confidence}")
+    print(f"im_max_pending_reviews: {config.im_max_pending_reviews}")
     return 0 if all(checks.values()) and catalog_ok else 1
 
 
@@ -119,7 +125,7 @@ def run_once(config: Config, mr_url: str) -> int:
 def poll(config: Config, once: bool) -> int:
     state = StateStore(config.state_path)
     service = build_service(config)
-    single_coordinator = None
+    worker = ImReviewWorker(config, state, service)
     allowlist_warning = _im_publish_allowlist_warning(config)
     if allowlist_warning:
         print(
@@ -134,40 +140,53 @@ def poll(config: Config, once: bool) -> int:
         config.state_path,
     )
 
-    while True:
-        messages = _poll_messages(config)
-        LOG.info("poller status=messages_received count=%s", len(messages))
-        for message in messages:
-            if state.is_processed(message.message_id):
-                LOG.info(
-                    "message=%s status=skipped reason=already_processed",
-                    message.message_id,
-                )
-                continue
-
-            request = resolve_review_trigger(message, config)
-            if request is None:
-                LOG.info(
-                    "message=%s status=skipped reason=not_review_request",
-                    message.message_id,
-                )
-                continue
-            if isinstance(request, ReviewSetRejection):
-                _reject_review_set(config, state, request)
-            elif isinstance(request, ReviewSetRequest):
-                _process_review_set(config, state, service, request)
-            else:
-                if single_coordinator is None:
-                    single_coordinator = SingleMrReviewCoordinator(
-                        service,
-                        service.gitlab,
-                        config,
+    worker.start()
+    try:
+        while True:
+            worker.raise_if_failed()
+            messages = _poll_messages(config)
+            LOG.info("poller status=messages_received count=%s", len(messages))
+            for message in messages:
+                if state.is_processed(message.message_id):
+                    LOG.info(
+                        "message=%s status=skipped reason=already_processed",
+                        message.message_id,
                     )
-                _process_single_review(config, state, service, single_coordinator, request)
+                    continue
+                inflight = worker.inflight_details(message.message_id)
+                if inflight is not None:
+                    task_id, review_scope, ahead, queue_depth = inflight
+                    LOG.info(
+                        "message=%s task=%s review_scope=%s stage=im_queue event=skipped "
+                        "queue_depth=%s ahead=%s outcome=already_inflight",
+                        message.message_id,
+                        task_id,
+                        review_scope,
+                        queue_depth,
+                        ahead,
+                    )
+                    continue
 
-        if once:
-            return 0
-        time.sleep(config.poll_interval_seconds)
+                request = resolve_review_trigger(message, config)
+                if request is None:
+                    LOG.info(
+                        "message=%s status=skipped reason=not_review_request",
+                        message.message_id,
+                    )
+                    continue
+                if isinstance(request, ReviewSetRejection):
+                    _reject_review_set(config, state, request, worker.notification_lock)
+                else:
+                    worker.submit(request)
+
+            if once:
+                worker.wait()
+                worker.raise_if_failed()
+                return 0
+            time.sleep(config.poll_interval_seconds)
+    finally:
+        # 已发送受理通知的任务必须先形成终态，不能因 poll 查询退出而被静默丢弃。
+        worker.close()
 
 
 def _poll_messages(config: Config):
@@ -211,16 +230,11 @@ def _process_single_review(
         service: ReviewService,
         coordinator: SingleMrReviewCoordinator,
         request: ReviewRequest,
+        task_id: str,
+        accepted_status: str,
+        notification_lock: threading.Lock,
 ) -> None:
-    task_id = f"mr-{uuid.uuid4().hex[:12]}"
     start = time.monotonic()
-    accepted_status = _safe_im_notify(
-        config,
-        render_single_accepted(request.mr),
-        task_id,
-        "single",
-        "accepted",
-    )
     try:
         LOG.info("task=%s mr=%s/%s status=started", task_id, request.mr.project_path, request.mr.mr_iid)
         with task_context(task_id, config.debug_dir, config.log_level == "DEBUG"):
@@ -234,28 +248,6 @@ def _process_single_review(
                     upload_onebox=config.im_upload_onebox,
                 ),
             )
-        terminal_status = _safe_im_notify(
-            config,
-            render_single_terminal(request.mr, outcome),
-            outcome.review_run_id,
-            "single",
-            "terminal",
-        )
-        elapsed = time.monotonic() - start
-        state.mark_processed(
-            request.message.message_id,
-            outcome.review_run_id,
-            outcome.status,
-            notifications={"accepted": accepted_status, "terminal": terminal_status},
-        )
-        LOG.info(
-            "task=%s mr=%s/%s elapsed=%.2fs status=%s",
-            outcome.review_run_id,
-            request.mr.project_path,
-            request.mr.mr_iid,
-            elapsed,
-            outcome.status,
-        )
     except Exception as exc:  # noqa: BLE001 - 保留现有单 MR 顶层失败语义。
         elapsed = time.monotonic() - start
         terminal_status = _safe_im_notify(
@@ -264,6 +256,7 @@ def _process_single_review(
             task_id,
             "single",
             "terminal",
+            notification_lock,
         )
         state.mark_processed(
             request.message.message_id,
@@ -280,9 +273,38 @@ def _process_single_review(
             elapsed,
             type(exc).__name__,
         )
+    else:
+        terminal_status = _safe_im_notify(
+            config,
+            render_single_terminal(request.mr, outcome),
+            outcome.review_run_id,
+            "single",
+            "terminal",
+            notification_lock,
+        )
+        elapsed = time.monotonic() - start
+        state.mark_processed(
+            request.message.message_id,
+            outcome.review_run_id,
+            outcome.status,
+            notifications={"accepted": accepted_status, "terminal": terminal_status},
+        )
+        LOG.info(
+            "task=%s mr=%s/%s elapsed=%.2fs status=%s",
+            outcome.review_run_id,
+            request.mr.project_path,
+            request.mr.mr_iid,
+            elapsed,
+            outcome.status,
+        )
 
 
-def _reject_review_set(config: Config, state: StateStore, rejection: ReviewSetRejection) -> None:
+def _reject_review_set(
+        config: Config,
+        state: StateStore,
+        rejection: ReviewSetRejection,
+        notification_lock: threading.Lock,
+) -> None:
     task_id = f"review-set-{uuid.uuid4().hex[:12]}"
     terminal_status = _safe_im_notify(
         config,
@@ -294,6 +316,7 @@ def _reject_review_set(config: Config, state: StateStore, rejection: ReviewSetRe
         task_id,
         "review-set",
         "terminal",
+        notification_lock,
     )
     state.mark_processed(
         rejection.message.message_id,
@@ -310,16 +333,11 @@ def _process_review_set(
         state: StateStore,
         service: ReviewService,
         request: ReviewSetRequest,
+        task_id: str,
+        accepted_status: str,
+        notification_lock: threading.Lock,
 ) -> None:
-    task_id = f"review-set-{uuid.uuid4().hex[:12]}"
     start = time.monotonic()
-    accepted_status = _safe_im_notify(
-        config,
-        render_review_set_accepted(request.members),
-        task_id,
-        "review-set",
-        "accepted",
-    )
     try:
         with task_context(task_id, config.debug_dir, config.log_level == "DEBUG"):
             report = service.review_set(request, config, task_id)
@@ -347,27 +365,6 @@ def _process_review_set(
                 if publication.status == "success_with_warnings" or upload_error
                 else publication.status
             )
-        terminal_status = _safe_im_notify(
-            config,
-            render_review_set_terminal(report, publication, file_name, upload_error, task_id),
-            task_id,
-            "review-set",
-            "terminal",
-        )
-        state.mark_processed(
-            request.message.message_id,
-            task_id,
-            final_status,
-            notifications={"accepted": accepted_status, "terminal": terminal_status},
-        )
-        LOG.info(
-            "task=%s review_scope=review-set review_set_id=%s req_id=%s elapsed=%.2fs status=%s",
-            task_id,
-            report.manifest.review_set_id,
-            report.manifest.req_id,
-            time.monotonic() - start,
-            final_status,
-        )
     except ReviewSetValidationError as exc:
         if exc.reason_code in {"req_id_missing", "req_id_mismatch"}:
             terminal_status = _safe_im_notify(
@@ -380,6 +377,7 @@ def _process_review_set(
                 task_id,
                 "review-set",
                 "terminal",
+                notification_lock,
             )
             state.mark_processed(
                 request.message.message_id,
@@ -395,9 +393,36 @@ def _process_review_set(
                 exc.reason_code,
             )
         else:
-            _fail_review_set(config, state, request, task_id, start, exc, accepted_status)
+            _fail_review_set(
+                config, state, request, task_id, start, exc, accepted_status, notification_lock
+            )
     except Exception as exc:  # noqa: BLE001 - 联合失败必须终结消息且只向 IM 暴露安全文案。
-        _fail_review_set(config, state, request, task_id, start, exc, accepted_status)
+        _fail_review_set(
+            config, state, request, task_id, start, exc, accepted_status, notification_lock
+        )
+    else:
+        terminal_status = _safe_im_notify(
+            config,
+            render_review_set_terminal(report, publication, file_name, upload_error, task_id),
+            task_id,
+            "review-set",
+            "terminal",
+            notification_lock,
+        )
+        state.mark_processed(
+            request.message.message_id,
+            task_id,
+            final_status,
+            notifications={"accepted": accepted_status, "terminal": terminal_status},
+        )
+        LOG.info(
+            "task=%s review_scope=review-set review_set_id=%s req_id=%s elapsed=%.2fs status=%s",
+            task_id,
+            report.manifest.review_set_id,
+            report.manifest.req_id,
+            time.monotonic() - start,
+            final_status,
+        )
 
 
 def _fail_review_set(
@@ -408,6 +433,7 @@ def _fail_review_set(
         start: float,
         error: Exception,
         accepted_status: str,
+        notification_lock: threading.Lock,
 ) -> None:
     terminal_status = _safe_im_notify(
         config,
@@ -419,6 +445,7 @@ def _fail_review_set(
         task_id,
         "review-set",
         "terminal",
+        notification_lock,
     )
     state.mark_processed(
         request.message.message_id,
@@ -435,15 +462,261 @@ def _fail_review_set(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _ImReviewJob:
+    request: ReviewRequest | ReviewSetRequest
+    task_id: str
+    accepted_status: str
+    review_scope: str
+
+
+class ImReviewWorker:
+    _STOP = object()
+
+    def __init__(self, config: Config, state: StateStore, service: ReviewService) -> None:
+        self.config = config
+        self.state = state
+        self.service = service
+        self.notification_lock = threading.Lock()
+        self._state_lock = threading.Lock()
+        self._state_changed = threading.Condition(self._state_lock)
+        self._queue: queue.Queue[_ImReviewJob | object] = queue.Queue(
+            maxsize=config.im_max_pending_reviews
+        )
+        self._inflight: dict[str, tuple[str, str, int]] = {}
+        self._pending = 0
+        self._active = False
+        self._failure: Exception | None = None
+        self._single_coordinator: SingleMrReviewCoordinator | None = None
+        self._thread = threading.Thread(
+            target=self._run,
+            name="mr-reviewer-im-worker",
+            daemon=True,
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def inflight_details(self, message_id: str) -> tuple[str, str, int, int] | None:
+        with self._state_lock:
+            details = self._inflight.get(message_id)
+            if details is None:
+                return None
+            task_id, review_scope, ahead = details
+            return task_id, review_scope, ahead, self._pending
+
+    def submit(self, request: ReviewRequest | ReviewSetRequest) -> str:
+        message_id = request.message.message_id
+        review_scope = "review-set" if isinstance(request, ReviewSetRequest) else "single"
+        task_id = (
+            f"review-set-{uuid.uuid4().hex[:12]}"
+            if review_scope == "review-set"
+            else f"mr-{uuid.uuid4().hex[:12]}"
+        )
+        with self._state_changed:
+            if self.state.is_processed(message_id):
+                return "already_processed"
+            # 首个已受理请求在 worker dequeue 前暂计入 pending；等待接管可避免同批消息误判队列已满。
+            while not self._active and self._pending > 0 and self._failure is None:
+                self._state_changed.wait()
+            if self._failure is not None:
+                raise RuntimeError("IM review worker failed") from self._failure
+            if message_id in self._inflight:
+                return "already_inflight"
+            if self._pending >= self.config.im_max_pending_reviews:
+                full = True
+                ahead = self._pending + int(self._active)
+            else:
+                full = False
+                ahead = self._pending + int(self._active)
+                self._inflight[message_id] = (task_id, review_scope, ahead)
+                self._pending += 1
+
+        if full:
+            self._reject_full(request, task_id, review_scope, ahead)
+            return "rejected"
+
+        accepted_text = (
+            render_review_set_accepted(request.members, ahead)
+            if isinstance(request, ReviewSetRequest)
+            else render_single_accepted(request.mr, ahead)
+        )
+        accepted_status = _safe_im_notify(
+            self.config,
+            accepted_text,
+            task_id,
+            review_scope,
+            "accepted",
+            self.notification_lock,
+        )
+        job = _ImReviewJob(request, task_id, accepted_status, review_scope)
+        with self._state_lock:
+            self._queue.put_nowait(job)
+            LOG.info(
+                "message=%s task=%s review_scope=%s stage=im_queue event=enqueued "
+                "queue_depth=%s ahead=%s outcome=succeeded",
+                message_id,
+                task_id,
+                review_scope,
+                self._pending,
+                ahead,
+            )
+        return "enqueued"
+
+    def wait(self) -> None:
+        self._queue.join()
+
+    def close(self) -> None:
+        self._queue.join()
+        self._queue.put(self._STOP)
+        self._thread.join()
+
+    def raise_if_failed(self) -> None:
+        with self._state_lock:
+            failure = self._failure
+        if failure is not None:
+            raise RuntimeError("IM review worker failed") from failure
+
+    def _run(self) -> None:
+        while True:
+            item = self._queue.get()
+            if item is self._STOP:
+                self._queue.task_done()
+                return
+            job = item
+            message_id = job.request.message.message_id
+            with self._state_changed:
+                self._pending -= 1
+                self._active = True
+                queue_depth = self._pending
+                self._state_changed.notify_all()
+            LOG.info(
+                "message=%s task=%s review_scope=%s stage=im_queue event=started "
+                "queue_depth=%s ahead=0 outcome=started",
+                message_id,
+                job.task_id,
+                job.review_scope,
+                queue_depth,
+            )
+            try:
+                self._process(job)
+            except Exception as exc:  # noqa: BLE001 - 基础设施异常必须通知 poll 并继续 drain 已受理任务。
+                with self._state_changed:
+                    if self._failure is None:
+                        self._failure = exc
+                    self._state_changed.notify_all()
+                LOG.error(
+                    "message=%s task=%s review_scope=%s stage=im_queue event=completed "
+                    "queue_depth=%s ahead=0 outcome=failed error_type=%s",
+                    message_id,
+                    job.task_id,
+                    job.review_scope,
+                    self._queue_depth(),
+                    type(exc).__name__,
+                )
+            finally:
+                processed = self.state.is_processed(message_id)
+                with self._state_changed:
+                    self._active = False
+                    if processed:
+                        self._inflight.pop(message_id, None)
+                    self._state_changed.notify_all()
+                if processed:
+                    LOG.info(
+                        "message=%s task=%s review_scope=%s stage=im_queue event=completed "
+                        "queue_depth=%s ahead=0 outcome=succeeded",
+                        message_id,
+                        job.task_id,
+                        job.review_scope,
+                        self._queue_depth(),
+                    )
+                self._queue.task_done()
+
+    def _process(self, job: _ImReviewJob) -> None:
+        if isinstance(job.request, ReviewSetRequest):
+            _process_review_set(
+                self.config,
+                self.state,
+                self.service,
+                job.request,
+                job.task_id,
+                job.accepted_status,
+                self.notification_lock,
+            )
+            return
+        if self._single_coordinator is None:
+            self._single_coordinator = SingleMrReviewCoordinator(
+                self.service,
+                self.service.gitlab,
+                self.config,
+            )
+        _process_single_review(
+            self.config,
+            self.state,
+            self.service,
+            self._single_coordinator,
+            job.request,
+            job.task_id,
+            job.accepted_status,
+            self.notification_lock,
+        )
+
+    def _reject_full(
+        self,
+        request: ReviewRequest | ReviewSetRequest,
+        task_id: str,
+        review_scope: str,
+        ahead: int,
+    ) -> None:
+        text = (
+            render_review_set_queue_full(request.members, self.config.im_max_pending_reviews)
+            if isinstance(request, ReviewSetRequest)
+            else render_single_queue_full(request.mr, self.config.im_max_pending_reviews)
+        )
+        terminal_status = _safe_im_notify(
+            self.config,
+            text,
+            task_id,
+            review_scope,
+            "terminal",
+            self.notification_lock,
+        )
+        self.state.mark_processed(
+            request.message.message_id,
+            task_id,
+            "rejected",
+            "queue_full",
+            {"accepted": "not_applicable", "terminal": terminal_status},
+        )
+        LOG.info(
+            "message=%s task=%s review_scope=%s stage=im_queue event=rejected "
+            "queue_depth=%s ahead=%s outcome=queue_full",
+            request.message.message_id,
+            task_id,
+            review_scope,
+            self._queue_depth(),
+            ahead,
+        )
+
+    def _queue_depth(self) -> int:
+        with self._state_lock:
+            return self._pending
+
+
 def _safe_im_notify(
         config: Config,
         text: str,
         task_id: str,
         review_scope: str,
         event: str,
+        notification_lock: threading.Lock | None = None,
 ) -> str:
     try:
-        _send_text(config, text)
+        if notification_lock is None:
+            _send_text(config, text)
+        else:
+            with notification_lock:
+                _send_text(config, text)
     except Exception as exc:  # noqa: BLE001 - 通知失败不能改写检视事实或触发 Agent 重试。
         LOG.warning(
             "task=%s review_scope=%s stage=im_notify event=%s outcome=failed error_type=%s",

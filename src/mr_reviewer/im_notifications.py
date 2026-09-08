@@ -30,8 +30,22 @@ _FAILURE_STAGE_LABELS = {
 }
 
 
-def render_single_accepted(mr: GitLabMrUrl) -> str:
-    return "\n".join(["[代码检视已受理]", f"MR：{_mr_label(mr)}", f"地址：{_mr_url(mr)}"])
+def render_single_accepted(mr: GitLabMrUrl, ahead: int | None = None) -> str:
+    lines = ["[代码检视已受理]", f"MR：{_mr_label(mr)}", f"地址：{_mr_url(mr)}"]
+    if ahead is not None:
+        lines.append(_queue_line(ahead))
+    return "\n".join(lines)
+
+
+def render_single_queue_full(mr: GitLabMrUrl, limit: int) -> str:
+    return "\n".join(
+        [
+            "[代码检视暂未受理]",
+            f"MR：{_mr_label(mr)}",
+            f"地址：{_mr_url(mr)}",
+            f"原因：当前 IM 检视队列已满（最多等待 {limit} 个请求），请稍后重新发送。",
+        ]
+    )
 
 
 def render_single_terminal(mr: GitLabMrUrl, outcome: SingleMrOutcome) -> str:
@@ -65,8 +79,24 @@ def render_single_failed(mr: GitLabMrUrl, task_id: str, stage: str = "mr_metadat
     )
 
 
-def render_review_set_accepted(members: Iterable[GitLabMrUrl]) -> str:
-    return "\n".join(["[联合代码检视已受理]", *_member_lines(members)])
+def render_review_set_accepted(
+    members: Iterable[GitLabMrUrl],
+    ahead: int | None = None,
+) -> str:
+    lines = ["[联合代码检视已受理]", *_member_lines(members)]
+    if ahead is not None:
+        lines.append(_queue_line(ahead))
+    return "\n".join(lines)
+
+
+def render_review_set_queue_full(members: Iterable[GitLabMrUrl], limit: int) -> str:
+    return "\n".join(
+        [
+            "[联合代码检视暂未受理]",
+            *_member_lines(members),
+            f"原因：当前 IM 检视队列已满（最多等待 {limit} 个请求），请稍后重新发送。",
+        ]
+    )
 
 
 def render_review_set_rejected(members: Iterable[GitLabMrUrl], reason: str, task_id: str) -> str:
@@ -205,6 +235,10 @@ def _finding_summary(findings: Iterable[object], total: int | None = None) -> st
 
 def _member_lines(members: Iterable[GitLabMrUrl]) -> list[str]:
     return ["成员：", *(f"- {_mr_label(mr)}：{_mr_url(mr)}" for mr in members)]
+
+
+def _queue_line(ahead: int) -> str:
+    return f"IM队列：入队时前方 {ahead} 个请求"
 
 
 def _manifest_member_lines(manifest: ReviewSetManifest) -> list[str]:

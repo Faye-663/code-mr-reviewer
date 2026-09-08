@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -8,6 +9,8 @@ from pathlib import Path
 class StateStore:
     def __init__(self, path: Path):
         self.path = path
+        # poll 主线程和 review worker 共用实例，整个 read-modify-replace 必须保持原子。
+        self._lock = threading.RLock()
         self.data = self._load()
 
     def _load(self) -> dict:
@@ -16,7 +19,8 @@ class StateStore:
         return json.loads(self.path.read_text(encoding="utf-8"))
 
     def is_processed(self, message_id: str) -> bool:
-        return message_id in self.data.get("processed", {})
+        with self._lock:
+            return message_id in self.data.get("processed", {})
 
     def mark_processed(
         self,
@@ -26,19 +30,20 @@ class StateStore:
         error: str | None = None,
         notifications: dict[str, str] | None = None,
     ) -> None:
-        processed = self.data.setdefault("processed", {})
-        entry = {
-            "task_id": task_id,
-            "status": status,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }
-        if error:
-            entry["error"] = error
-        if notifications is not None:
-            entry["notifications"] = dict(notifications)
-        processed[message_id] = entry
-        self.data["lastMessageId"] = message_id
-        self._save()
+        with self._lock:
+            processed = self.data.setdefault("processed", {})
+            entry = {
+                "task_id": task_id,
+                "status": status,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            if error:
+                entry["error"] = error
+            if notifications is not None:
+                entry["notifications"] = dict(notifications)
+            processed[message_id] = entry
+            self.data["lastMessageId"] = message_id
+            self._save()
 
     def _save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)

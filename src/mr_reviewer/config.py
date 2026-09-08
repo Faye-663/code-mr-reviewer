@@ -90,6 +90,7 @@ class Config:
     max_diff_lines: int = 2000
     task_timeout_seconds: int = 900
     poll_interval_seconds: int = 15
+    im_max_pending_reviews: int = 20
     test_gitlab_responses: Path | None = None
     repository_dependency_catalog: Path | None = None
 
@@ -101,6 +102,8 @@ class Config:
             self.gitlab_api_base_url = f"{self.gitlab_base_url}/api/v4"
         # 在启动读取配置时立即校验，避免后台 worker 运行到发布阶段才失败。
         self.publication_policy
+        if self.im_max_pending_reviews <= 0:
+            raise ValueError("IM max pending reviews must be greater than zero")
 
     @property
     def publication_policy(self) -> FindingPublicationPolicy:
@@ -192,6 +195,7 @@ class Config:
             max_diff_lines=int(get("MAX_DIFF_LINES", "2000")),
             task_timeout_seconds=int(get("TASK_TIMEOUT_SECONDS", "900")),
             poll_interval_seconds=int(get("POLL_INTERVAL_SECONDS", "15")),
+            im_max_pending_reviews=int(get("IM_MAX_PENDING_REVIEWS", "20")),
             test_gitlab_responses=Path(test_gitlab_responses) if test_gitlab_responses else None,
             repository_dependency_catalog=(
                 Path(repository_dependency_catalog) if repository_dependency_catalog else None

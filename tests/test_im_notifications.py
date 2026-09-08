@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import mr_reviewer.im_notifications as notifications
 from mr_reviewer.gitlab import GitLabMrUrl
 from mr_reviewer.im_notifications import (
     render_review_set_accepted,
@@ -78,6 +79,27 @@ def test_single_notifications_identify_mr_version_disposition_and_deliveries():
     assert "GitLab：成功（新发布 2 条，已存在 1 条）" in terminal
     assert "Review Report：已上传 OneBox（review-app-mr-7.md）" in terminal
     assert "跟踪ID：review-123" in terminal
+
+
+def test_accepted_and_queue_full_notifications_show_queue_context():
+    single_accepted = render_single_accepted(_mr(), ahead=1)
+    review_set_accepted = render_review_set_accepted(
+        (_mr("team/app", 7), _mr("team/sdk", 8)),
+        ahead=2,
+    )
+    single_full = notifications.render_single_queue_full(_mr(), 20)
+    review_set_full = notifications.render_review_set_queue_full(
+        (_mr("team/app", 7), _mr("team/sdk", 8)),
+        20,
+    )
+
+    assert "IM队列：入队时前方 1 个请求" in single_accepted
+    assert "IM队列：入队时前方 2 个请求" in review_set_accepted
+    assert single_full.startswith("[代码检视暂未受理]")
+    assert "MR：team/app!7" in single_full
+    assert "最多等待 20 个请求" in single_full
+    assert review_set_full.startswith("[联合代码检视暂未受理]")
+    assert "team/app!7" in review_set_full and "team/sdk!8" in review_set_full
 
 
 def test_single_terminal_without_findings_keeps_mr_identity_and_report_delivery():

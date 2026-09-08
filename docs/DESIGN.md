@@ -43,13 +43,20 @@ flowchart TD
 ```mermaid
 flowchart TD
     A["WeLink 群消息"] --> B["poll: 查询群历史"]
+    B -. "按间隔持续查询，不等待 review" .-> B
     B --> C["parse_poll_output: 解析 respData.chatInfo"]
     C --> D{"resolve_review_trigger"}
     D -- "未 @Bot / 不在白名单 / 无 MR URL" --> E["跳过消息"]
-    D -- "1 个唯一 MR" --> A1["发送单 MR 已受理通知"]
-    A1 --> F["GitLabClient: 获取 MR 元数据"]
-    D -- "2–3 个不同项目" --> A2["发送 ReviewSet 已受理通知"]
-    A2 --> R["ReviewSetPreparer"]
+    D -- "单 MR / 合法 ReviewSet" --> Q["in-flight 占位 + 有界 FIFO admission"]
+    Q -- "等待队列已满" --> QX["成员明确的暂未受理通知 + rejected/queue_full"]
+    Q -- "已入队" --> QT{"请求类型"}
+    QT -- "1 个唯一 MR" --> A1["发送单 MR 已受理通知 + 位置快照"]
+    QT -- "2–3 个不同项目" --> A2["发送 ReviewSet 已受理通知 + 位置快照"]
+    A1 --> W["单 worker 串行消费"]
+    A2 --> W
+    W --> WT{"消费请求类型"}
+    WT -- "单 MR" --> F["GitLabClient: 获取 MR 元数据"]
+    WT -- "ReviewSet" --> R["ReviewSetPreparer"]
     D -- "数量 / 项目 / 仓库不合法" --> X["成员明确的安全拒绝文案 + rejected"]
     F --> F2["读取当前 Head / 注册 Trigger"]
     F2 --> G["ReviewRun owner 执行；joiner 等待"]
@@ -207,7 +214,11 @@ SQLite 使用 WAL、`busy_timeout` 与 `BEGIN IMMEDIATE` claim。ReviewRun 为 `
 
 delivery 彼此独立：一个 sink 失败不阻塞另一个，整体返回 `success_with_warnings`。GitLab 明确失败可重试，并依赖 marker 消除崩溃后的重复 finding。OneBox 明确失败可由后续 Trigger 重试；上传中断的 lease 记为 `unknown` 且不自动重试，因为 CLI 没有已验证的服务端幂等键。
 
-IM poll 在合法请求进入 GitLab 或 Agent I/O 前发送“已受理”，终态重复携带 `project_path!iid`、MR URL、可用的 Head SHA、finding 总数及严重级别分布、每个 sink 的结果和跟踪ID；零 finding 不省略这些身份与交付字段。单 MR 的 `joined`、`reused`、`duplicate` 会显式呈现 ReviewRun 协调语义；ReviewSet 终态列出全部成员、ReqID 和 ReviewSet ID。跟踪ID关联日志、State JSON、SQLite ReviewRun 和本地报告，不承担查询接口语义。`StateStore` 在原消息 entry 中分别记录受理和终态通知结果。
+IM poll 主线程只执行查询、解析、本地拒绝、in-flight 去重、受理通知和入队；单个 `ImReviewWorker` 串行消费单 MR 与 ReviewSet，因此 Agent 最大并发仍为 1。`MR_REVIEWER_IM_MAX_PENDING_REVIEWS` 默认 20，只限制等待数，不包含当前执行项。容量判断使用 worker 接管条件同步，避免同批首个请求尚未 dequeue 时误拒绝后续请求。队列位置是 admission 瞬间的快照，包含当前运行和更早入队的 IM 请求，不包含 webhook 或其它进程，也不表示 ETA。
+
+IM poll 在合法请求进入 GitLab 或 Agent I/O 前发送“已受理”，终态重复携带 `project_path!iid`、MR URL、可用的 Head SHA、finding 总数及严重级别分布、每个 sink 的结果和跟踪ID；零 finding 不省略这些身份与交付字段。单 MR 的 `joined`、`reused`、`duplicate` 会显式呈现 ReviewRun 协调语义；ReviewSet 终态列出全部成员、ReqID 和 ReviewSet ID。跟踪ID关联日志、State JSON、SQLite ReviewRun 和本地报告，不承担查询接口语义。`StateStore` 使用进程内 `RLock` 串行化读取、entry 更新与原子替换，并在原消息 entry 中分别记录受理和终态通知结果。排队和执行中的 message ID 只保存在带锁的 in-flight map；终态成功持久化后才移除，进程强制终止后依靠历史查询重放。
+
+常驻 poll 查询异常或正常退出时停止接收新任务，并 drain 全部已受理任务；`poll --once` 同样等待该批终态。worker 对每个业务任务隔离异常并继续 FIFO；若终态 State 写入失败，则仅记录安全 `error_type`，停止后续 admission，并让 poll 非零退出。accepted 与 terminal 发送共用互斥锁，避免并发启动多个 `welink-cli`。
 
 通知 renderer 内部继续使用真实换行。`welink.py` 仅在 reply command 的首个可执行文件直接解析为 `welink-cli[.cmd|.ps1|.exe]` 时，把 CRLF/CR/LF 统一编码为字面量 `\n` 后传给 CLI；Windows、PowerShell 和 POSIX 使用同一参数语义，自定义 reply command 保持真实换行。IM transport 没有已验证的幂等键，因此发送失败不自动重试，也不改写真实 review 状态。
 
@@ -226,12 +237,14 @@ IM poll 在合法请求进入 GitLab 或 Agent I/O 前发送“已受理”，�
 - ReviewSet 任一预检、checkout、计划、review 或结构化解析失败：不进入 GitLab 发布；发送安全 IM 失败文案并将原消息标记 `failed`。
 - ReviewSet 单个 target 发布失败：保留其它发布结果，在唯一聚合报告中记录失败并标记 `success_with_warnings`。
 - IM 受理或终态发送失败：记录 `stage=im_notify` 的 event/outcome 和 StateStore notification 状态；继续或保留真实 review 结果，不重跑 Agent。
+- IM 等待队列已满：不发送受理通知，不调用 GitLab/Agent；发送一次成员明确的“暂未受理”，写入 `rejected/queue_full`，相同消息不自动重试。
+- IM 终态 State 写入失败：作为 poll 基础设施故障停止 admission 并非零退出；不把已完成 review 改写为业务失败，也不追加第二条终态。
 
 ## 模块边界
 
 MR Web URL 与 REST API root 是两个独立边界：`MR_REVIEWER_GITLAB_BASE_URL` 只用于 URL host 校验，`MR_REVIEWER_GITLAB_API_BASE_URL` 持有包含版本前缀的完整 API root；`GitLabClient` 只追加 `/projects/...` 资源路径。完整接口目录、消费字段和模式调用矩阵见 [GitLab API 说明](GITLAB_API.md)。
 
-- `cli.py`：命令入口、轮询循环、review service 装配和 IM Trigger 通知。
+- `cli.py`：命令入口、持续轮询、有界 FIFO worker、in-flight admission、review service 装配和 IM Trigger 通知。
 - `im_notifications.py`：单 MR / ReviewSet 受理、完成、告警、过期、失败和拒绝文案的纯渲染。
 - `coordination.py`：SQLite ReviewRun/Trigger/delivery 状态、lease、事务 claim、去重、复用与 supersede。
 - `single_mr.py`：IM/webhook 单 MR 统一编排、协作取消、报告先行和 sink 协调。

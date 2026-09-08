@@ -1,5 +1,7 @@
 import json
 import importlib.util
+import threading
+import time
 import urllib.parse
 from pathlib import Path
 
@@ -15,6 +17,73 @@ from mr_reviewer.process import prepare_command
 from mr_reviewer.review_result import parse_review_plan, parse_structured_review_result
 from mr_reviewer.review_routing import resolve_review_routing
 from mr_reviewer.state import StateStore
+
+
+def test_im_queue_capacity_defaults_loads_and_rejects_invalid_values(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("MR_REVIEWER_IM_MAX_PENDING_REVIEWS", raising=False)
+    assert Config(gitlab_base_url="https://gitlab.example.com").im_max_pending_reviews == 20
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "MR_REVIEWER_GITLAB_BASE_URL=https://gitlab.example.com\n"
+        "MR_REVIEWER_IM_MAX_PENDING_REVIEWS=7\n",
+        encoding="utf-8",
+    )
+    assert Config.from_env(env_file).im_max_pending_reviews == 7
+
+    for invalid in (0, -1):
+        with pytest.raises(ValueError, match="IM max pending reviews must be greater than zero"):
+            Config(gitlab_base_url="https://gitlab.example.com", im_max_pending_reviews=invalid)
+
+    env_file.write_text(
+        "MR_REVIEWER_GITLAB_BASE_URL=https://gitlab.example.com\n"
+        "MR_REVIEWER_IM_MAX_PENDING_REVIEWS=not-an-integer\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError):
+        Config.from_env(env_file)
+
+
+def test_state_store_serializes_concurrent_reads_and_writes(tmp_path: Path):
+    store = StateStore(tmp_path / "state.json")
+    original_save = store._save
+    start = threading.Barrier(3)
+    active_saves = 0
+    max_active_saves = 0
+    guard = threading.Lock()
+    errors: list[Exception] = []
+
+    def monitored_save():
+        nonlocal active_saves, max_active_saves
+        with guard:
+            active_saves += 1
+            max_active_saves = max(max_active_saves, active_saves)
+        time.sleep(0.05)
+        try:
+            original_save()
+        finally:
+            with guard:
+                active_saves -= 1
+
+    store._save = monitored_save
+
+    def mark(message_id: str):
+        start.wait()
+        try:
+            store.mark_processed(message_id, f"task-{message_id}", "succeeded")
+        except Exception as exc:  # noqa: BLE001 - 并发异常属于测试结果。
+            errors.append(exc)
+
+    threads = [threading.Thread(target=mark, args=(message_id,)) for message_id in ("a", "b")]
+    for thread in threads:
+        thread.start()
+    start.wait()
+    for thread in threads:
+        thread.join(1)
+
+    assert errors == []
+    assert max_active_saves == 1
+    assert store.is_processed("a") and store.is_processed("b")
 
 
 def _opencode_json_output(*texts: str) -> str:

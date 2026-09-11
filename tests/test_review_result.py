@@ -1,5 +1,7 @@
 import logging
 
+import json
+
 import pytest
 
 import mr_reviewer.review_result as review_result_module
@@ -130,10 +132,19 @@ def test_parse_structured_review_result_accepts_only_contract_valid_candidate():
 
 
 def test_parse_structured_review_result_rejects_multiple_contract_valid_candidates():
-    raw = _structured_payload() + "\n" + _structured_payload()
+    raw = _structured_payload() + "\n" + _structured_payload(impact="第二个不同结论")
 
     with pytest.raises(StructuredReviewParseError, match="multiple valid JSON objects"):
         parse_structured_review_result(raw)
+
+
+def test_parse_structured_review_result_deduplicates_semantically_equal_candidates():
+    first = _structured_payload()
+    second = json.dumps(json.loads(first), ensure_ascii=False, sort_keys=True)
+
+    result = parse_structured_review_result(first + "\n" + second)
+
+    assert result.findings[0].rule_id == "SQL_PERFORMANCE"
 
 
 def test_parse_structured_review_result_rejects_wrapped_invalid_contract():

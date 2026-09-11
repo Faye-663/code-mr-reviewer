@@ -111,6 +111,7 @@ def parse_structured_review_result(raw_output: str) -> StructuredReviewResult:
         error_label="review",
         error_type=StructuredReviewParseError,
         parse_object=_parse_structured_review_object,
+        prefer_authoritative_agent_output=True,
     )
 
 

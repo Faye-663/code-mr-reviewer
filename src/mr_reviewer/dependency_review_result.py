@@ -119,6 +119,7 @@ def parse_structured_dependency_review_result(
         error_label="dependency review result",
         error_type=StructuredDependencyReviewParseError,
         parse_object=lambda payload: _parse_dependency_review_result_object(payload, manifest),
+        prefer_authoritative_agent_output=True,
     )
 
 

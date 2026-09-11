@@ -1025,6 +1025,22 @@ def test_opencode_runner_finds_result_at_any_text_event_position(
     assert "请 review" not in log_text
 
 
+def test_opencode_runner_prefers_last_valid_top_level_result(monkeypatch, tmp_path: Path):
+    first = '{"findings":[],"notes":["draft"],"test_gaps":[]}'
+    final = '{"findings":[],"notes":["final"],"test_gaps":[]}'
+
+    class Result:
+        returncode = 0
+        stderr = ""
+        stdout = _opencode_json_output(first, final)
+
+    monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: Result())
+
+    output = OpenCodeRunner("opencode").run_review("review", tmp_path, 60)
+
+    assert parse_structured_review_result(output).notes == ["final"]
+
+
 @pytest.mark.parametrize("findings_position", [0, 1, 2])
 def test_claude_code_runner_finds_result_at_any_top_level_message_position(
         monkeypatch, tmp_path: Path, findings_position: int
@@ -1072,6 +1088,22 @@ def test_claude_code_runner_finds_result_at_any_top_level_message_position(
     assert prompt not in args
     assert parse_structured_review_result(output).findings == []
     assert "sub-agent draft" not in output
+
+
+def test_claude_code_runner_prefers_valid_result_event(monkeypatch, tmp_path: Path):
+    draft = '{"findings":[],"notes":["draft"],"test_gaps":[]}'
+    final = '{"findings":[],"notes":["final"],"test_gaps":[]}'
+
+    class Result:
+        returncode = 0
+        stderr = ""
+        stdout = _claude_stream_json_output(draft, result=final)
+
+    monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: Result())
+
+    output = agent_module.ClaudeCodeRunner("claude").run_review("review", tmp_path, 60)
+
+    assert parse_structured_review_result(output).notes == ["final"]
 
 
 @pytest.mark.parametrize(

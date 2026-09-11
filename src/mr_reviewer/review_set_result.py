@@ -9,6 +9,9 @@ from mr_reviewer.result_validation import (
     require_object as _require_object,
     require_text as _text,
     require_text_list as _text_list,
+    normalize_report_text_list,
+    parse_findings_isolated,
+    parse_review_position,
 )
 from mr_reviewer.review_result import ALLOWED_CONFIDENCES, ALLOWED_SEVERITIES
 from mr_reviewer.structured_output import parse_json_object_output
@@ -40,6 +43,7 @@ class ReviewSetTargetPosition:
     new_path: str
     old_line: int
     new_line: int
+    side: str = "legacy"
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +73,9 @@ class StructuredReviewSetResult:
     notes: list[str]
     test_gaps: list[str]
     good: list[str] = field(default_factory=list)
+    structured_parse_status: str = "success"
+    rejected_findings: list[dict[str, object]] = field(default_factory=list)
+    normalization_warnings: list[dict[str, str]] = field(default_factory=list)
 
 
 def parse_review_set_plan(raw_output: str, member_ids: set[str]) -> dict[str, object]:
@@ -117,30 +124,39 @@ def parse_structured_review_set_result(raw_output: str) -> StructuredReviewSetRe
         error_label="review set result",
         error_type=StructuredReviewSetParseError,
         parse_object=_parse_structured_review_set_object,
+        prefer_authoritative_agent_output=True,
     )
 
 
 def _parse_structured_review_set_object(payload: object) -> StructuredReviewSetResult:
     payload = _require_object(payload, StructuredReviewSetParseError, "review set result")
-    _exact_fields(
-        payload,
-        {"schema_version", "findings", "relationship_summary", "notes", "test_gaps", "good"},
-        StructuredReviewSetParseError,
-        "review set result",
-    )
+    unexpected = set(payload) - {
+        "schema_version", "findings", "relationship_summary", "notes", "test_gaps", "good"
+    }
+    if unexpected:
+        raise StructuredReviewSetParseError(f"review set result contains unexpected fields: {sorted(unexpected)}")
+    missing_required = {"schema_version", "findings"} - set(payload)
+    if missing_required:
+        raise StructuredReviewSetParseError(f"review set result is missing fields: {sorted(missing_required)}")
     if payload.get("schema_version") != RESULT_SCHEMA_VERSION:
         raise StructuredReviewSetParseError(f"schema_version must be {RESULT_SCHEMA_VERSION}")
     findings = _require_list(payload, "findings", StructuredReviewSetParseError)
-    relationship_summary = _text_list(payload, "relationship_summary", StructuredReviewSetParseError)
-    if not relationship_summary:
-        raise StructuredReviewSetParseError("relationship_summary must not be empty")
+    relationship_summary, relationship_warnings = normalize_report_text_list(payload, "relationship_summary")
+    notes, notes_warnings = normalize_report_text_list(payload, "notes")
+    test_gaps, test_gap_warnings = normalize_report_text_list(payload, "test_gaps")
+    good, good_warnings = normalize_report_text_list(payload, "good")
+    parsed_findings, rejected = parse_findings_isolated(findings, _parse_finding, StructuredReviewSetParseError)
+    warnings = [*relationship_warnings, *notes_warnings, *test_gap_warnings, *good_warnings]
     return StructuredReviewSetResult(
         schema_version=RESULT_SCHEMA_VERSION,
-        findings=tuple(_parse_finding(item, index) for index, item in enumerate(findings)),
+        findings=tuple(parsed_findings),
         relationship_summary=relationship_summary,
-        notes=_text_list(payload, "notes", StructuredReviewSetParseError),
-        test_gaps=_text_list(payload, "test_gaps", StructuredReviewSetParseError),
-        good=_text_list(payload, "good", StructuredReviewSetParseError),
+        notes=notes,
+        test_gaps=test_gaps,
+        good=good,
+        structured_parse_status="partial" if rejected or warnings else "success",
+        rejected_findings=rejected,
+        normalization_warnings=warnings,
     )
 
 
@@ -273,18 +289,18 @@ def _parse_target(value: object, index: int, parent: str) -> ReviewSetFindingTar
 
 def _parse_position(value: object, parent: str) -> ReviewSetTargetPosition:
     context = f"{parent}.position"
-    item = _require_object(value, StructuredReviewSetParseError, context)
-    _exact_fields(
-        item,
-        {"old_path", "new_path", "old_line", "new_line"},
-        StructuredReviewSetParseError,
-        context,
+    old_path, new_path, old_line, new_line, side = parse_review_position(
+        value,
+        error_type=StructuredReviewSetParseError,
+        context=context,
+        allow_none=False,
     )
     return ReviewSetTargetPosition(
-        old_path=_text(item, "old_path", StructuredReviewSetParseError, context),
-        new_path=_text(item, "new_path", StructuredReviewSetParseError, context),
-        old_line=_integer(item, "old_line", StructuredReviewSetParseError, context),
-        new_line=_integer(item, "new_line", StructuredReviewSetParseError, context),
+        old_path=old_path,
+        new_path=new_path,
+        old_line=old_line,
+        new_line=new_line,
+        side=side,
     )
 
 

@@ -417,6 +417,8 @@ def _build_webhook_monitor_payload(
         "good": report.good or [],
         "notes": report.notes or [],
         "test_gaps": report.test_gaps or [],
+        "rejected_findings": report.rejected_findings or [],
+        "normalization_warnings": report.normalization_warnings or [],
         "prompt_templates": report.prompt_templates or {},
         "requested_review_mode": report.requested_review_mode or report.review_mode,
         "review_mode": report.review_mode,

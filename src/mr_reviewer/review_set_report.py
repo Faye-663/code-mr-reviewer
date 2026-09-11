@@ -82,7 +82,12 @@ def _findings(
         (item["issue_id"], item["target_index"]): item for item in publication.results
     }
     lines = ["## Findings", ""]
-    if not report.result.findings:
+    if not report.result.findings and report.result.rejected_findings:
+        lines.append(
+            f"- 存在 {len(report.result.rejected_findings)} 条被拒绝的 Agent finding，"
+            "不能据此宣称未发现问题。"
+        )
+    elif not report.result.findings:
         lines.append("- 未发现可报告的问题。")
     for finding_index, finding in enumerate(report.result.findings, start=1):
         lines.extend(
@@ -105,15 +110,22 @@ def _findings(
             publish = result_by_target[(finding.issue_id, target_index)]
             if target.position is None:
                 position = "普通评论"
+            elif target.position.new_line != -1:
+                position = f"`new:{target.position.new_path}:{target.position.new_line}`"
             else:
-                position = (
-                    f"`{target.position.old_path}:{target.position.old_line} -> "
-                    f"{target.position.new_path}:{target.position.new_line}`"
-                )
+                position = f"`old:{target.position.old_path}:{target.position.old_line}`"
             lines.append(
                 f"  - `{target.member_id}`：位置 {position}；{target.suggestion}；"
                 "MR评论状态："
                 f"{format_comment_status(str(publish['status']), str(publish['reason'] or ''))}"
+            )
+    if report.result.rejected_findings:
+        lines.extend(["", "### 被拒绝的 Agent Findings", ""])
+        for rejected in report.result.rejected_findings:
+            lines.append(
+                f"- 索引 {rejected.get('index', '<unknown>')}；"
+                f"原因码 `{rejected.get('reason_code', 'invalid_finding_contract')}`；"
+                f"摘要：{rejected.get('summary', 'unidentified finding')}"
             )
     return lines
 

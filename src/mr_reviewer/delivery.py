@@ -39,6 +39,17 @@ def deliver_gitlab_review(
             finding_results=[],
         )
 
+    if report.rejected_findings or report.normalization_warnings:
+        structured = replace(
+            structured,
+            structured_parse_status="partial",
+            rejected_findings=[*structured.rejected_findings, *(report.rejected_findings or [])],
+            normalization_warnings=[
+                *structured.normalization_warnings,
+                *(report.normalization_warnings or []),
+            ],
+        )
+
     if not enabled:
         results = [
             _unpublished_finding_result(finding, "disabled", "post_comment_disabled")
@@ -110,7 +121,7 @@ class DiscussionPublisher:
         existing_markers = extract_existing_markers(self.gitlab.list_mr_discussions(target))
         results = []
         for decision in decisions:
-            if decision.status != "publishable":
+            if decision.status not in {"publishable_inline", "publishable_note"}:
                 results.append(_finding_result(decision, decision.status, decision.reason))
                 continue
 
@@ -120,21 +131,29 @@ class DiscussionPublisher:
                 continue
 
             try:
-                response = self.gitlab.post_mr_discussion(
-                    target,
-                    discussion_body(decision, marker, self.model_name),
-                    decision.finding.severity,
-                    decision.position.to_gitlab_position(),
-                )
+                body = discussion_body(decision, marker, self.model_name)
+                if decision.status == "publishable_inline":
+                    response = self.gitlab.post_mr_discussion(
+                        target,
+                        body,
+                        decision.finding.severity,
+                        decision.position.to_gitlab_position(),
+                    )
+                else:
+                    response = self.gitlab.post_mr_note(target, body)
             except Exception as exc:  # noqa: BLE001 - 单条失败不能阻止其它 finding。
                 results.append(_finding_result(decision, "failed", str(exc), marker))
                 continue
 
-            result = _finding_result(decision, "posted", "", marker)
-            result["discussion_id"] = response.get("id")
-            notes = response.get("notes") if isinstance(response.get("notes"), list) else []
-            if notes and isinstance(notes[0], dict):
-                result["note_id"] = notes[0].get("id")
+            result_status = "posted" if decision.status == "publishable_inline" else "posted_note"
+            result = _finding_result(decision, result_status, decision.reason, marker)
+            if decision.status == "publishable_inline":
+                result["discussion_id"] = response.get("id")
+                notes = response.get("notes") if isinstance(response.get("notes"), list) else []
+                if notes and isinstance(notes[0], dict):
+                    result["note_id"] = notes[0].get("id")
+            else:
+                result["note_id"] = response.get("id")
             results.append(result)
             existing_markers.add(marker)
         return results
@@ -170,21 +189,32 @@ def extract_existing_markers(discussions: list[dict]) -> set[str]:
 def finding_marker(target: MergeRequestReviewTarget, decision: FindingValidationDecision) -> str:
     finding = decision.finding
     head_sha = decision.position.refs.head_sha if decision.position else target.head_sha
+    side, path, line = _marker_position(decision)
     return (
         "<!-- ai-cr:finding:"
         f"{target.project_path}:{target.mr_iid}:{head_sha}:{finding.rule_id}:"
-        f"{finding.old_path}:{finding.new_path}:{finding.old_line}:{finding.new_line}"
+        f"{side}:{path}:{line}"
         " -->"
     )
 
 
 def discussion_body(decision: FindingValidationDecision, marker: str, model_name: str) -> str:
     finding = decision.finding
+    downgrade = ""
+    if decision.status == "publishable_note":
+        side, path, line = _requested_position(finding)
+        reason = "未提供可定位位置" if decision.reason == "position_not_provided" else "位置不在当前 diff"
+        location = "未提供" if side == "none" else f"{side}:{path}:{line}"
+        downgrade = (
+            f"**发布说明**\n\n证据请求位置 `{location}`；{reason}，"
+            "已降级为普通 MR 评论；未吸附到邻近行。\n\n"
+        )
     return (
         f"**🤖 AI Review｜{finding.title}**\n\n"
         f"**判断依据**\n\n{finding.evidence}\n\n"
         f"**影响**\n\n{finding.impact}\n\n"
         f"**建议**\n\n{finding.suggestion}\n\n"
+        f"{downgrade}"
         "<details>\n"
         "<summary>审查信息</summary>\n\n"
         f"- 置信度：`{finding.confidence}`\n"
@@ -193,6 +223,23 @@ def discussion_body(decision: FindingValidationDecision, marker: str, model_name
         "</details>\n\n"
         f"{marker}"
     )
+
+
+def _requested_position(finding) -> tuple[str, str, int]:
+    if finding.new_line != -1:
+        return "new", finding.new_path, finding.new_line
+    if finding.old_line != -1:
+        return "old", finding.old_path, finding.old_line
+    return "none", "", -1
+
+
+def _marker_position(decision: FindingValidationDecision) -> tuple[str, str, int]:
+    position = decision.position
+    if position is None:
+        return _requested_position(decision.finding)
+    if position.new_line != -1:
+        return "new", position.new_path, position.new_line
+    return "old", position.old_path, position.old_line
 
 
 def _finding_result(
@@ -232,6 +279,7 @@ def _finding_counts(results: list[dict]) -> dict[str, int]:
     counts = {
         "total": len(results),
         "posted": 0,
+        "posted_note": 0,
         "skipped_duplicate": 0,
         "skipped_stale": 0,
         "filtered": 0,
@@ -255,10 +303,12 @@ def _with_structured_submission(
         report,
         submission_owner="python",
         submission_status=status,
-        structured_parse_status="success",
+        structured_parse_status=structured.structured_parse_status,
         finding_counts=_finding_counts(results),
         finding_results=results,
         good=structured.good,
         notes=structured.notes,
         test_gaps=structured.test_gaps,
+        rejected_findings=structured.rejected_findings,
+        normalization_warnings=structured.normalization_warnings,
     )

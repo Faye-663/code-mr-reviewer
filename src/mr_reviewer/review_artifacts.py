@@ -90,7 +90,7 @@ class ReviewArtifactStore:
 
 
 def normalize_review_report(report: ReviewReport) -> ReviewReport:
-    if report.structured_parse_status == "success" and report.finding_results is not None:
+    if report.structured_parse_status in {"success", "partial"} and report.finding_results is not None:
         return report
     rendered = render_structured_output_as_markdown(report)
     return replace(rendered, markdown=report.markdown)
@@ -119,6 +119,8 @@ def _compatibility_fields(report: ReviewReport) -> dict[str, object]:
         "good": report.good or [],
         "notes": report.notes or [],
         "test_gaps": report.test_gaps or [],
+        "rejected_findings": report.rejected_findings or [],
+        "normalization_warnings": report.normalization_warnings or [],
         "prompt_templates": report.prompt_templates or {},
         "requested_review_mode": report.requested_review_mode or report.review_mode,
         "review_mode": report.review_mode,

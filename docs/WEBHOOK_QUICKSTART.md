@@ -53,7 +53,7 @@ MR_REVIEWER_REPOSITORY_DEPENDENCY_CATALOG=
 - `MR_REVIEWER_WEBHOOK_HOST` 是服务监听地址。本机自测可用 `127.0.0.1`；GitLab 从其他机器访问本机 IP 时，使用 `0.0.0.0` 或实际网卡 IP。
 - `MR_REVIEWER_WEBHOOK_SECRET` 可为空；配置后会校验 `MR_REVIEWER_WEBHOOK_SECRET_HEADER` 指定的请求头，默认是 `X-Gitlab-Token`。
 - `MR_REVIEWER_WEBHOOK_SECRET_HEADER` 可按平台调整，例如 CodeHub 使用 `X-CodeHub-Token` 时改成该值。
-- `MR_REVIEWER_WEBHOOK_POST_COMMENT=false` 时不会发布 inline discussion，只写本地 JSON 监视报告和 Markdown review 报告。
+- `MR_REVIEWER_WEBHOOK_POST_COMMENT=false` 时不会发布 inline discussion 或降级 note，只写本地 JSON 监视报告和 Markdown review 报告。
 - `MR_REVIEWER_WEBHOOK_UPLOAD_ONEBOX=false` 是默认值；设为 true 后 webhook 也会请求 OneBox 上传，并需要配置 `WELINK_ONEBOX_SPACE_ID` 与 `WELINK_ONEBOX_PARENT_ID`。同一 ReviewRun 只上传一个确定性文件。
 - `MR_REVIEWER_COORDINATION_DB_PATH` 是 IM/webhook 的共享单机 SQLite。多个进程必须配置为同一路径；数据库不保存足以恢复 worker 队列的完整事件。
 - `MR_REVIEWER_REPOSITORY_DEPENDENCY_CATALOG` 可选，只在两种完整 Deep Review marker 的单 MR 中读取。配置 1–3 个直接依赖且全部同名 target branch checkout 成功时才执行联合检视；任何不完整上下文都整组降级，不使用部分依赖。
@@ -64,7 +64,7 @@ MR_REVIEWER_REPOSITORY_DEPENDENCY_CATALOG=
 - `MR_REVIEWER_LOG_LEVEL` 默认 `OFF`，不会输出项目日志或创建 debug 文件。设为 `INFO` 时只记录 API、Agent 调用元数据；设为 `DEBUG` 时会把脱敏后的请求、响应、prompt 和 Agent 输出写到 `MR_REVIEWER_DEBUG_DIR/YYYYMMDD/<task_id>/`。常规 webhook 审计仍使用 `MR_REVIEWER_REPORT_DIR`，它不受日志级别影响。
 - review/review-plan/deep-review/dependency-review prompt 只使用本项目随 Git 发布的包内模板，不支持部署侧覆盖。webhook JSON 审计报告会记录实际使用阶段的模板 ID 与内容哈希版本；DEBUG 的 Agent `request.json` 也会记录对应版本。启用依赖联合检视前，需要在所选 Agent 中安装仓库 `.skill/dependency-code-review`。
 
-Agent 的 `old_line` / `new_line` 不是范围起止行。新增行必须使用 `old_line=-1, new_line=N`，删除行使用 `old_line=N, new_line=-1`，未修改的上下文行同时提供同一位置匹配的两侧行号。对于更新文件中的同号替换行，若 Agent 误报 `old_line=new_line=N`，且 diff 两侧精确存在旧侧删除行和新侧新增行，Python 会规范为新侧位置；该容错不适用于新文件或范围式行号。其它非法或自相矛盾的组合不会发布；合法但不在当前 diff 的 finding 只保留在本地报告，webhook 不会改用邻近行或普通 note。
+Agent 使用单侧 `position: {path, line, side}`：新增或上下文行是 `side=new`，纯删除行是 `side=old`，无法可靠定位时为 `null`。旧 `old_path/new_path/old_line/new_line` 仍可读取，新侧能映射时优先新侧，否则尝试旧侧。安全相对路径和正整数行号仍是硬约束；合法但不在当前 diff 的 finding 降级为普通 MR note，并说明证据位置和原因，绝不改用邻近行。服务仍从 MR detail 读取并完整发送正确 `base_sha/start_sha/head_sha` 作为版本保护；这些 SHA 是应用主动提供的保护字段，不是平台 JSON 必填字段。
 
 启动前可以运行 `uv run mr-reviewer healthcheck`；输出中的 `publish_min_severity` 与 `publish_min_confidence` 是实际生效门槛。当前 healthcheck 是全局检查，会同时要求 WeLink poll/reply、群和 OneBox 配置；只部署 webhook 时，这些缺失项会让命令返回非零，但不表示 webhook 最小配置本身不可运行。
 

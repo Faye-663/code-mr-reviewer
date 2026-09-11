@@ -350,11 +350,34 @@ def _validate_review_finding(finding: object, index: int) -> None:
         raise ValueError(f"findings[{index}].severity must be one of {sorted(ALLOWED_SEVERITIES)}")
     if confidence not in ALLOWED_CONFIDENCES:
         raise ValueError(f"findings[{index}].confidence must be one of {sorted(ALLOWED_CONFIDENCES)}")
-    for field in ("rule_id", "old_path", "new_path", "title", "evidence", "impact", "suggestion"):
+    for field in ("rule_id", "title", "evidence", "impact", "suggestion"):
         _review_text(finding, field, index)
-    for field in ("old_line", "new_line"):
-        if not isinstance(finding.get(field), int):
-            raise ValueError(f"findings[{index}].{field} must be an integer")
+    if "position" in finding:
+        position = finding["position"]
+        if position is None:
+            return
+        if not isinstance(position, dict) or set(position) != {"path", "line", "side"}:
+            raise ValueError(f"findings[{index}].position must contain only path, line and side")
+        if not isinstance(position["path"], str) or not position["path"].strip():
+            raise ValueError(f"findings[{index}].position.path must be a non-empty string")
+        if isinstance(position["line"], bool) or not isinstance(position["line"], int) or position["line"] < 1:
+            raise ValueError(f"findings[{index}].position.line must be a positive integer")
+        if position["side"] not in {"old", "new"}:
+            raise ValueError(f"findings[{index}].position.side must be old or new")
+        return
+
+    new_line = finding.get("new_line", -1)
+    old_line = finding.get("old_line", -1)
+    for field, line in (("old_line", old_line), ("new_line", new_line)):
+        if isinstance(line, bool) or not isinstance(line, int) or line == 0 or line < -1:
+            raise ValueError(f"findings[{index}].{field} must be -1 or a positive integer")
+    if new_line > 0 and isinstance(finding.get("new_path"), str) and finding["new_path"].strip():
+        return
+    if old_line > 0 and isinstance(finding.get("old_path"), str) and finding["old_path"].strip():
+        return
+    if old_line == new_line == -1:
+        return
+    raise ValueError(f"findings[{index}] does not contain a usable old or new side")
 
 
 def _review_text(finding: dict, field: str, index: int) -> str:

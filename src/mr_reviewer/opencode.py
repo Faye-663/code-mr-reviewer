@@ -15,6 +15,7 @@ from typing import Protocol
 from mr_reviewer.observability import current_task_context, redact_text
 from mr_reviewer.prompting import PromptMetadata
 from mr_reviewer.process import format_command, prepare_command
+from mr_reviewer.structured_output import AgentOutput
 
 LOG = logging.getLogger("mr_reviewer")
 PROMPT_FILE_MESSAGE = "Follow the instructions in the attached file."
@@ -90,7 +91,7 @@ class OpenCodeRunner:
                 self._write_diagnostic_result(diagnostic_path, result)
             if result.returncode != 0:
                 raise RuntimeError(f"opencode run failed: {result.stderr.strip()}")
-            return "\n\n".join(_extract_opencode_json_texts(result.stdout or ""))
+            return AgentOutput(_extract_opencode_json_texts(result.stdout or ""))
         finally:
             if cleanup_prompt_file and prompt_file:
                 prompt_file.unlink(missing_ok=True)
@@ -211,7 +212,7 @@ class ClaudeCodeRunner(OpenCodeRunner):
             self._write_diagnostic_result(diagnostic_path, result)
         if result.returncode != 0:
             raise RuntimeError(f"claude code run failed: {result.stderr.strip()}")
-        return "\n\n".join(_extract_claude_stream_json_texts(result.stdout or ""))
+        return _extract_claude_stream_json_output(result.stdout or "")
 
 
 def build_agent_runner(
@@ -229,11 +230,12 @@ def build_agent_runner(
     raise ValueError(f"unsupported agent type: {agent_type}")
 
 
-def _extract_claude_stream_json_texts(stdout: str) -> list[str]:
+def _extract_claude_stream_json_output(stdout: str) -> AgentOutput:
     """提取 Claude Code 完整 assistant 消息，不扫描 tool 事件中的不可信嵌套内容。"""
     texts: list[str] = []
     seen: set[str] = set()
     result_seen = False
+    result_text: str | None = None
     for line_number, line in enumerate(stdout.splitlines(), start=1):
         line = line.strip()
         if not line:
@@ -246,10 +248,10 @@ def _extract_claude_stream_json_texts(stdout: str) -> list[str]:
                 raise RuntimeError(
                     f"claude code stream-json reported an unsuccessful result: {event.get('subtype', 'unknown')}"
                 )
-            result_text = event.get("result")
-            if not isinstance(result_text, str):
+            raw_result_text = event.get("result")
+            if not isinstance(raw_result_text, str):
                 raise RuntimeError(f"claude code stream-json result event at line {line_number} has no text result")
-            _append_unique_text(texts, seen, result_text)
+            result_text = raw_result_text.strip()
             continue
         if event_type != "assistant":
             continue
@@ -272,9 +274,9 @@ def _extract_claude_stream_json_texts(stdout: str) -> list[str]:
                 _append_unique_text(texts, seen, text)
     if not result_seen:
         raise RuntimeError("claude code stream-json output ended without a result event")
-    if not texts:
+    if not texts and not result_text:
         raise RuntimeError("claude code stream-json output did not contain assistant text")
-    return texts
+    return AgentOutput(texts, result_text)
 
 
 def _extract_opencode_json_texts(stdout: str) -> list[str]:

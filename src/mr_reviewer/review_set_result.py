@@ -9,6 +9,8 @@ from mr_reviewer.result_validation import (
     require_object as _require_object,
     require_text as _text,
     require_text_list as _text_list,
+    normalize_report_text_list,
+    parse_findings_isolated,
 )
 from mr_reviewer.review_result import ALLOWED_CONFIDENCES, ALLOWED_SEVERITIES
 from mr_reviewer.structured_output import parse_json_object_output
@@ -69,6 +71,9 @@ class StructuredReviewSetResult:
     notes: list[str]
     test_gaps: list[str]
     good: list[str] = field(default_factory=list)
+    structured_parse_status: str = "success"
+    rejected_findings: list[dict[str, object]] = field(default_factory=list)
+    normalization_warnings: list[dict[str, str]] = field(default_factory=list)
 
 
 def parse_review_set_plan(raw_output: str, member_ids: set[str]) -> dict[str, object]:
@@ -123,25 +128,33 @@ def parse_structured_review_set_result(raw_output: str) -> StructuredReviewSetRe
 
 def _parse_structured_review_set_object(payload: object) -> StructuredReviewSetResult:
     payload = _require_object(payload, StructuredReviewSetParseError, "review set result")
-    _exact_fields(
-        payload,
-        {"schema_version", "findings", "relationship_summary", "notes", "test_gaps", "good"},
-        StructuredReviewSetParseError,
-        "review set result",
-    )
+    unexpected = set(payload) - {
+        "schema_version", "findings", "relationship_summary", "notes", "test_gaps", "good"
+    }
+    if unexpected:
+        raise StructuredReviewSetParseError(f"review set result contains unexpected fields: {sorted(unexpected)}")
+    missing_required = {"schema_version", "findings"} - set(payload)
+    if missing_required:
+        raise StructuredReviewSetParseError(f"review set result is missing fields: {sorted(missing_required)}")
     if payload.get("schema_version") != RESULT_SCHEMA_VERSION:
         raise StructuredReviewSetParseError(f"schema_version must be {RESULT_SCHEMA_VERSION}")
     findings = _require_list(payload, "findings", StructuredReviewSetParseError)
-    relationship_summary = _text_list(payload, "relationship_summary", StructuredReviewSetParseError)
-    if not relationship_summary:
-        raise StructuredReviewSetParseError("relationship_summary must not be empty")
+    relationship_summary, relationship_warnings = normalize_report_text_list(payload, "relationship_summary")
+    notes, notes_warnings = normalize_report_text_list(payload, "notes")
+    test_gaps, test_gap_warnings = normalize_report_text_list(payload, "test_gaps")
+    good, good_warnings = normalize_report_text_list(payload, "good")
+    parsed_findings, rejected = parse_findings_isolated(findings, _parse_finding, StructuredReviewSetParseError)
+    warnings = [*relationship_warnings, *notes_warnings, *test_gap_warnings, *good_warnings]
     return StructuredReviewSetResult(
         schema_version=RESULT_SCHEMA_VERSION,
-        findings=tuple(_parse_finding(item, index) for index, item in enumerate(findings)),
+        findings=tuple(parsed_findings),
         relationship_summary=relationship_summary,
-        notes=_text_list(payload, "notes", StructuredReviewSetParseError),
-        test_gaps=_text_list(payload, "test_gaps", StructuredReviewSetParseError),
-        good=_text_list(payload, "good", StructuredReviewSetParseError),
+        notes=notes,
+        test_gaps=test_gaps,
+        good=good,
+        structured_parse_status="partial" if rejected or warnings else "success",
+        rejected_findings=rejected,
+        normalization_warnings=warnings,
     )
 
 

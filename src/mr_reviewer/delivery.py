@@ -39,6 +39,17 @@ def deliver_gitlab_review(
             finding_results=[],
         )
 
+    if report.rejected_findings or report.normalization_warnings:
+        structured = replace(
+            structured,
+            structured_parse_status="partial",
+            rejected_findings=[*structured.rejected_findings, *(report.rejected_findings or [])],
+            normalization_warnings=[
+                *structured.normalization_warnings,
+                *(report.normalization_warnings or []),
+            ],
+        )
+
     if not enabled:
         results = [
             _unpublished_finding_result(finding, "disabled", "post_comment_disabled")
@@ -255,10 +266,12 @@ def _with_structured_submission(
         report,
         submission_owner="python",
         submission_status=status,
-        structured_parse_status="success",
+        structured_parse_status=structured.structured_parse_status,
         finding_counts=_finding_counts(results),
         finding_results=results,
         good=structured.good,
         notes=structured.notes,
         test_gaps=structured.test_gaps,
+        rejected_findings=structured.rejected_findings,
+        normalization_warnings=structured.normalization_warnings,
     )

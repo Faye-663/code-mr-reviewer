@@ -290,7 +290,7 @@ Review Report：已上传 OneBox（review-project-mr-7-a1b2c3d4e5f6-review-abc.m
 - `stage=review_routing`：记录 `requested_review_mode`、实际 `review_mode`、`review_scope`、`dependency_context_status` 和稳定降级原因。
 - `stage=dependency_prepare`：依赖联合候选记录每个 project、同名 target branch、实际 commit SHA 和准备耗时；任一失败记录失败 project 与 reason，并清理全部依赖上下文。
 - `stage=dependency_review_plan` / `stage=dependency_review`：依赖联合检视固定的两次 Agent 调用。
-- `stage=structured_output_normalize status=recovered`：从外层文字中恢复了唯一契约有效 JSON 对象；只记录输出类型、前后缀字符数和候选数，不记录说明文字、finding 或完整模型输出。监视报告中的 `structured_parse_status` 仍只使用 `success` / `failed`。
+- `stage=structured_output_normalize status=recovered`：从外层文字中恢复契约有效 JSON 对象；`stage=structured_output_select` 记录 final result 的权威来源。日志只记录输出类型、来源和候选元数据，不记录说明文字、finding 或完整模型输出。final result 支持 `success` / `partial` / `failed`：报告字段归一化或个别 finding 被隔离时为 `partial`，顶层 JSON/契约不可恢复或真实多对象歧义时才为 `failed`；审查计划继续严格失败。
 - `review_scope=review-set`、`review_set_id`、`req_id`：IM 联合检视的任务边界和稳定标识；`stage=prepared`、`review_set_plan`、`review_set_review`、`publish` 和 `cleanup` 用于定位联合任务阶段。
 - `stage=opencode_review` / `stage=report_ready`：调用 Agent review 并得到结构化 JSON；Deep Review 会注入待验证计划，`run-once` 和 WeLink poll 继续由 Python 渲染为 Markdown。
 - `stage=file_upload` / `stage=file_upload_result`：上传 Markdown 报告文件到 WeLink OneBox。

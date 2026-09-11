@@ -450,8 +450,11 @@ def test_parse_review_set_result_rejects_boolean_position_line():
     payload = _result_payload()
     payload["findings"][0]["targets"][0]["position"]["new_line"] = True
 
-    with pytest.raises(StructuredReviewSetParseError, match="new_line must be an integer"):
-        parse_structured_review_set_result(json.dumps(payload, ensure_ascii=False))
+    result = parse_structured_review_set_result(json.dumps(payload, ensure_ascii=False))
+
+    assert result.findings == ()
+    assert result.structured_parse_status == "partial"
+    assert result.rejected_findings[0]["index"] == 0
 
 
 def test_parse_review_set_result_recovers_wrapped_contract_object():
@@ -475,8 +478,31 @@ def test_parse_review_set_result_rejects_legacy_severity_typo():
     payload = _result_payload()
     payload["findings"][0]["severity"] = "min" + "jor"
 
-    with pytest.raises(StructuredReviewSetParseError, match="severity"):
-        parse_structured_review_set_result(json.dumps(payload, ensure_ascii=False))
+    result = parse_structured_review_set_result(json.dumps(payload, ensure_ascii=False))
+
+    assert result.structured_parse_status == "partial"
+    assert result.rejected_findings[0]["reason_code"] == "invalid_finding_contract"
+
+
+def test_parse_review_set_result_normalizes_fields_and_isolates_finding():
+    payload = _result_payload()
+    invalid = dict(payload["findings"][0])
+    invalid.pop("title")
+    payload["findings"].append(invalid)
+    payload["relationship_summary"] = "跨仓契约已核对"
+    payload["notes"] = None
+    payload["test_gaps"] = ["  缺少联合测试  ", False, ""]
+    payload.pop("good")
+
+    result = parse_structured_review_set_result(json.dumps(payload, ensure_ascii=False))
+
+    assert len(result.findings) == 1
+    assert result.relationship_summary == ["跨仓契约已核对"]
+    assert result.notes == []
+    assert result.test_gaps == ["缺少联合测试"]
+    assert result.good == []
+    assert result.structured_parse_status == "partial"
+    assert result.rejected_findings[0]["index"] == 1
 
 
 def test_parse_review_set_result_rejects_unexpected_fields():

@@ -13,6 +13,8 @@ from mr_reviewer.result_validation import (
     require_object as _object,
     require_text as _text,
     require_text_list as _text_list,
+    normalize_report_text_list,
+    parse_findings_isolated,
 )
 from mr_reviewer.review_result import ALLOWED_CONFIDENCES, ALLOWED_SEVERITIES
 from mr_reviewer.structured_output import parse_json_object_output
@@ -69,6 +71,9 @@ class StructuredDependencyReviewResult:
     notes: list[str]
     test_gaps: list[str]
     good: list[str]
+    structured_parse_status: str = "success"
+    rejected_findings: list[dict[str, object]] | None = None
+    normalization_warnings: list[dict[str, str]] | None = None
 
 
 def parse_dependency_review_plan(raw_output: str, manifest: DependencyReviewManifest) -> dict[str, object]:
@@ -128,33 +133,43 @@ def _parse_dependency_review_result_object(
     manifest: DependencyReviewManifest,
 ) -> StructuredDependencyReviewResult:
     payload = _object(payload, StructuredDependencyReviewParseError, "dependency review result")
-    _exact_fields(
-        payload,
-        {"schema_version", "findings", "relationship_summary", "notes", "test_gaps", "good"},
-        StructuredDependencyReviewParseError,
-        "dependency review result",
-    )
+    unexpected = set(payload) - {
+        "schema_version", "findings", "relationship_summary", "notes", "test_gaps", "good"
+    }
+    if unexpected:
+        raise StructuredDependencyReviewParseError(
+            f"dependency review result contains unexpected fields: {sorted(unexpected)}"
+        )
+    missing_required = {"schema_version", "findings"} - set(payload)
+    if missing_required:
+        raise StructuredDependencyReviewParseError(
+            f"dependency review result is missing fields: {sorted(missing_required)}"
+        )
     if payload.get("schema_version") != RESULT_SCHEMA_VERSION:
         raise StructuredDependencyReviewParseError(f"schema_version must be {RESULT_SCHEMA_VERSION}")
 
     _, allowed_repo_ids = _manifest_repo_ids(manifest, StructuredDependencyReviewParseError)
-    relationship_summary = _text_list(
-        payload,
-        "relationship_summary",
+    raw_findings = _list(payload, "findings", StructuredDependencyReviewParseError)
+    parsed_findings, rejected = parse_findings_isolated(
+        raw_findings,
+        lambda item, index: _parse_finding(item, index, allowed_repo_ids),
         StructuredDependencyReviewParseError,
     )
-    if not relationship_summary:
-        raise StructuredDependencyReviewParseError("relationship_summary must not be empty")
+    relationship_summary, relationship_warnings = normalize_report_text_list(payload, "relationship_summary")
+    notes, notes_warnings = normalize_report_text_list(payload, "notes")
+    test_gaps, test_gap_warnings = normalize_report_text_list(payload, "test_gaps")
+    good, good_warnings = normalize_report_text_list(payload, "good")
+    warnings = [*relationship_warnings, *notes_warnings, *test_gap_warnings, *good_warnings]
     return StructuredDependencyReviewResult(
         schema_version=RESULT_SCHEMA_VERSION,
-        findings=tuple(
-            _parse_finding(item, index, allowed_repo_ids)
-            for index, item in enumerate(_list(payload, "findings", StructuredDependencyReviewParseError))
-        ),
+        findings=tuple(parsed_findings),
         relationship_summary=relationship_summary,
-        notes=_text_list(payload, "notes", StructuredDependencyReviewParseError),
-        test_gaps=_text_list(payload, "test_gaps", StructuredDependencyReviewParseError),
-        good=_text_list(payload, "good", StructuredDependencyReviewParseError),
+        notes=notes,
+        test_gaps=test_gaps,
+        good=good,
+        structured_parse_status="partial" if rejected or warnings else "success",
+        rejected_findings=rejected,
+        normalization_warnings=warnings,
     )
 
 

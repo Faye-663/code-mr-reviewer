@@ -39,14 +39,21 @@ def render_structured_output_as_markdown(report: ReviewReport) -> ReviewReport:
         return replace(failed_report, markdown=_render_report(failed_report, "failed", str(exc)))
 
     finding_results = [_finding_to_result(finding, "monitor_only", "not_published_for_entry") for finding in structured.findings]
+    rejected_findings = [*structured.rejected_findings, *(report.rejected_findings or [])]
+    normalization_warnings = [
+        *structured.normalization_warnings,
+        *(report.normalization_warnings or []),
+    ]
     rendered_report = replace(
         report,
-        structured_parse_status="success",
+        structured_parse_status="partial" if rejected_findings or normalization_warnings else "success",
         finding_counts=_local_counts(finding_results),
         finding_results=finding_results,
         good=structured.good,
         notes=structured.notes,
         test_gaps=structured.test_gaps,
+        rejected_findings=rejected_findings,
+        normalization_warnings=normalization_warnings,
     )
     return replace(rendered_report, markdown=_render_report(rendered_report, "success"))
 
@@ -82,8 +89,26 @@ def _render_report(
     if results:
         for index, finding in enumerate(results, start=1):
             lines.extend(_finding_lines(index, finding))
+    elif report.rejected_findings:
+        lines.append(f"- 存在 {len(report.rejected_findings)} 条被拒绝的 Agent finding，不能据此宣称未发现问题。")
     else:
         lines.append("- 未发现可报告的问题。")
+
+    if report.rejected_findings:
+        lines.extend(["", "## 被拒绝的 Agent Findings", ""])
+        for rejected in report.rejected_findings:
+            lines.append(
+                f"- 索引 {rejected.get('index', '<unknown>')}；"
+                f"原因码 `{rejected.get('reason_code', 'invalid_finding_contract')}`；"
+                f"摘要：{rejected.get('summary', 'unidentified finding')}"
+            )
+    if report.normalization_warnings:
+        lines.extend(["", "## 结构化归一化告警", ""])
+        for warning in report.normalization_warnings:
+            lines.append(
+                f"- 字段 `{warning.get('field', '<unknown>')}`；"
+                f"原因码 `{warning.get('reason_code', 'normalized')}`"
+            )
 
     lines.extend(["", "## 检视摘要", "", "| 严重程度 | 数量 | 状态 |", "|----------|------|------|"])
     severity_counts = {severity: sum(1 for item in results if item.get("severity") == severity) for severity in SEVERITIES}

@@ -150,8 +150,10 @@ def test_parse_structured_review_result_deduplicates_semantically_equal_candidat
 def test_parse_structured_review_result_rejects_wrapped_invalid_contract():
     raw = "review result:\n" + _structured_payload(severity="BLOCKER")
 
-    with pytest.raises(StructuredReviewParseError, match="severity"):
-        parse_structured_review_result(raw)
+    result = parse_structured_review_result(raw)
+
+    assert result.structured_parse_status == "partial"
+    assert result.rejected_findings[0]["index"] == 0
 
 
 def test_parse_structured_review_result_rejects_wrapped_truncated_json():
@@ -182,8 +184,7 @@ def test_parse_structured_review_result_rejects_invalid_json():
 
 
 def test_parse_structured_review_result_requires_finding_fields():
-    with pytest.raises(StructuredReviewParseError, match="old_path"):
-        parse_structured_review_result(
+    result = parse_structured_review_result(
             """
             {
               "findings": [
@@ -205,10 +206,19 @@ def test_parse_structured_review_result_requires_finding_fields():
             """
         )
 
+    assert result.findings == []
+    assert result.structured_parse_status == "partial"
+    assert result.rejected_findings[0]["index"] == 0
+    assert result.rejected_findings[0]["reason_code"] == "invalid_finding_contract"
+
 
 def test_parse_structured_review_result_requires_impact_and_accepts_good():
-    with pytest.raises(StructuredReviewParseError, match="impact"):
-        parse_structured_review_result(_structured_payload().replace(',\n          "impact": "缺陷会导致业务失败"', ""))
+    rejected = parse_structured_review_result(
+        _structured_payload().replace(',\n          "impact": "缺陷会导致业务失败"', "")
+    )
+
+    assert rejected.structured_parse_status == "partial"
+    assert rejected.rejected_findings[0]["index"] == 0
 
     result = parse_structured_review_result(
         _structured_payload(extra=', "good": ["事务边界下沉到领域服务"]', impact="令牌会进入 HTTP 响应")
@@ -222,16 +232,69 @@ def test_parse_structured_review_result_requires_impact_and_accepts_good():
 def test_parse_structured_review_result_rejects_unknown_severity(severity):
     payload = _structured_payload(severity=severity)
 
-    with pytest.raises(StructuredReviewParseError, match="severity"):
-        parse_structured_review_result(payload)
+    result = parse_structured_review_result(payload)
+
+    assert result.structured_parse_status == "partial"
+    assert result.rejected_findings[0]["reason_code"] == "invalid_finding_contract"
 
 
 @pytest.mark.parametrize("confidence", ["CRITICAL", "high", ""])
 def test_parse_structured_review_result_rejects_unknown_confidence(confidence):
     payload = _structured_payload(confidence=confidence)
 
-    with pytest.raises(StructuredReviewParseError, match="confidence"):
-        parse_structured_review_result(payload)
+    result = parse_structured_review_result(payload)
+
+    assert result.structured_parse_status == "partial"
+    assert result.rejected_findings[0]["reason_code"] == "invalid_finding_contract"
+
+
+def test_parse_structured_review_result_normalizes_report_fields_and_warns():
+    payload = json.loads(_structured_payload(extra=', "good": ["  保持兼容  ", 42, ""]'))
+    payload["notes"] = None
+    payload["test_gaps"] = "缺少异常测试"
+
+    result = parse_structured_review_result(json.dumps(payload, ensure_ascii=False))
+
+    assert result.notes == []
+    assert result.test_gaps == ["缺少异常测试"]
+    assert result.good == ["保持兼容"]
+    assert result.structured_parse_status == "partial"
+    assert {warning["field"] for warning in result.normalization_warnings} == {
+        "notes", "test_gaps", "good"
+    }
+
+
+def test_parse_structured_review_result_isolates_invalid_second_finding():
+    payload = json.loads(_structured_payload())
+    invalid = dict(payload["findings"][0])
+    invalid.pop("old_path")
+    payload["findings"].append(invalid)
+
+    result = parse_structured_review_result(json.dumps(payload, ensure_ascii=False))
+
+    assert len(result.findings) == 1
+    assert result.structured_parse_status == "partial"
+    assert result.rejected_findings == [
+        {
+            "index": 1,
+            "reason_code": "invalid_finding_contract",
+            "summary": "SQL_PERFORMANCE | 批量查询缺少数量限制",
+        }
+    ]
+
+
+def test_partial_result_report_does_not_claim_no_findings():
+    payload = json.loads(_structured_payload())
+    payload["findings"][0].pop("old_path")
+
+    rendered = render_structured_output_as_markdown(
+        ReviewReport(markdown=json.dumps(payload, ensure_ascii=False))
+    )
+
+    assert rendered.structured_parse_status == "partial"
+    assert rendered.rejected_findings[0]["index"] == 0
+    assert "存在 1 条被拒绝的 Agent finding" in rendered.markdown
+    assert "未发现可报告的问题" not in rendered.markdown
 
 
 def test_render_structured_output_as_markdown_uses_python_renderer():

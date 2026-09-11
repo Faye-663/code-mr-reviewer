@@ -212,8 +212,10 @@ def test_parse_dependency_result_rejects_boolean_position_line():
     payload = _result_payload()
     payload["findings"][0]["position"]["new_line"] = True
 
-    with pytest.raises(module.StructuredDependencyReviewParseError, match="new_line must be an integer"):
-        module.parse_structured_dependency_review_result(json.dumps(payload), _manifest())
+    result = module.parse_structured_dependency_review_result(json.dumps(payload), _manifest())
+
+    assert result.findings == ()
+    assert result.structured_parse_status == "partial"
 
 
 def test_parse_dependency_result_recovers_one_contract_valid_wrapped_object():
@@ -225,15 +227,13 @@ def test_parse_dependency_result_recovers_one_contract_valid_wrapped_object():
     assert result.findings[0].issue_id == "CONTRACT_NULLABILITY_001"
 
 
-def test_parse_dependency_result_rejects_multiple_contract_valid_objects():
+def test_parse_dependency_result_deduplicates_semantically_equal_objects():
     module = _result_module()
     encoded = json.dumps(_result_payload(), ensure_ascii=False)
 
-    with pytest.raises(
-        module.StructuredDependencyReviewParseError,
-        match="multiple valid JSON objects",
-    ):
-        module.parse_structured_dependency_review_result(f"{encoded}\n{encoded}", _manifest())
+    result = module.parse_structured_dependency_review_result(f"{encoded}\n{encoded}", _manifest())
+
+    assert result.findings[0].issue_id == "CONTRACT_NULLABILITY_001"
 
 
 def test_parse_dependency_result_accepts_null_primary_position():
@@ -252,8 +252,10 @@ def test_parse_dependency_result_rejects_unpositioned_dependency_only_finding():
     payload["findings"][0]["position"] = None
     payload["findings"][0]["evidence_refs"] = [payload["findings"][0]["evidence_refs"][1]]
 
-    with pytest.raises(module.StructuredDependencyReviewParseError, match="primary MR evidence"):
-        module.parse_structured_dependency_review_result(json.dumps(payload), _manifest())
+    result = module.parse_structured_dependency_review_result(json.dumps(payload), _manifest())
+
+    assert result.structured_parse_status == "partial"
+    assert result.rejected_findings[0]["index"] == 0
 
 
 @pytest.mark.parametrize(
@@ -270,8 +272,10 @@ def test_parse_dependency_result_rejects_invalid_evidence(field: str, value: obj
     payload = _result_payload()
     payload["findings"][0]["evidence_refs"][1][field] = value
 
-    with pytest.raises(module.StructuredDependencyReviewParseError, match=message):
-        module.parse_structured_dependency_review_result(json.dumps(payload), _manifest())
+    result = module.parse_structured_dependency_review_result(json.dumps(payload), _manifest())
+
+    assert result.structured_parse_status == "partial"
+    assert result.rejected_findings[0]["reason_code"] == "invalid_finding_contract"
 
 
 @pytest.mark.parametrize(
@@ -287,8 +291,10 @@ def test_parse_dependency_result_rejects_invalid_primary_position(field: str, va
     payload = _result_payload()
     payload["findings"][0]["position"][field] = value
 
-    with pytest.raises(module.StructuredDependencyReviewParseError, match="position"):
-        module.parse_structured_dependency_review_result(json.dumps(payload), _manifest())
+    result = module.parse_structured_dependency_review_result(json.dumps(payload), _manifest())
+
+    assert result.structured_parse_status == "partial"
+    assert result.rejected_findings[0]["index"] == 0
 
 
 def test_parse_dependency_result_rejects_dependency_repository_as_target():
@@ -296,8 +302,10 @@ def test_parse_dependency_result_rejects_dependency_repository_as_target():
     payload = _result_payload()
     payload["findings"][0]["target_repo_id"] = "p202"
 
-    with pytest.raises(module.StructuredDependencyReviewParseError, match="unexpected fields"):
-        module.parse_structured_dependency_review_result(json.dumps(payload), _manifest())
+    result = module.parse_structured_dependency_review_result(json.dumps(payload), _manifest())
+
+    assert result.structured_parse_status == "partial"
+    assert result.rejected_findings[0]["index"] == 0
 
 
 def test_parse_dependency_result_requires_relationship_summary():
@@ -305,5 +313,30 @@ def test_parse_dependency_result_requires_relationship_summary():
     payload = _result_payload()
     payload["relationship_summary"] = []
 
-    with pytest.raises(module.StructuredDependencyReviewParseError, match="must not be empty"):
-        module.parse_structured_dependency_review_result(json.dumps(payload), _manifest())
+    result = module.parse_structured_dependency_review_result(json.dumps(payload), _manifest())
+
+    assert result.relationship_summary == []
+    assert result.structured_parse_status == "success"
+
+
+def test_parse_dependency_result_normalizes_fields_and_isolates_finding():
+    module = _result_module()
+    payload = _result_payload()
+    invalid = dict(payload["findings"][0])
+    invalid.pop("impact")
+    payload["findings"].append(invalid)
+    payload["notes"] = "依赖版本已固定"
+    payload["test_gaps"] = None
+    payload["good"] = ["  契约证据完整  ", {"bad": True}]
+
+    result = module.parse_structured_dependency_review_result(
+        json.dumps(payload, ensure_ascii=False),
+        _manifest(),
+    )
+
+    assert len(result.findings) == 1
+    assert result.notes == ["依赖版本已固定"]
+    assert result.test_gaps == []
+    assert result.good == ["契约证据完整"]
+    assert result.structured_parse_status == "partial"
+    assert result.rejected_findings[0]["index"] == 1

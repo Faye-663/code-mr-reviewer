@@ -134,7 +134,9 @@ flowchart TD
 
 自动入口要求 Agent 的整体输出是一个 JSON 对象，不得用 Markdown 或代码围栏包裹 JSON。普通 MR 和单仓 Deep Review 沿用单 MR finding；依赖联合 Deep 使用独立 `dependency-review-plan/v1` / `dependency-review-result/v1`，允许 evidence 引用 manifest 中主仓或依赖仓，但 position 与唯一责任目标只能是主 MR。两类 Deep Review 的第一阶段生成严格计划，第二阶段必须重新验证、允许推翻并覆盖计划遗漏。计划进入本地 JSON/Markdown 报告，但不进入 GitLab comment/discussion。仅当 suggestion 包含可靠的具体代码时，允许在 JSON 字符串内部使用带语言标识的普通 Markdown fenced code block；当前契约不生成需要精确替换范围的 GitLab `suggestion` block。
 
-`structured_output.py` 是模型输出的统一信任边界。单 MR、ReviewSet 与 dependency review 的 plan/result 都先对完整输出执行 `json.loads`；完整 JSON 的 schema 校验失败时立即拒绝，不扫描其内部对象。只有整段发生 `JSONDecodeError` 时，解析器才用 `JSONDecoder.raw_decode` 枚举外层 JSON object，并以调用方原有完整契约逐个校验：恰好一个有效对象时恢复，没有有效对象或多个有效对象时拒绝。该边界不修复单引号、尾逗号、截断 JSON、字段、类型或枚举，也不触发 Agent retry，因此各 review 模式的调用次数不变。恢复日志只记录输出类型、前后缀字符数和候选数；`structured_parse_status` 仍只有 `success` / `failed`。
+`structured_output.py` 是模型输出的统一信任边界。审查计划仍执行严格契约校验。final review result 会保留顶层 assistant 消息边界和来源：显式 `final/result` 事件中的有效对象优先，否则选择最后一个顶层 assistant 有效对象；工具输出和转发的子 Agent 文本不参与选择。同一消息中的语义重复 JSON 按规范化内容去重，多个不同有效对象仍视为真实歧义并拒绝。该边界不修复单引号、尾逗号或截断 JSON，也不触发 Agent retry。
+
+final result 的顶层 JSON、schema/version 和 `findings` 数组类型不可恢复时，`structured_parse_status=failed`。`notes`、`test_gaps`、`good`、关系摘要等报告字段允许缺失或 `null` 归一化为空列表，单字符串归一化为单元素列表，混合列表只保留非空字符串并记录稳定 warning。`findings` 逐项保持严格字段、枚举、路径和行号校验；非法项写入 `rejected_findings`（原始索引、`invalid_finding_contract` 原因码和安全摘要），其它合法项继续发布。存在归一化 warning 或 rejected finding 时状态为 `partial`；报告不得把“全部 finding 被拒绝”表述为“未发现问题”。
 
 便携式 `gitlab-mr-review` skill 不能依赖项目安装，因此脚本内保留等价的自包含解析与完整契约校验。恢复后的 review 会重新序列化为纯 JSON 再提交 Notes API，本地 Markdown 也只从已校验对象渲染；无效或歧义输出在 comment 提交前 fail-closed。
 

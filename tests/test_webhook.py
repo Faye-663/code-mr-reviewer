@@ -434,8 +434,12 @@ def test_webhook_worker_posts_inline_discussion_from_python(tmp_path: Path):
     posted = gitlab.discussions[0]
     assert posted["target"] == event.target
     assert posted["severity"] == "major"
-    assert posted["position"]["old_line"] == -1
+    assert "old_line" not in posted["position"]
+    assert "old_path" not in posted["position"]
     assert posted["position"]["new_line"] == 2
+    assert posted["position"]["base_sha"] == "base-sha"
+    assert posted["position"]["start_sha"] == "start-sha"
+    assert posted["position"]["head_sha"] == "head-sha"
     assert "**🤖 AI Review｜批量查询缺少数量限制**" in posted["body"]
     assert "[major]" not in posted["body"]
     assert "**判断依据**\n\n本次变更新增 IN 查询，但未限制集合大小。" in posted["body"]
@@ -448,7 +452,7 @@ def test_webhook_worker_posts_inline_discussion_from_python(tmp_path: Path):
     assert "- 置信度：`HIGH`" in posted["body"]
     assert "- 规则：`SQL_PERFORMANCE`" in posted["body"]
     assert "- 来源：`AI Review · GLM5`" in posted["body"]
-    assert "<!-- ai-cr:finding:team/project:7:head-sha:SQL_PERFORMANCE:src/example.py:src/example.py:-1:2 -->" in posted["body"]
+    assert "<!-- ai-cr:finding:team/project:7:head-sha:SQL_PERFORMANCE:new:src/example.py:2 -->" in posted["body"]
     report = json.loads(next(tmp_path.glob("*.json")).read_text(encoding="utf-8"))
     assert report["submission_owner"] == "python"
     assert report["submission_status"] == "posted"
@@ -556,7 +560,7 @@ def test_webhook_worker_uses_default_minor_high_policy(tmp_path: Path):
     assert gitlab.discussions[0]["severity"] == "minor"
 
 
-def test_webhook_worker_keeps_non_diff_finding_local(tmp_path: Path):
+def test_webhook_worker_falls_back_to_note_for_non_diff_finding(tmp_path: Path):
     event = parse_gitlab_merge_request_event(
         _merge_request_payload(),
         Config(gitlab_base_url="https://gitlab.example.com"),
@@ -579,11 +583,13 @@ def test_webhook_worker_keeps_non_diff_finding_local(tmp_path: Path):
     queue.enqueue(event)
     queue._queue.join()
 
-    assert gitlab.comments == []
+    assert len(gitlab.comments) == 1
     assert gitlab.discussions == []
+    assert "已降级为普通 MR 评论" in gitlab.comments[0][1]
+    assert "未吸附到邻近行" in gitlab.comments[0][1]
     report = json.loads(next(tmp_path.glob("*.json")).read_text(encoding="utf-8"))
-    assert report["finding_results"][0]["status"] == "invalid"
-    assert report["finding_results"][0]["reason"] == "line_not_in_diff"
+    assert report["finding_results"][0]["status"] == "posted_note"
+    assert report["finding_results"][0]["reason"] == "position_not_in_diff"
 
 
 def test_webhook_worker_can_skip_python_comment(tmp_path: Path):
@@ -648,7 +654,7 @@ def test_webhook_worker_skips_duplicate_inline_discussion(tmp_path: Path):
     assert event is not None
     service = _RecordingReviewService()
     gitlab = _RecordingGitLabClient(
-        existing_marker="<!-- ai-cr:finding:team/project:7:head-sha:SQL_PERFORMANCE:src/example.py:src/example.py:-1:2 -->"
+        existing_marker="<!-- ai-cr:finding:team/project:7:head-sha:SQL_PERFORMANCE:new:src/example.py:2 -->"
     )
     config = Config(
         gitlab_base_url="https://gitlab.example.com",

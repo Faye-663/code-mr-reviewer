@@ -192,6 +192,23 @@ def test_parse_dependency_result_accepts_dependency_evidence_and_primary_positio
     assert result.relationship_summary == ["主仓调用 SDK，空值契约不一致。"]
 
 
+def test_parse_dependency_result_accepts_compact_old_position():
+    module = _result_module()
+    payload = _result_payload()
+    payload["findings"][0]["position"] = {
+        "path": "src/caller.py", "line": 56, "side": "old"
+    }
+
+    result = module.parse_structured_dependency_review_result(
+        json.dumps(payload, ensure_ascii=False), _manifest()
+    )
+
+    position = result.findings[0].position
+    assert position is not None
+    assert position.old_path == "src/caller.py"
+    assert position.old_line == 56
+
+
 def test_parse_dependency_result_normalizes_strict_text_fields():
     module = _result_module()
     payload = _result_payload()

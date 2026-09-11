@@ -435,6 +435,20 @@ def test_parse_review_set_result_accepts_multi_target_and_null_position():
     assert result.findings[0].targets[1].position is None
 
 
+def test_parse_review_set_result_accepts_compact_position():
+    payload = _result_payload()
+    payload["findings"][0]["targets"][0]["position"] = {
+        "path": "src/caller.py", "line": 57, "side": "new"
+    }
+
+    result = parse_structured_review_set_result(json.dumps(payload, ensure_ascii=False))
+
+    position = result.findings[0].targets[0].position
+    assert position is not None
+    assert position.new_path == "src/caller.py"
+    assert position.new_line == 57
+
+
 def test_parse_review_set_result_normalizes_strict_text_fields():
     payload = _result_payload()
     payload["relationship_summary"] = ["  app 调用 sdk，空值契约不一致。  "]

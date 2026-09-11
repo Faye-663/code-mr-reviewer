@@ -107,10 +107,7 @@ git diff <base_sha>...<head_sha>
       "rule_id": "SQL_PERFORMANCE",
       "severity": "major",
       "confidence": "HIGH",
-      "old_path": "src/main/java/com/example/UserMapper.java",
-      "new_path": "src/main/java/com/example/UserMapper.java",
-      "old_line": -1,
-      "new_line": 42,
+      "position": {"path": "src/main/java/com/example/UserMapper.java", "line": 42, "side": "new"},
       "title": "新增列表查询缺少分页限制",
       "evidence": "新增 findUsers 查询会在未传分页条件时全量扫描用户表。",
       "impact": "大数据量场景会耗尽数据库连接，导致正常请求超时。",
@@ -127,8 +124,8 @@ git diff <base_sha>...<head_sha>
 
 - `severity` 只能是 `suggestion`、`minor`、`major`、`fatal`。
 - `confidence` 只能是 `HIGH`、`MEDIUM`、`LOW`。
-- 新增行使用 `old_line: -1`，删除行使用 `new_line: -1`。
-- `old_path` 和 `new_path` 使用 GitLab diff 中的路径；重命名时分别填旧路径和新路径。
+- `position` 是单侧锚点；新增/上下文使用 `side: new`，纯删除使用 `side: old`，无法可靠定位时为 `null`。
+- `path` 使用 GitLab diff 中的仓库相对路径，`line` 是对应侧正整数行号。
 - `evidence` 只写可追溯到本次 MR 差异的证据，不要复述完整 diff。
 - `impact` 必须说明该缺陷对安全、正确性、可用性或维护性的实际影响，不能为空。
 - `suggestion` 写可执行修复方向；只有修复方向明确时才包含代码片段文本。

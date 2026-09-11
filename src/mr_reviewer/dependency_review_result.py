@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 
 from mr_reviewer.dependency_review import DependencyReviewManifest
@@ -15,6 +15,7 @@ from mr_reviewer.result_validation import (
     require_text_list as _text_list,
     normalize_report_text_list,
     parse_findings_isolated,
+    parse_review_position,
 )
 from mr_reviewer.review_result import ALLOWED_CONFIDENCES, ALLOWED_SEVERITIES
 from mr_reviewer.structured_output import parse_json_object_output
@@ -48,6 +49,7 @@ class DependencyFindingPosition:
     new_path: str
     old_line: int
     new_line: int
+    side: str = "legacy"
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,8 +74,8 @@ class StructuredDependencyReviewResult:
     test_gaps: list[str]
     good: list[str]
     structured_parse_status: str = "success"
-    rejected_findings: list[dict[str, object]] | None = None
-    normalization_warnings: list[dict[str, str]] | None = None
+    rejected_findings: list[dict[str, object]] = field(default_factory=list)
+    normalization_warnings: list[dict[str, str]] = field(default_factory=list)
 
 
 def parse_dependency_review_plan(raw_output: str, manifest: DependencyReviewManifest) -> dict[str, object]:
@@ -314,22 +316,18 @@ def _parse_evidence(value: object, index: int, allowed_repo_ids: set[str], error
 
 def _parse_position(value: object, parent: str) -> DependencyFindingPosition:
     context = f"{parent}.position"
-    item = _object(value, StructuredDependencyReviewParseError, context)
-    _exact_fields(
-        item,
-        {"old_path", "new_path", "old_line", "new_line"},
-        StructuredDependencyReviewParseError,
-        context,
+    old_path, new_path, old_line, new_line, side = parse_review_position(
+        value,
+        error_type=StructuredDependencyReviewParseError,
+        context=context,
+        allow_none=False,
     )
-    old_line = _integer(item, "old_line", StructuredDependencyReviewParseError, context)
-    new_line = _integer(item, "new_line", StructuredDependencyReviewParseError, context)
-    if old_line < -1 or new_line < -1 or old_line == 0 or new_line == 0 or old_line == new_line == -1:
-        raise StructuredDependencyReviewParseError(f"{context} line values are invalid")
     return DependencyFindingPosition(
-        old_path=_safe_path(_text(item, "old_path", StructuredDependencyReviewParseError, context), StructuredDependencyReviewParseError, context),
-        new_path=_safe_path(_text(item, "new_path", StructuredDependencyReviewParseError, context), StructuredDependencyReviewParseError, context),
+        old_path=old_path,
+        new_path=new_path,
         old_line=old_line,
         new_line=new_line,
+        side=side,
     )
 
 
@@ -370,15 +368,13 @@ def dependency_review_result_as_single_review_json(result: StructuredDependencyR
     for finding in result.findings:
         position = finding.position
         if position is None:
-            # 单仓发布器要求位置字段；-1/-1 会稳定进入 monitor-only，不会误评论依赖仓。
-            primary_evidence = next(ref for ref in finding.evidence_refs if ref.repo_id == PRIMARY_REPO_ID)
-            old_path = new_path = primary_evidence.path
-            old_line = new_line = -1
+            serialized_position = None
         else:
-            old_path = position.old_path
-            new_path = position.new_path
-            old_line = position.old_line
-            new_line = position.new_line
+            serialized_position = {
+                "path": position.new_path if position.new_line != -1 else position.old_path,
+                "line": position.new_line if position.new_line != -1 else position.old_line,
+                "side": "new" if position.new_line != -1 else "old",
+            }
         evidence = "；".join(
             f"[{ref.repo_id}] {ref.path}:{ref.start_line}-{ref.end_line} {ref.detail}"
             for ref in finding.evidence_refs
@@ -388,10 +384,7 @@ def dependency_review_result_as_single_review_json(result: StructuredDependencyR
                 "rule_id": finding.rule_id,
                 "severity": finding.severity,
                 "confidence": finding.confidence,
-                "old_path": old_path,
-                "new_path": new_path,
-                "old_line": old_line,
-                "new_line": new_line,
+                "position": serialized_position,
                 "title": finding.title,
                 "evidence": evidence,
                 "impact": finding.impact,

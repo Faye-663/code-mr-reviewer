@@ -11,6 +11,7 @@ from mr_reviewer.result_validation import (
     require_text_list as _text_list,
     normalize_report_text_list,
     parse_findings_isolated,
+    parse_review_position,
 )
 from mr_reviewer.review_result import ALLOWED_CONFIDENCES, ALLOWED_SEVERITIES
 from mr_reviewer.structured_output import parse_json_object_output
@@ -42,6 +43,7 @@ class ReviewSetTargetPosition:
     new_path: str
     old_line: int
     new_line: int
+    side: str = "legacy"
 
 
 @dataclass(frozen=True, slots=True)
@@ -287,18 +289,18 @@ def _parse_target(value: object, index: int, parent: str) -> ReviewSetFindingTar
 
 def _parse_position(value: object, parent: str) -> ReviewSetTargetPosition:
     context = f"{parent}.position"
-    item = _require_object(value, StructuredReviewSetParseError, context)
-    _exact_fields(
-        item,
-        {"old_path", "new_path", "old_line", "new_line"},
-        StructuredReviewSetParseError,
-        context,
+    old_path, new_path, old_line, new_line, side = parse_review_position(
+        value,
+        error_type=StructuredReviewSetParseError,
+        context=context,
+        allow_none=False,
     )
     return ReviewSetTargetPosition(
-        old_path=_text(item, "old_path", StructuredReviewSetParseError, context),
-        new_path=_text(item, "new_path", StructuredReviewSetParseError, context),
-        old_line=_integer(item, "old_line", StructuredReviewSetParseError, context),
-        new_line=_integer(item, "new_line", StructuredReviewSetParseError, context),
+        old_path=old_path,
+        new_path=new_path,
+        old_line=old_line,
+        new_line=new_line,
+        side=side,
     )
 
 

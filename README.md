@@ -169,7 +169,7 @@ Agent 读取主 MR changed files 后自行判断哪些依赖契约相关；Pytho
 
 ReqID 缺失或不一致属于 `rejected`；预检、Agent 或结果解析失败属于 `failed`。通过本地结构校验的请求先发送成员明确的“已受理”通知，再以不含原始异常的拒绝或失败文案终结；数量、项目或仓库不合法的请求只发送一条拒绝通知。所有终态都会把该 IM 标记为已处理，重新执行必须发送新消息。首期结果只提供建议，不作为合并门禁。webhook 仍只处理单 MR，不做 ReviewSet 聚合。
 
-Agent JSON 中的 `old_line` / `new_line` 表示同一个 GitLab diff 位置，不是范围起止行：新增行使用 `old_line=-1, new_line=N`，删除行使用 `old_line=N, new_line=-1`，未修改的上下文行同时提供该位置匹配的两侧行号。单 MR webhook 兼容更新文件中的同号替换行误报：仅当 `old_line=new_line=N` 且 diff 两侧精确存在旧侧删除行和新侧新增行时，Python 才规范为新侧位置；该容错不用于新文件、范围式行号或 ReviewSet。`0`、小于 `-1`、双 `-1` 及其它冲突组合仍为非法。webhook 对无法映射到当前 diff 的 finding 只保留本地，不借用邻近行；ReviewSet 仅对语法合法但无法映射的位置保留现有普通 note fallback。
+Agent JSON 使用单侧 `position: {path, line, side}`，它表示一个评论锚点而不是范围起止行：新增或上下文行使用 `side=new`，纯删除行使用 `side=old`，无法可靠定位时为 `null`。旧 `old_path/new_path/old_line/new_line` 仍兼容，新侧能映射时优先新侧，否则尝试旧侧。路径和行号非法时隔离该 finding；满足发布门槛但无法映射的位置降级为普通 MR note，并说明证据位置和原因，不借用邻近行。
 
 GitLab discussion 使用统一的证据优先格式：标题保留 `🤖 AI Review` 来源标识，但不重复平台已经展示的 severity；正文依次展示判断依据、影响和建议，并把 confidence、rule、模型名及 ReviewSet issue 等元数据折叠到“审查信息”。ReviewSet 证据按成员、文件和行号分项展示。suggestion 包含可靠的具体代码时，Agent 可以在 JSON 字符串内输出带语言标识的普通 Markdown fenced code block；当前不生成可一键应用的 GitLab `suggestion` block。
 
@@ -186,7 +186,7 @@ GitLab discussion 使用统一的证据优先格式：标题保留 `🤖 AI Revi
 https://gitlab.example.com/team/project/merge_requests/7
 ```
 
-该 skill 会调用内置脚本完成 clone/fetch/checkout，并按最新 MR title 选择 one-step 或 Deep Review；`【Deep-Review】` 与 `[Deep-Review]` 两种完整前缀都受支持。`gitlab-mr-review/prompt_templates` 必须与脚本一起复制；它不依赖本项目安装。其自包含解析器执行与主程序相同的唯一契约有效对象恢复；恢复成功后只把重新序列化的纯 JSON 作为 comment body，外层说明文字不会提交到 GitLab，无效或歧义输出会在提交前终止。Deep Review 计划与 review 写入本地报告；默认提交到 GitLab MR comment 的只有 review 正文。使用前需要配置：
+该 skill 会调用内置脚本完成 clone/fetch/checkout，并按最新 MR title 选择 one-step 或 Deep Review；`【Deep-Review】` 与 `[Deep-Review]` 两种完整前缀都受支持。`gitlab-mr-review/prompt_templates` 必须与脚本一起复制；它不依赖本项目安装。其自包含解析器在信任边界校验结构化输出；恢复成功后只把重新序列化的纯 JSON 作为 comment body，外层说明文字不会提交到 GitLab，无效或歧义输出会在提交前终止。Deep Review 计划与 review 写入本地报告；默认提交到 GitLab MR comment 的只有 review 正文。使用前需要配置：
 
 ```powershell
 $env:GITLAB_BASE_URL = "https://gitlab.example.com"
@@ -280,7 +280,7 @@ Review Report：已上传 OneBox（review-project-mr-7-a1b2c3d4e5f6-review-abc.m
 - `stage=im_poll`：开始调用 WeLink 历史消息查询。
 - `stage=im_queue event=enqueued|started|completed|rejected|skipped`：IM 请求入队、开始、终结、容量拒绝或 in-flight 去重；记录 `message`、`task`、`review_scope`、`queue_depth`、`ahead` 和安全 outcome，不记录消息正文。
 - `stage=gitlab_api` / Agent / `stage=im_*`：记录调用方法、状态、耗时、返回码、内容长度及 Agent 的 `template_id`/`template_version`，不记录请求或响应正文。完整且脱敏的内容只在 `DEBUG` 本地目录中保存。
-- Windows 下如果 `welink-cli` 或 Agent command 解析到 `.cmd`/`.bat`，程序会通过 `cmd.exe /d /c call "<cmd路径>" ...` 执行。直接配置的 `welink-cli`、`welink-cli.cmd`、`welink-cli.ps1` 或 `welink-cli.exe` 在发送前会把所有平台换行统一编码为字面量 `\n`，由 CLI 还原为群消息换行；自定义 IM reply command 继续接收真实换行。OpenCode 的完整 prompt 通过 UTF-8 文件附件传递，Claude Code 通过 stdin 传递，避免多行 argv 被截断。Agent 输出使用 OpenCode `--format json` 或 Claude Code `--output-format stream-json --verbose` 的事件协议；adapter 遍历顶层会话的全部完整文本消息并忽略工具输出与转发的子 Agent 文本，再由结构化结果解析器接受唯一契约有效 JSON，结果不依赖最后一条消息的位置。
+- Windows 下如果 `welink-cli` 或 Agent command 解析到 `.cmd`/`.bat`，程序会通过 `cmd.exe /d /c call "<cmd路径>" ...` 执行。直接配置的 `welink-cli`、`welink-cli.cmd`、`welink-cli.ps1` 或 `welink-cli.exe` 在发送前会把所有平台换行统一编码为字面量 `\n`，由 CLI 还原为群消息换行；自定义 IM reply command 继续接收真实换行。OpenCode 的完整 prompt 通过 UTF-8 文件附件传递，Claude Code 通过 stdin 传递，避免多行 argv 被截断。Agent 输出使用 OpenCode `--format json` 或 Claude Code `--output-format stream-json --verbose` 的事件协议；adapter 保留顶层消息顺序并忽略工具输出与转发的子 Agent 文本，显式 final/result 优先，否则使用最后一个顶层 assistant 有效对象。
 - `status=messages_received`：本轮收到的消息数量。
 - `reason=already_processed`：状态文件显示消息已处理。
 - `reason=not_review_request`：消息不是 `@Bot + MR URL`。
@@ -313,7 +313,7 @@ Review Report：已上传 OneBox（review-project-mr-7-a1b2c3d4e5f6-review-abc.m
 - ReviewKey 只包含项目、MR IID 和 Head SHA；相同 SHA 下 title、target branch、依赖目录或 Agent 配置变化仍复用已成功结果。
 - OneBox CLI 没有已验证的服务端幂等键。明确失败可由后续 Trigger 重试；上传中断标记为 `unknown` 并禁止自动重试，仍无法承诺严格 exactly-once。
 - WeLink 群通知没有已验证的服务端幂等键；受理或终态发送失败只记录到 IM state 和日志，不自动重试，避免在结果不确定时重复刷屏。
-- IM/webhook 单 MR 不提交整段 Markdown note；无法发布为 inline discussion 的 finding 只保留在本地 JSON 和 Markdown 报告中。未来可以评估把高风险、高置信的非 diff finding 降级为普通 MR note，但当前未开放该行为。
+- IM/webhook 单 MR 不提交整段 Markdown note；Notes API 仅用于满足门槛但无法精确定位的单条 finding 降级评论。
 - 项目依赖目录只表达直接源码仓关系，不证明制品版本；开源三方件、Maven/Gradle 解析、JAR 下载/反编译和 webhook 多 MR 聚合不在当前范围内。
 
 ## 排障

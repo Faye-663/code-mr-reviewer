@@ -110,11 +110,10 @@ def _findings(
             publish = result_by_target[(finding.issue_id, target_index)]
             if target.position is None:
                 position = "普通评论"
+            elif target.position.new_line != -1:
+                position = f"`new:{target.position.new_path}:{target.position.new_line}`"
             else:
-                position = (
-                    f"`{target.position.old_path}:{target.position.old_line} -> "
-                    f"{target.position.new_path}:{target.position.new_line}`"
-                )
+                position = f"`old:{target.position.old_path}:{target.position.old_line}`"
             lines.append(
                 f"  - `{target.member_id}`：位置 {position}；{target.suggestion}；"
                 "MR评论状态："

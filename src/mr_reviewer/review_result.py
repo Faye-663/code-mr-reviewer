@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from mr_reviewer.result_validation import normalize_report_text_list, parse_findings_isolated
+from mr_reviewer.result_validation import (
+    normalize_report_text_list,
+    parse_findings_isolated,
+    parse_review_position,
+)
 from mr_reviewer.structured_output import parse_json_object_output
 
 ALLOWED_SEVERITIES = {"suggestion", "minor", "major", "fatal"}
@@ -38,6 +42,7 @@ class ReviewFinding:
     evidence: str
     impact: str
     suggestion: str
+    position_side: str = "legacy"
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,18 +164,34 @@ def _parse_finding(value: object, index: int) -> ReviewFinding:
             f"findings[{index}].confidence must be one of {sorted(ALLOWED_CONFIDENCES)}"
         )
 
+    if "position" in value:
+        old_path, new_path, old_line, new_line, side = parse_review_position(
+            value.get("position"),
+            error_type=StructuredReviewParseError,
+            context=f"findings[{index}].position",
+            allow_none=True,
+        )
+    else:
+        old_path, new_path, old_line, new_line, side = parse_review_position(
+            {field: value[field] for field in ("old_path", "new_path", "old_line", "new_line") if field in value},
+            error_type=StructuredReviewParseError,
+            context=f"findings[{index}].position",
+            allow_none=True,
+        )
+
     return ReviewFinding(
         rule_id=_require_text(value, "rule_id", index),
         severity=severity,
         confidence=confidence,
-        old_path=_require_text(value, "old_path", index),
-        new_path=_require_text(value, "new_path", index),
-        old_line=_require_int(value, "old_line", index),
-        new_line=_require_int(value, "new_line", index),
+        old_path=old_path,
+        new_path=new_path,
+        old_line=old_line,
+        new_line=new_line,
         title=_require_text(value, "title", index),
         evidence=_require_text(value, "evidence", index),
         impact=_require_text(value, "impact", index),
         suggestion=_require_text(value, "suggestion", index),
+        position_side=side,
     )
 
 
@@ -185,11 +206,4 @@ def _require_text(payload: dict, field: str, index: int) -> str:
     value = payload.get(field)
     if not isinstance(value, str) or not value.strip():
         raise StructuredReviewParseError(f"findings[{index}].{field} must be a non-empty string")
-    return value
-
-
-def _require_int(payload: dict, field: str, index: int) -> int:
-    value = payload.get(field)
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise StructuredReviewParseError(f"findings[{index}].{field} must be an integer")
     return value

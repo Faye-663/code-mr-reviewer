@@ -149,10 +149,7 @@ final result 的顶层 JSON、schema/version 和 `findings` 数组类型不可�
       "rule_id": "SQL_PERFORMANCE",
       "severity": "major",
       "confidence": "HIGH",
-      "old_path": "src/example.py",
-      "new_path": "src/example.py",
-      "old_line": -1,
-      "new_line": 42,
+      "position": {"path": "src/example.py", "line": 42, "side": "new"},
       "title": "批量查询缺少数量限制",
       "evidence": "本次变更新增 IN 查询，但未限制集合大小。",
       "suggestion": "限制集合大小或拆批查询。"
@@ -167,10 +164,9 @@ final result 的顶层 JSON、schema/version 和 `findings` 数组类型不可�
 
 - `severity` 使用 GitLab discussions API 枚举：`suggestion`、`minor`、`major`、`fatal`。
 - `confidence` 只能是 `HIGH`、`MEDIUM`、`LOW`。
-- 新增行使用 `old_line=-1, new_line=N`；删除行使用 `old_line=N, new_line=-1`。
-- diff 中未修改的上下文行同时提供该位置匹配的 `old_line` 和 `new_line`；两者必须命中同一个上下文位置。
-- 两个行号表示一个 GitLab diff 位置，不是范围的开始与结束。`0`、小于 `-1`、双 `-1`，以及任一侧命中 diff 但两侧无法对应同一个上下文位置的组合通常均非法，不发布也不回退普通 note。单 MR 仅兼容一种已知模型误报：更新文件的 `old_line=new_line=N` 同时精确命中旧侧删除行和新侧新增行时，规范为新侧位置 `old_line=-1, new_line=N`。该容错不改变 Agent 输出契约，也不用于新文件、范围式行号或 ReviewSet。
-- `old_path` / `new_path` 使用 GitLab diff 中的路径；重命名时分别填旧路径和新路径。
+- `position` 使用单侧 `{path, line, side}`：新增行和上下文行使用 `side=new`，纯删除行使用 `side=old`；无法可靠定位时使用 `null`。
+- `path` 必须是安全的仓库相对路径，`line` 必须是正整数；禁止把范围起止行塞入位置对象。
+- 兼容旧 `old_path/new_path/old_line/new_line` 输入：新侧能精确映射时优先新侧，否则尝试旧侧；不再要求两侧组合成同一个上下文位置。
 - `evidence` 和 `suggestion` 必须非空，否则 finding 不进入发布候选。
 
 ## Discussion 展示契约
@@ -181,7 +177,7 @@ final result 的顶层 JSON、schema/version 和 `findings` 数组类型不可�
 2. 正文依次展示“判断依据”“影响”“建议”。单 MR 直接展示 finding evidence；ReviewSet 按成员、文件和行区间分项展示 evidence refs。
 3. suggestion 中的普通 Markdown fenced code block 原样交给 GitLab 渲染。
 4. confidence、rule、模型名以及 ReviewSet issue/type 放入 `<details>` 的“审查信息”折叠区。
-5. Python 生成的幂等 marker 继续作为不可见 HTML comment 放在正文末尾，其计算和去重语义不受展示格式影响。
+5. Python 生成的幂等 marker 继续作为不可见 HTML comment 放在正文末尾；inline 与普通 note 共用由当前 Head、finding identity 和规范化请求位置构成的 marker。
 
 ## Inline 发布规则
 
@@ -189,17 +185,15 @@ final result 的顶层 JSON、schema/version 和 `findings` 数组类型不可�
 
 发布门槛按固定顺序比较：severity 为 `suggestion < minor < major < fatal`，confidence 为 `LOW < MEDIUM < HIGH`；默认最低值分别是 `minor` 和 `HIGH`。配置值必须使用现有枚举，非法值在 `Config` 初始化时失败。`healthcheck` 输出实际门槛。低于任一门槛的 finding 分别标记 `below_min_severity` 或 `below_min_confidence`。
 
-IM/webhook 单 MR 仅发布同时满足门槛并能映射到规范 diff 位置的 finding。低于门槛、无法映射到 diff 行、缺少证据或建议的 finding 只进入本地 JSON / Markdown 报告；不会为了发布而借用邻近变更行。ReviewSet 对语法合法但不在当前 diff 的位置继续回退普通 note，自相矛盾或非法位置不回退。
+IM/webhook 单 MR、ReviewSet 和 dependency final result 先执行同一发布门槛。满足门槛且能精确映射的 finding 发布 inline discussion；位置为 `null` 或语法合法但不在当前 diff 时降级为普通 MR note，正文写明证据请求位置和降级原因。非法路径/行号仍隔离为 rejected finding；不会为了发布而借用邻近变更行。Head 变化时 inline 和 note 都停止发布。
 
 SQLite 先按 `(review_run_id, sink)` 事务 claim GitLab sink，再读取远端 discussions marker，避免 IM/webhook 并发或崩溃重试刷屏。marker 格式：
 
 ```markdown
-<!-- ai-cr:finding:{project}:{mr_iid}:{head_sha}:{rule_id}:{old_path}:{new_path}:{old_line}:{new_line} -->
+<!-- ai-cr:finding:{project}:{mr_iid}:{head_sha}:{rule_id}:{side}:{path}:{line} -->
 ```
 
-单 MR 的 IM/webhook GitLab 开关独立；任一 Trigger 开启时，该 ReviewRun 可执行一次 GitLab sink。两个入口都关闭时不发布 inline discussion，但仍生成本地报告。两个入口都不通过 notes API 提交整段 Markdown note。
-
-已知限制：单 MR 的高风险、高置信非 diff finding 当前仍只保留本地。未来可以评估将其回退为普通 MR note，但本次设计未开放 Notes API，也未承诺具体启用条件。
+单 MR 的 IM/webhook GitLab 开关独立；任一 Trigger 开启时，该 ReviewRun 可执行一次 GitLab sink。两个入口都关闭时不发布 discussion/note，但仍生成本地报告。Notes API 仅用于逐 finding 的位置降级，不提交整段 Markdown 报告。
 
 ## 本地报告与失败策略
 

@@ -206,7 +206,12 @@ def _dependency_context_lines(report: ReviewReport) -> list[str]:
 
 def _finding_lines(index: int, finding: dict) -> list[str]:
     path = finding.get("new_path") or finding.get("old_path") or "<unknown>"
-    line = finding.get("new_line") if finding.get("new_line", -1) != -1 else finding.get("old_line", "<unknown>")
+    if finding.get("new_line", -1) != -1:
+        line = finding.get("new_line")
+    elif finding.get("old_line", -1) != -1:
+        line = finding.get("old_line")
+    else:
+        line = "<not-provided>"
     return [
         f"### [{finding.get('severity', 'suggestion')}] {finding.get('title') or finding.get('rule_id') or '<unknown>'}",
         "",

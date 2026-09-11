@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -174,6 +175,10 @@ def test_review_set_publisher_posts_inline_and_note_targets():
     assert publication.status == "success"
     assert gitlab.inline_posts[0]["project"] == "team/app"
     assert gitlab.inline_posts[0]["position"]["new_line"] == 57
+    assert "old_line" not in gitlab.inline_posts[0]["position"]
+    assert gitlab.inline_posts[0]["position"]["base_sha"] == "base-101"
+    assert gitlab.inline_posts[0]["position"]["start_sha"] == "start-101"
+    assert gitlab.inline_posts[0]["position"]["head_sha"] == "head-101"
     assert gitlab.note_posts[0]["project"] == "team/sdk"
     inline_body = gitlab.inline_posts[0]["body"]
     note_body = gitlab.note_posts[0]["body"]
@@ -284,7 +289,7 @@ def test_review_set_publisher_falls_back_to_note_when_valid_position_is_not_in_d
     assert publication.results[0]["reason"] == "position_not_in_diff"
 
 
-def test_review_set_publisher_does_not_fallback_for_inconsistent_line_sides():
+def test_review_set_publisher_prefers_new_side_for_legacy_position():
     payload = _result_payload()
     payload["findings"][0]["targets"] = [
         {
@@ -302,10 +307,46 @@ def test_review_set_publisher_does_not_fallback_for_inconsistent_line_sides():
 
     publication = ReviewSetPublisher(gitlab).publish(_report(payload), enabled=True, model_name="GLM5")
 
-    assert publication.results[0]["status"] == "invalid"
-    assert publication.results[0]["reason"] == "inconsistent_line_sides"
-    assert gitlab.inline_posts == []
+    assert publication.results[0]["status"] == "posted_inline"
+    assert gitlab.inline_posts[0]["position"]["new_line"] == 57
     assert gitlab.note_posts == []
+
+
+def test_review_set_publisher_falls_back_to_old_side_for_legacy_position():
+    payload = _result_payload()
+    payload["findings"][0]["targets"] = [
+        {
+            "member_id": "p101-mr7",
+            "position": {
+                "old_path": "src/caller.py",
+                "new_path": "src/caller.py",
+                "old_line": 56,
+                "new_line": 999,
+            },
+            "suggestion": "修复调用方。",
+        }
+    ]
+    gitlab = _PublishingGitLab()
+
+    report = _report(payload)
+    old_side_diff = (
+        "diff --git a/src/caller.py b/src/caller.py\n"
+        "--- a/src/caller.py\n"
+        "+++ b/src/caller.py\n"
+        "@@ -56,1 +57,1 @@\n"
+        "-old = sdk.call()\n"
+        "+new = sdk.call()\n"
+    )
+    report = replace(
+        report,
+        members=(replace(report.members[0], diff=old_side_diff), report.members[1]),
+    )
+
+    publication = ReviewSetPublisher(gitlab).publish(report, enabled=True, model_name="GLM5")
+
+    assert publication.results[0]["status"] == "posted_inline"
+    assert gitlab.inline_posts[0]["position"]["old_line"] == 56
+    assert "new_line" not in gitlab.inline_posts[0]["position"]
 
 
 def test_review_set_publisher_rejects_unknown_target_without_blocking_valid_target():
@@ -339,8 +380,9 @@ def test_review_set_publisher_does_not_fallback_for_invalid_line():
 
     publication = ReviewSetPublisher(gitlab).publish(_report(payload), enabled=True, model_name="GLM5")
 
-    assert publication.results[0]["status"] == "invalid"
-    assert publication.results[0]["reason"] == "invalid_target_line"
+    assert publication.results == ()
+    assert publication.status == "success_with_warnings"
+    assert _report(payload).result.rejected_findings[0]["reason_code"] == "invalid_finding_contract"
     assert gitlab.inline_posts == []
     assert gitlab.note_posts == []
 
@@ -363,8 +405,9 @@ def test_review_set_publisher_does_not_fallback_for_windows_absolute_path():
 
     publication = ReviewSetPublisher(gitlab).publish(_report(payload), enabled=True, model_name="GLM5")
 
-    assert publication.results[0]["status"] == "invalid"
-    assert publication.results[0]["reason"] == "invalid_target_path"
+    assert publication.results == ()
+    assert publication.status == "success_with_warnings"
+    assert _report(payload).result.rejected_findings[0]["reason_code"] == "invalid_finding_contract"
     assert gitlab.note_posts == []
 
 
@@ -441,7 +484,7 @@ def test_render_review_set_report_preserves_complete_markdown_contract():
         "- 证据：\n"
         "  - `p202-mr8:src/sdk.py:40-42`：SDK 可以返回 null。\n"
         "- 责任目标：\n"
-        "  - `p101-mr7`：位置 `src/caller.py:-1 -> src/caller.py:57`；解引用前处理 null：\n"
+            "  - `p101-mr7`：位置 `new:src/caller.py:57`；解引用前处理 null：\n"
         "\n"
         "```java\n"
         "Objects.requireNonNull(user);\n"

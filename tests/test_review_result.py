@@ -1,6 +1,5 @@
-import logging
-
 import json
+import logging
 
 import pytest
 
@@ -91,13 +90,60 @@ def test_parse_structured_review_result_accepts_valid_findings():
     assert finding.rule_id == "SQL_PERFORMANCE"
     assert finding.severity == "major"
     assert finding.confidence == "HIGH"
-    assert finding.old_path == "src/example.py"
+    assert finding.old_path == ""
     assert finding.new_path == "src/example.py"
     assert finding.old_line == -1
     assert finding.new_line == 42
     assert finding.title == "批量查询缺少数量限制"
     assert result.notes == ["只记录到本地报告"]
     assert result.test_gaps == ["缺少边界测试"]
+
+
+@pytest.mark.parametrize(
+    ("position", "expected"),
+    [
+        ({"path": "src/example.py", "line": 42, "side": "new"}, ("", "src/example.py", -1, 42, "new")),
+        ({"path": "src/example.py", "line": 41, "side": "old"}, ("src/example.py", "", 41, -1, "old")),
+        (None, ("", "", -1, -1, "none")),
+    ],
+)
+def test_parse_structured_review_result_accepts_compact_position(position, expected):
+    payload = json.loads(_structured_payload())
+    finding = payload["findings"][0]
+    for field in ("old_path", "new_path", "old_line", "new_line"):
+        finding.pop(field)
+    finding["position"] = position
+
+    result = parse_structured_review_result(json.dumps(payload, ensure_ascii=False))
+
+    parsed = result.findings[0]
+    assert (parsed.old_path, parsed.new_path, parsed.old_line, parsed.new_line, parsed.position_side) == expected
+
+
+def test_parse_structured_review_result_accepts_minimal_legacy_new_side():
+    payload = json.loads(_structured_payload())
+    finding = payload["findings"][0]
+    finding.pop("old_path")
+    finding.pop("old_line")
+
+    result = parse_structured_review_result(json.dumps(payload, ensure_ascii=False))
+
+    assert result.findings[0].position_side == "legacy"
+    assert result.findings[0].new_line == 42
+
+
+def test_parse_structured_review_result_preserves_safe_legacy_old_fallback():
+    payload = json.loads(_structured_payload())
+    finding = payload["findings"][0]
+    finding["old_line"] = 41
+    finding["new_line"] = 999
+
+    result = parse_structured_review_result(json.dumps(payload, ensure_ascii=False))
+
+    parsed = result.findings[0]
+    assert parsed.position_side == "legacy"
+    assert (parsed.old_path, parsed.old_line) == ("src/example.py", 41)
+    assert (parsed.new_path, parsed.new_line) == ("src/example.py", 999)
 
 
 def test_parse_structured_review_result_accepts_minor_severity():
@@ -195,7 +241,6 @@ def test_parse_structured_review_result_requires_finding_fields():
                   "new_path": "src/example.py",
                   "old_line": -1,
                   "new_line": 42,
-                  "title": "批量查询缺少数量限制",
                   "evidence": "证据",
                   "suggestion": "建议"
                 }
@@ -267,7 +312,7 @@ def test_parse_structured_review_result_normalizes_report_fields_and_warns():
 def test_parse_structured_review_result_isolates_invalid_second_finding():
     payload = json.loads(_structured_payload())
     invalid = dict(payload["findings"][0])
-    invalid.pop("old_path")
+    invalid.pop("title")
     payload["findings"].append(invalid)
 
     result = parse_structured_review_result(json.dumps(payload, ensure_ascii=False))
@@ -278,14 +323,14 @@ def test_parse_structured_review_result_isolates_invalid_second_finding():
         {
             "index": 1,
             "reason_code": "invalid_finding_contract",
-            "summary": "SQL_PERFORMANCE | 批量查询缺少数量限制",
+            "summary": "SQL_PERFORMANCE",
         }
     ]
 
 
 def test_partial_result_report_does_not_claim_no_findings():
     payload = json.loads(_structured_payload())
-    payload["findings"][0].pop("old_path")
+    payload["findings"][0].pop("title")
 
     rendered = render_structured_output_as_markdown(
         ReviewReport(markdown=json.dumps(payload, ensure_ascii=False))

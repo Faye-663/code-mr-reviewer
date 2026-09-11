@@ -137,6 +137,34 @@ def test_single_terminal_without_findings_keeps_mr_identity_and_report_delivery(
     assert "跟踪ID：review-empty" in terminal
 
 
+def test_single_terminal_does_not_claim_no_findings_when_agent_findings_were_rejected():
+    report = ReviewReport(
+        markdown="{}",
+        head_sha="a" * 40,
+        finding_counts={"total": 0},
+        finding_results=[],
+        rejected_findings=[
+            {"index": 0, "reason_code": "invalid_finding_contract", "summary": "RULE"}
+        ],
+    )
+    outcome = SingleMrOutcome(
+        review_run_id="review-partial",
+        attempt=1,
+        disposition="created",
+        status="succeeded",
+        report=report,
+        report_json_path="report.json",
+        report_markdown_path="report.md",
+        deliveries={"gitlab": {"status": "succeeded"}, "onebox": {"status": "disabled"}},
+    )
+
+    terminal = render_single_terminal(_mr(), outcome)
+
+    assert "0 条合法 finding，1 条 Agent finding 被拒绝" in terminal
+    assert "GitLab：未发布（1 条 Agent finding 被拒绝）" in terminal
+    assert "未发现问题" not in terminal
+
+
 @pytest.mark.parametrize(
     ("disposition", "expected"),
     [

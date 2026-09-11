@@ -10,6 +10,7 @@ $review_plan_json
 finding 的唯一责任目标是主 MR；position 只能定位主 MR diff。依赖仓只能作为 evidence，不能把依赖仓历史问题单独形成 finding。`primary` 是主仓 evidence repo_id，其他 repo_id 必须来自 manifest dependencies。
 
 必须只输出 JSON，不要输出 Markdown 或代码围栏。所有字段必须存在，不要增加字段：
-{"schema_version":"dependency-review-result/v1","findings":[{"issue_id":"CONTRACT_001","rule_id":"CONTRACT","severity":"major","confidence":"HIGH","title":"...","impact":"...","evidence_refs":[{"repo_id":"primary","path":"src/caller.py","start_line":1,"end_line":2,"detail":"..."},{"repo_id":"p202","path":"src/sdk.py","start_line":1,"end_line":2,"detail":"..."}],"position":{"old_path":"src/caller.py","new_path":"src/caller.py","old_line":-1,"new_line":42},"suggestion":"..."}],"relationship_summary":["..."],"notes":[],"test_gaps":[],"good":[]}
+{"schema_version":"dependency-review-result/v1","findings":[{"issue_id":"CONTRACT_001","rule_id":"CONTRACT","severity":"major","confidence":"HIGH","title":"...","impact":"...","evidence_refs":[{"repo_id":"primary","path":"src/caller.py","start_line":1,"end_line":2,"detail":"..."},{"repo_id":"p202","path":"src/sdk.py","start_line":1,"end_line":2,"detail":"..."}],"position":{"path":"src/caller.py","line":42,"side":"new"},"suggestion":"..."}],"relationship_summary":["..."],"notes":[],"test_gaps":[],"good":[]}
 
 severity 只能是 suggestion、minor、major、fatal；confidence 只能是 HIGH、MEDIUM、LOW。无法确定主 MR diff position 时 position 必须为 null，并提供主仓 evidence。没有发现可证实的依赖关系时，relationship_summary 必须明确写“未发现可证实的依赖关系”，同时仍完成主 MR 的单仓检视。
+position 只表达一个评论锚点：新增或上下文行使用 side="new"，纯删除行使用 side="old"；path 是主仓相对路径，line 是对应侧的正整数行号。禁止伪造或借用邻近 diff 行。

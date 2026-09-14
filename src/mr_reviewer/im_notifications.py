@@ -180,7 +180,10 @@ def _single_delivery_lines(outcome: SingleMrOutcome) -> list[str]:
     onebox_status = str(onebox.get("status") or "not_run")
     if gitlab_status == "succeeded":
         counts = report.finding_counts if report and report.finding_counts else {}
-        if _count(counts, "total") == 0:
+        rejected = len(report.rejected_findings or []) if report else 0
+        if _count(counts, "total") == 0 and rejected:
+            gitlab_text = f"未发布（{rejected} 条 Agent finding 被拒绝）"
+        elif _count(counts, "total") == 0:
             gitlab_text = "无需发布（未发现问题）"
         else:
             gitlab_text = (
@@ -212,6 +215,9 @@ def _single_delivery_lines(outcome: SingleMrOutcome) -> list[str]:
 def _single_finding_summary(report: object) -> str:
     finding_counts = getattr(report, "finding_counts", None)
     total = _count(finding_counts, "total")
+    rejected = len(getattr(report, "rejected_findings", None) or [])
+    if total == 0 and rejected:
+        return f"检视总结：0 条合法 finding，{rejected} 条 Agent finding 被拒绝"
     return _finding_summary(getattr(report, "finding_results", ()) or (), total)
 
 

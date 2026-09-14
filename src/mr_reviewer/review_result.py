@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from mr_reviewer.result_validation import (
+    normalize_report_text_list,
+    parse_findings_isolated,
+    parse_review_position,
+)
 from mr_reviewer.structured_output import parse_json_object_output
 
 ALLOWED_SEVERITIES = {"suggestion", "minor", "major", "fatal"}
@@ -37,6 +42,7 @@ class ReviewFinding:
     evidence: str
     impact: str
     suggestion: str
+    position_side: str = "legacy"
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +51,9 @@ class StructuredReviewResult:
     notes: list[str]
     test_gaps: list[str]
     good: list[str] = field(default_factory=list)
+    structured_parse_status: str = "success"
+    rejected_findings: list[dict[str, object]] = field(default_factory=list)
+    normalization_warnings: list[dict[str, str]] = field(default_factory=list)
 
 
 def parse_review_plan(raw_output: str) -> dict[str, object]:
@@ -111,6 +120,7 @@ def parse_structured_review_result(raw_output: str) -> StructuredReviewResult:
         error_label="review",
         error_type=StructuredReviewParseError,
         parse_object=_parse_structured_review_object,
+        prefer_authoritative_agent_output=True,
     )
 
 
@@ -122,11 +132,19 @@ def _parse_structured_review_object(payload: object) -> StructuredReviewResult:
         raise StructuredReviewParseError(f"review output contains unexpected fields: {sorted(unexpected_fields)}")
 
     findings = _require_list(payload, "findings")
+    parsed_findings, rejected = parse_findings_isolated(findings, _parse_finding, StructuredReviewParseError)
+    notes, notes_warnings = normalize_report_text_list(payload, "notes")
+    test_gaps, test_gap_warnings = normalize_report_text_list(payload, "test_gaps")
+    good, good_warnings = normalize_report_text_list(payload, "good")
+    warnings = [*notes_warnings, *test_gap_warnings, *good_warnings]
     return StructuredReviewResult(
-        findings=[_parse_finding(item, index) for index, item in enumerate(findings)],
-        notes=_optional_text_list(payload, "notes"),
-        test_gaps=_optional_text_list(payload, "test_gaps"),
-        good=_optional_text_list(payload, "good"),
+        findings=parsed_findings,
+        notes=notes,
+        test_gaps=test_gaps,
+        good=good,
+        structured_parse_status="partial" if rejected or warnings else "success",
+        rejected_findings=rejected,
+        normalization_warnings=warnings,
     )
 
 
@@ -146,18 +164,34 @@ def _parse_finding(value: object, index: int) -> ReviewFinding:
             f"findings[{index}].confidence must be one of {sorted(ALLOWED_CONFIDENCES)}"
         )
 
+    if "position" in value:
+        old_path, new_path, old_line, new_line, side = parse_review_position(
+            value.get("position"),
+            error_type=StructuredReviewParseError,
+            context=f"findings[{index}].position",
+            allow_none=True,
+        )
+    else:
+        old_path, new_path, old_line, new_line, side = parse_review_position(
+            {field: value[field] for field in ("old_path", "new_path", "old_line", "new_line") if field in value},
+            error_type=StructuredReviewParseError,
+            context=f"findings[{index}].position",
+            allow_none=True,
+        )
+
     return ReviewFinding(
         rule_id=_require_text(value, "rule_id", index),
         severity=severity,
         confidence=confidence,
-        old_path=_require_text(value, "old_path", index),
-        new_path=_require_text(value, "new_path", index),
-        old_line=_require_int(value, "old_line", index),
-        new_line=_require_int(value, "new_line", index),
+        old_path=old_path,
+        new_path=new_path,
+        old_line=old_line,
+        new_line=new_line,
         title=_require_text(value, "title", index),
         evidence=_require_text(value, "evidence", index),
         impact=_require_text(value, "impact", index),
         suggestion=_require_text(value, "suggestion", index),
+        position_side=side,
     )
 
 
@@ -168,22 +202,8 @@ def _require_list(payload: dict, field: str) -> list:
     return value
 
 
-def _optional_text_list(payload: dict, field: str) -> list[str]:
-    value = payload.get(field, [])
-    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
-        raise StructuredReviewParseError(f"{field} must be a list of strings")
-    return value
-
-
 def _require_text(payload: dict, field: str, index: int) -> str:
     value = payload.get(field)
     if not isinstance(value, str) or not value.strip():
         raise StructuredReviewParseError(f"findings[{index}].{field} must be a non-empty string")
-    return value
-
-
-def _require_int(payload: dict, field: str, index: int) -> int:
-    value = payload.get(field)
-    if not isinstance(value, int):
-        raise StructuredReviewParseError(f"findings[{index}].{field} must be an integer")
     return value

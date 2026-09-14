@@ -57,10 +57,10 @@ class ReviewSetPublisher:
         decisions = self._validate(report)
         if not enabled:
             results = tuple(self._unpublished(decision, "disabled", "review_set_post_comment_disabled") for decision in decisions)
-            return _publication(results)
+            return _publication(results, report.result.structured_parse_status == "partial")
         if not model_name:
             results = tuple(self._unpublished(decision, "model_not_configured", "agent_model_name_missing") for decision in decisions)
-            return _publication(results)
+            return _publication(results, report.result.structured_parse_status == "partial")
 
         existing_by_member: dict[str, set[str] | None] = {}
         for decision in decisions:
@@ -103,7 +103,7 @@ class ReviewSetPublisher:
                     decision.finding.issue_id,
                 )
                 results.append(self._result(decision, "failed", "gitlab_publish_failed"))
-        return _publication(tuple(results))
+        return _publication(tuple(results), report.result.structured_parse_status == "partial")
 
     def _validate(self, report: ReviewSetReviewReport) -> tuple[_TargetDecision, ...]:
         members = {member.member_id: member for member in report.manifest.members}
@@ -114,7 +114,12 @@ class ReviewSetPublisher:
             finding_key = _finding_key(finding)
             for target_index, target in enumerate(finding.targets):
                 member = members.get(target.member_id)
-                marker = _marker(report.manifest.review_set_id, finding_key, target)
+                marker = _marker(
+                    report.manifest.review_set_id,
+                    finding_key,
+                    target,
+                    member.head_sha if member is not None else "unknown",
+                )
                 if evidence_reason:
                     decisions.append(_TargetDecision(finding, target, target_index, member, "invalid", evidence_reason, None, marker))
                     continue
@@ -215,7 +220,12 @@ def _position_error(target: ReviewSetFindingTarget) -> str:
     position = target.position
     if position is None:
         return ""
-    if not _safe_diff_path(position.old_path) or not _safe_diff_path(position.new_path):
+    paths = []
+    if position.new_line > 0:
+        paths.append(position.new_path)
+    if position.old_line > 0:
+        paths.append(position.old_path)
+    if not paths or any(not _safe_diff_path(path) for path in paths):
         return "invalid_target_path"
     lines = (position.old_line, position.new_line)
     if any(line < -1 or line == 0 for line in lines) or lines == (-1, -1):
@@ -269,14 +279,14 @@ def _position_tuple(target: ReviewSetFindingTarget) -> tuple:
     )
 
 
-def _marker(review_set_id: str, finding_key: str, target: ReviewSetFindingTarget) -> str:
+def _marker(review_set_id: str, finding_key: str, target: ReviewSetFindingTarget, head_sha: str) -> str:
     target_text = json.dumps(
         [target.member_id, _position_tuple(target)],
         ensure_ascii=False,
         separators=(",", ":"),
     )
     target_key = hashlib.sha256(target_text.encode("utf-8")).hexdigest()[:16]
-    return f"<!-- ai-cr:review-set:{review_set_id}:{finding_key}:{target_key} -->"
+    return f"<!-- ai-cr:review-set:{review_set_id}:{head_sha}:{finding_key}:{target_key} -->"
 
 
 def _extract_markers(discussions: list[dict]) -> set[str]:
@@ -298,11 +308,20 @@ def _comment_body(decision: _TargetDecision, model_name: str) -> str:
         f"- `{item.member_id} · {item.path}:{item.start_line}-{item.end_line}`：{item.detail}"
         for item in finding.evidence_refs
     )
+    downgrade = ""
+    if decision.status == "publishable_note":
+        position = _position_tuple(decision.target)
+        reason = "未提供可定位位置" if decision.reason == "position_not_provided" else "位置不在当前 diff"
+        downgrade = (
+            f"**发布说明**\n\n证据请求位置 `{position}`；{reason}，"
+            "已降级为普通 MR 评论；未吸附到邻近行。\n\n"
+        )
     return (
         f"**🤖 AI Review · ReviewSet｜{finding.title}**\n\n"
         f"**判断依据**\n\n{evidence}\n\n"
         f"**影响**\n\n{finding.impact}\n\n"
         f"**建议**\n\n{decision.target.suggestion}\n\n"
+        f"{downgrade}"
         "<details>\n"
         "<summary>审查信息</summary>\n\n"
         "- 类型：`ReviewSet`\n"
@@ -315,7 +334,10 @@ def _comment_body(decision: _TargetDecision, model_name: str) -> str:
     )
 
 
-def _publication(results: tuple[dict[str, object], ...]) -> ReviewSetPublication:
+def _publication(
+        results: tuple[dict[str, object], ...],
+        has_parse_warnings: bool = False,
+) -> ReviewSetPublication:
     counts = {
         "total": len(results),
         "posted_inline": 0,
@@ -331,5 +353,7 @@ def _publication(results: tuple[dict[str, object], ...]) -> ReviewSetPublication
         status = result["status"]
         if status in counts:
             counts[status] += 1
-    warning = any(item["status"] in {"invalid", "failed", "model_not_configured"} for item in results)
+    warning = has_parse_warnings or any(
+        item["status"] in {"invalid", "failed", "model_not_configured"} for item in results
+    )
     return ReviewSetPublication("success_with_warnings" if warning else "success", results, counts)

@@ -23,17 +23,17 @@ class DiffPosition:
     new_line: int
 
     def to_gitlab_position(self) -> dict:
-        return {
+        payload = {
             "base_sha": self.refs.base_sha,
             "start_sha": self.refs.start_sha,
             "head_sha": self.refs.head_sha,
             "position_type": "text",
-            "old_path": self.old_path,
-            "new_path": self.new_path,
-            "old_line": self.old_line,
-            "new_line": self.new_line,
-            "ignore_whitespace_change": False,
         }
+        if self.new_line != -1:
+            payload.update({"new_path": self.new_path, "new_line": self.new_line})
+        else:
+            payload.update({"old_path": self.old_path, "old_line": self.old_line})
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,30 +131,14 @@ class DiffPositionMap:
         if any(line < -1 or line == 0 for line in lines) or lines == (-1, -1):
             return DiffPositionResolution(None, "invalid_line_value")
 
-        if old_line == -1:
-            position = self._added_positions.get((new_path, new_line))
+        if new_line > 0:
+            position = self._new_side_positions.get((new_path, new_line))
             if position is not None:
                 return DiffPositionResolution(position, "")
-            if (new_path, new_line) in self._new_side_positions:
-                return DiffPositionResolution(None, "inconsistent_line_sides")
-            return DiffPositionResolution(None, "line_not_in_diff")
-
-        if new_line == -1:
-            position = self._deleted_positions.get((old_path, old_line))
+        if old_line > 0:
+            position = self._old_side_positions.get((old_path, old_line))
             if position is not None:
                 return DiffPositionResolution(position, "")
-            if (old_path, old_line) in self._old_side_positions:
-                return DiffPositionResolution(None, "inconsistent_line_sides")
-            return DiffPositionResolution(None, "line_not_in_diff")
-
-        position = self._context_positions.get((old_path, new_path, old_line, new_line))
-        if position is not None:
-            return DiffPositionResolution(position, "")
-        if (
-                (old_path, old_line) in self._old_side_positions
-                or (new_path, new_line) in self._new_side_positions
-        ):
-            return DiffPositionResolution(None, "inconsistent_line_sides")
         return DiffPositionResolution(None, "line_not_in_diff")
 
     def resolve_single_review_finding(
@@ -164,17 +148,7 @@ class DiffPositionMap:
             old_line: int,
             new_line: int,
     ) -> DiffPositionResolution:
-        resolution = self.resolve(old_path, new_path, old_line, new_line)
-        if resolution.position is not None or resolution.reason != "inconsistent_line_sides":
-            return resolution
-        # 单 MR 的较弱模型可能把同一替换行误写成 (N, N)；仅在两侧都精确命中时规范为新侧，
-        # 避免把新文件范围或无效新侧坐标纠正到其它位置。
-        if old_line == new_line:
-            old_position = self._deleted_positions.get((old_path, old_line))
-            new_position = self._added_positions.get((new_path, new_line))
-            if old_position is not None and new_position is not None:
-                return DiffPositionResolution(new_position, "")
-        return resolution
+        return self.resolve(old_path, new_path, old_line, new_line)
 
 
 def validate_review_findings(
@@ -184,6 +158,19 @@ def validate_review_findings(
 ) -> list[FindingValidationDecision]:
     decisions = []
     for finding in review.findings:
+        lines = (finding.old_line, finding.new_line)
+        if any(line < -1 or line == 0 for line in lines) or (
+            lines == (-1, -1) and finding.position_side != "none"
+        ):
+            decisions.append(FindingValidationDecision(finding, "invalid", "invalid_line_value", None))
+            continue
+        filter_reason = publication_policy.filter_reason(finding.severity, finding.confidence)
+        if filter_reason:
+            decisions.append(FindingValidationDecision(finding, "filtered", filter_reason, None))
+            continue
+        if finding.position_side == "none":
+            decisions.append(FindingValidationDecision(finding, "publishable_note", "position_not_provided", None))
+            continue
         resolution = position_map.resolve_single_review_finding(
             finding.old_path,
             finding.new_path,
@@ -191,13 +178,9 @@ def validate_review_findings(
             finding.new_line,
         )
         if resolution.position is None:
-            decisions.append(FindingValidationDecision(finding, "invalid", resolution.reason, None))
+            decisions.append(FindingValidationDecision(finding, "publishable_note", "position_not_in_diff", None))
             continue
-        filter_reason = publication_policy.filter_reason(finding.severity, finding.confidence)
-        if filter_reason:
-            decisions.append(FindingValidationDecision(finding, "filtered", filter_reason, resolution.position))
-            continue
-        decisions.append(FindingValidationDecision(finding, "publishable", "", resolution.position))
+        decisions.append(FindingValidationDecision(finding, "publishable_inline", "", resolution.position))
     return decisions
 
 

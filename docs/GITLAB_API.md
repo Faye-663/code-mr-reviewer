@@ -203,10 +203,7 @@ Content-Type: application/json; charset=utf-8
     "head_sha": "160a832ad983cea7e2a9872f3421f5ee4c36b62c",
     "position_type": "text",
     "new_path": "README.md",
-    "old_path": "README.md",
-    "new_line": 264,
-    "old_line": -1,
-    "ignore_whitespace_change": false
+    "new_line": 264
   }
 }
 ```
@@ -217,11 +214,10 @@ Content-Type: application/json; charset=utf-8
 |---|---|
 | `body` | Python 渲染的单个 finding 内容和不可见幂等 marker。 |
 | `severity` | CodeHub 扩展枚举：`suggestion`、`minor`、`major`、`fatal`。 |
-| `position.base_sha/start_sha/head_sha` | 来自权威 MR detail，不用本地 merge-base 替代。 |
+| `position.base_sha/start_sha/head_sha` | 来自权威 MR detail，不用本地 merge-base 替代。这些是应用主动提供的版本保护字段，而不是平台 JSON 必填字段；实测错误 SHA 会导致请求失败，因此服务继续完整发送。 |
 | `position.position_type` | 固定 `text`。 |
-| `position.old_path/new_path` | GitLab diff 中的旧/新路径。 |
-| `position.old_line/new_line` | 同一个 diff 位置；新增行 old 为 `-1`，删除行 new 为 `-1`，上下文行同时提供两侧行号。 |
-| `position.ignore_whitespace_change` | 固定 false。 |
+| `position.new_path/new_line` | 新增行或上下文行只发送新侧路径和行号。 |
+| `position.old_path/old_line` | 纯删除行只发送旧侧路径和行号。 |
 
 原始平台样例的成功状态为 HTTP 201，响应示例：
 
@@ -251,12 +247,12 @@ body=<comment body>
 
 主程序方法：`post_mr_note()`。
 
-主程序只在 ReviewSet 使用普通 note：
+主程序在单 MR、ReviewSet 和 dependency review 中按 finding 使用普通 note：
 
 - target 没有提供 position。
 - position 语法合法，但无法映射到责任 MR 的当前 diff。
 
-未知成员、越界路径、非法行号或自相矛盾位置不会回退 note。IM/webhook 单 MR 永远不使用 Notes API；无法定位的 finding 只留在本地报告。
+未知成员、越界路径或非法行号不会回退 note，而是在结构化解析阶段隔离。普通 note 正文写明规范化请求位置和降级原因，并明确没有吸附邻近行；它与 inline discussion 使用同一个当前 Head/finding/位置幂等 marker。
 
 便携式 skill 也使用该 endpoint，但语义不同：它在 `MR_REVIEW_SUBMIT_COMMENT=true` 时把契约校验后的 review object 重新序列化为纯 JSON，作为一条普通 MR note 提交。它不发布 inline discussion，也不读取 discussions 做 marker 去重。
 
@@ -269,9 +265,9 @@ body=<comment body>
 5. `MR_REVIEWER_WEBHOOK_POST_COMMENT=false`：GitLab sink 记录 `disabled`，但前述 Head 读取仍会发生。
 6. `MR_REVIEWER_AGENT_MODEL_NAME` 为空：GitLab sink 记录 `model_not_configured`，不读取 discussions、不调用写 API。
 7. GitLab sink 严格取得 `base_sha/start_sha/head_sha`，基于本地 unified diff 验证规范位置和共享发布门槛。
-8. 分页读取 discussions 提取 marker，只为不重复且可发布的 finding POST inline discussion。
+8. 分页读取 discussions 提取 marker；精确位置 POST inline discussion，无法映射的位置按同一 marker POST 普通 note。
 
-解析失败、低于门槛、证据/建议缺失或位置无法映射都不会触发写 API。IM/webhook 单 MR 不会为了发布而借用邻近行或降级为普通 note。
+顶层解析失败、低于门槛或 finding 契约非法不会触发写 API。无法映射的位置会降级普通 note，但不会为了发布而借用邻近行。
 
 ## ReviewSet 调用顺序
 

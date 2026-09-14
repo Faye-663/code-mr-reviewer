@@ -76,6 +76,8 @@ class ReviewReport:
     good: list[str] | None = None
     notes: list[str] | None = None
     test_gaps: list[str] | None = None
+    rejected_findings: list[dict[str, object]] | None = None
+    normalization_warnings: list[dict[str, str]] | None = None
     prompt_templates: dict[str, dict[str, str]] | None = None
     title: str = ""
     requested_review_mode: str = ""
@@ -156,6 +158,9 @@ class _ReviewExecution:
     relationship_summary: list[str]
     prompt_templates: dict[str, dict[str, str]]
     agent_call_count: int
+    structured_parse_status: str = ""
+    rejected_findings: list[dict[str, object]] | None = None
+    normalization_warnings: list[dict[str, str]] | None = None
 
 
 class ReviewService:
@@ -390,6 +395,9 @@ class ReviewService:
                 routing_marker=routing.routing_marker,
                 dependency_relationship_summary=execution.relationship_summary,
                 agent_call_count=execution.agent_call_count,
+                structured_parse_status=execution.structured_parse_status,
+                rejected_findings=execution.rejected_findings,
+                normalization_warnings=execution.normalization_warnings,
                 **route_context,
             )
         finally:
@@ -678,6 +686,9 @@ class ReviewService:
                 },
             },
             agent_call_count=agent_call_count,
+            structured_parse_status=result.structured_parse_status,
+            rejected_findings=result.rejected_findings,
+            normalization_warnings=result.normalization_warnings,
         )
 
     def _build_prompt(

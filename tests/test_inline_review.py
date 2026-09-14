@@ -60,15 +60,20 @@ diff --git a/src/example.py b/src/example.py
         "start_sha": "start-sha",
         "head_sha": "head-sha",
         "position_type": "text",
-        "old_path": "src/example.py",
         "new_path": "src/example.py",
-        "old_line": -1,
         "new_line": 12,
-        "ignore_whitespace_change": False,
     }
     assert deleted is not None
     assert deleted.old_line == 11
     assert deleted.new_line == -1
+    assert deleted.to_gitlab_position() == {
+        "base_sha": "base-sha",
+        "start_sha": "start-sha",
+        "head_sha": "head-sha",
+        "position_type": "text",
+        "old_path": "src/example.py",
+        "old_line": 11,
+    }
     assert context is not None
     assert context.old_line == 10
     assert context.new_line == 10
@@ -100,15 +105,15 @@ diff --git a/src/example.py b/src/example.py
     decisions = validate_review_findings(review, position_map)
 
     assert [decision.status for decision in decisions] == [
-        "publishable",
+        "publishable_inline",
         "filtered",
         "filtered",
-        "invalid",
+        "publishable_note",
     ]
     assert decisions[0].position is not None
     assert decisions[1].reason == "below_min_severity"
     assert decisions[2].reason == "below_min_confidence"
-    assert decisions[3].reason == "line_not_in_diff"
+    assert decisions[3].reason == "position_not_in_diff"
 
 
 def test_validate_review_findings_normalizes_same_line_replacement_to_new_side():
@@ -131,14 +136,14 @@ diff --git a/src/example.py b/src/example.py
 
     decisions = validate_review_findings(review, position_map)
 
-    assert decisions[0].status == "publishable"
+    assert decisions[0].status == "publishable_inline"
     assert decisions[0].reason == ""
     assert decisions[0].position is not None
     assert decisions[0].position.old_line == -1
     assert decisions[0].position.new_line == 119
 
 
-def test_diff_position_map_keeps_same_line_replacement_strict_by_default():
+def test_diff_position_map_prefers_new_side_for_legacy_pair():
     position_map = DiffPositionMap.from_unified_diff(
         """
 diff --git a/src/example.py b/src/example.py
@@ -153,11 +158,12 @@ diff --git a/src/example.py b/src/example.py
 
     resolution = position_map.resolve("src/example.py", "src/example.py", 119, 119)
 
-    assert resolution.position is None
-    assert resolution.reason == "inconsistent_line_sides"
+    assert resolution.position is not None
+    assert resolution.position.new_line == 119
+    assert resolution.reason == ""
 
 
-def test_validate_review_findings_does_not_fallback_when_new_side_is_invalid():
+def test_validate_review_findings_falls_back_to_old_side_when_new_side_does_not_map():
     position_map = DiffPositionMap.from_unified_diff(
         """
 diff --git a/src/example.py b/src/example.py
@@ -177,8 +183,9 @@ diff --git a/src/example.py b/src/example.py
 
     decisions = validate_review_findings(review, position_map)
 
-    assert decisions[0].status == "invalid"
-    assert decisions[0].reason == "inconsistent_line_sides"
+    assert decisions[0].status == "publishable_inline"
+    assert decisions[0].position is not None
+    assert decisions[0].position.old_line == 119
 
 
 def test_validate_review_findings_rejects_new_file_start_and_end_lines():
@@ -212,9 +219,9 @@ new file mode 100644
 
     decisions = validate_review_findings(review, position_map)
 
-    assert decisions[0].status == "invalid"
-    assert decisions[0].reason == "inconsistent_line_sides"
-    assert decisions[0].position is None
+    assert decisions[0].status == "publishable_inline"
+    assert decisions[0].position is not None
+    assert decisions[0].position.new_line == 3
 
 
 def test_validate_review_findings_accepts_exact_context_line_pair():
@@ -238,7 +245,7 @@ diff --git a/src/example.py b/src/example.py
 
     decisions = validate_review_findings(review, position_map)
 
-    assert decisions[0].status == "publishable"
+    assert decisions[0].status == "publishable_inline"
     assert decisions[0].position is not None
     assert decisions[0].position.old_line == 10
     assert decisions[0].position.new_line == 20
@@ -294,9 +301,9 @@ rename to src/new.py
     decisions = validate_review_findings(review, position_map)
 
     assert [decision.status for decision in decisions] == [
-        "publishable",
-        "publishable",
-        "publishable",
+        "publishable_inline",
+        "publishable_inline",
+        "publishable_inline",
     ]
     assert [decision.position.to_gitlab_position() for decision in decisions] == [
         {
@@ -304,11 +311,8 @@ rename to src/new.py
             "start_sha": "start-sha",
             "head_sha": "head-sha",
             "position_type": "text",
-            "old_path": "src/old.py",
             "new_path": "src/new.py",
-            "old_line": 10,
             "new_line": 20,
-            "ignore_whitespace_change": False,
         },
         {
             "base_sha": "base-sha",
@@ -316,21 +320,15 @@ rename to src/new.py
             "head_sha": "head-sha",
             "position_type": "text",
             "old_path": "src/old.py",
-            "new_path": "src/new.py",
             "old_line": 11,
-            "new_line": -1,
-            "ignore_whitespace_change": False,
         },
         {
             "base_sha": "base-sha",
             "start_sha": "start-sha",
             "head_sha": "head-sha",
             "position_type": "text",
-            "old_path": "src/old.py",
             "new_path": "src/new.py",
-            "old_line": -1,
             "new_line": 21,
-            "ignore_whitespace_change": False,
         },
     ]
 

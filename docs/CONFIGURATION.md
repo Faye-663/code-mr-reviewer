@@ -95,7 +95,7 @@ title 去除前导空白后，只有以完整 `【Deep-Review】` 或 `[Deep-Rev
 | `MR_REVIEWER_AGENT_MODEL_NAME` | 空 | 任意展示名称 | 用于 IM/webhook 单 MR inline discussion 和 ReviewSet GitLab 评论。为空时仍生成报告，但不发布 GitLab 评论；不会从 Agent 输出猜测。 |
 | `MR_REVIEWER_COMMENT_SKILL` | 空（有效默认 `code-review`） | skill 名称 | 指定自动入口的单仓 review prompt skill；依赖联合检视固定使用 `dependency-code-review`，不受该配置覆盖。skill 必须只返回结构化 JSON，不得自行发布评论。 |
 
-Agent 的 provider、API Key、实际模型和登录状态由 OpenCode 或 Claude Code 自身管理，本项目只选择 adapter、命令和 GitLab 评论中的展示名。review/review-plan/deep-review prompt 使用包内版本化模板，不支持部署侧覆盖。OpenCode adapter 使用 `--format json`，Claude Code adapter 要求 Claude Code `2.1.214` 或更高版本并使用 `--output-format stream-json --verbose`；两者都遍历顶层会话的完整文本事件、排除工具输出和转发的子 Agent 文本，并把所有文本交给唯一契约有效 JSON 的 fail-closed 校验，不要求结果出现在最后一条消息。
+Agent 的 provider、API Key、实际模型和登录状态由 OpenCode 或 Claude Code 自身管理，本项目只选择 adapter、命令和 GitLab 评论中的展示名。review/review-plan/deep-review prompt 使用包内版本化模板，不支持部署侧覆盖。OpenCode adapter 使用 `--format json`，Claude Code adapter 要求 Claude Code `2.1.214` 或更高版本并使用 `--output-format stream-json --verbose`；两者都保留顶层会话文本事件的顺序和来源、排除工具输出与转发的子 Agent 文本。final/result 有效对象优先，否则选择最后一个顶层 assistant 有效对象；审查计划仍使用严格的唯一对象校验。
 
 ## GitLab 发布策略
 
